@@ -1,7 +1,7 @@
 # Life_GPS 设计资料与器件规格书索引 (Doc/)
 
-> ⚠️ **【架构待冻结 · 硬件配置基线 v1.3 · 禁止直接投板 (Architecture Pending Freeze - DO NOT TAPE-OUT)】**  
-> 本工程当前处于第一阶段（Phase 1）基线闭环验证期。在完成本轮无源内置天线射频链路固化、SGM6040D (3.4V) + SGM2045 (3.3V) 电源拓扑更新、传感器滤波供电评估落地及数据格式闭环前，禁止直接投板打样。
+> 🔒 **【架构基线已冻结 · 硬件配置基线 v1.0-RC · SSOT 权威真相源 (Architecture Baseline Frozen - SSOT)】**  
+> 经与专家深度评审全面闭环，本项目第一阶段（Phase 1）架构基线已正式收敛并锁定。本文件与主 README 共同构成 EDA 原理图（Schematic Capture）与 PCB Layout 的唯一权威输入依据。严禁在原理图阶段擅自变动器件订货型号、电压基准或引脚映射。
 
 本目录归档了 **Life_GPS** 超低功耗轨迹与惯导记录仪项目核心硬件元器件的原厂官方数据手册（Datasheet）及规格书。在进行原理图绘制、PCB 布局（特别是射频天线与阻抗控制）和固件驱动开发时，请务必以本目录下的原厂规范为准。
 
@@ -123,3 +123,95 @@
   * 900mAh 有效可用电量下，连续工作时间为：$900\text{ mAh} / 54.0\text{ mA} \approx \mathbf{16.7\text{ 小时}}$。
 * **深度静止待机底噪**：
   * IMU 15Hz LPM1 (7.5µA) + GNSS VBAT (15µA) + nRF52840 RTC (1.5µA) + Flash (1µA) + 电源漏电 (1µA) = **26.0 µA**；设计目标规范为 **$25\text{ }\mu\text{A} \sim 35\text{ }\mu\text{A}$**。
+
+---
+
+### 2.6 射频 DFT 默认焊接 BOM 与 Golden Sample 对标规范
+
+为解决微型无源 Chip 天线在打样调试期可能面临的板级阻抗失谐与近场吸收风险，硬件在原理图与装配 BOM 中建立**可测试性设计（DFT）双通路切换机制**，并制定绝对基准比对规范：
+
+#### 1. PCBA 装配默认焊接 BOM (Assembly BOM)
+| 元件位号 | 规格与封装 | 标称参数 | 默认装配状态 (Default SMT) | 电路功能与说明 |
+| :--- | :--- | :---: | :---: | :--- |
+| **ANT1** | H2UJ4U1H2Q0100 (咏业) | 5×3×0.5mm | **贴片焊接** | 板载超薄微型双频陶瓷 Chip 天线 |
+| **C_PI1**| 0402 高频贴片电容 | NC | 待调谐确定 | 天线 $\pi$ 型匹配电路第一并联臂 |
+| **L_PI1**| 0402 高频绕线电感 | 2.7nH | **贴片焊接** | 天线 $\pi$ 型匹配电路串联臂 (初始预设) |
+| **C_PI2**| 0402 高频贴片电容 | NC | 待调谐确定 | 天线 $\pi$ 型匹配电路第二并联臂 |
+| **R_INT**| 0402 厚膜跳线电阻 | **0 Ω** | **默认贴片焊接 (Mounted)** | **【量产通路】导通内置 Chip 天线至板载 LNA** |
+| **R_EXT**| 0402 厚膜跳线电阻 | **0 Ω** | **默认不贴片 (Do Not Mount)**| **【测试通路】断开外接测试座** |
+| **J_EXT**| 微型 IPEX (U.FL) 射频座 | 50Ω 直流阻抗 | **默认贴片焊接 (Mounted)** | 预留微型同轴测试座（研发排障与 Golden 对标） |
+| **D_ESD**| PESD0402-140 | $C_J<0.15\text{pF}$ | **贴片焊接** | 超低结容双向射频 ESD 静电保护管 |
+
+* **研发 1 分钟排障切换**：若首版样机内置天线搜星性能异常，研发工程师用热风枪拆除 `R_INT` 并焊接 `R_EXT`，即可将外部高增益天线直连 ATR2652 输入，迅速锁定是天线辐射问题还是后级射频底噪问题。
+
+#### 2. Golden Sample（黄金参考样机）对标测试计划
+* **黄金参考基准 (Golden Reference)**：中科微原厂官方评估套件配备标准 $25\times 25\times 4\text{mm}$ 高增益陶瓷有源天线（外置增益 $+28\text{dB}$，天线辐射增益 $+2.5\text{dBi}$）；
+* **对比测试矩阵**：
+  * **DUT-1**：Life_GPS 打样样机（默认状态：内置 Chip 天线 + 电池贴合 + 外壳装配）；
+  * **DUT-2**：Life_GPS 打样样机（DFT 改装：切换至 `R_EXT`，外接同款标准有源天线）；
+  * **REF**：官方 Golden Reference；
+* **三场景合格判定标准 (Pass/Fail Criteria)**：
+  1. **开阔天空载噪比 (Clear Sky C/N0)**：DUT-2 与 REF 的双频载噪比偏差必须在 $\pm 1.5\text{ dB}$ 以内（验证板载 ATR2652+SAW 增益与噪声系数达标）；DUT-1 相比 REF 的 C/N0 衰减必须控制在 **$\le 4.5\text{ dB}$ 窗口内**（微型天线合理辐射衰减范围）；
+  2. **热启动 TTFF 统计分布**：开阔地下连续执行 50 次脉冲热启动循环，DUT-1 的 **95% 样本 TTFF 必须 $\le 2.8\text{ 秒}$**；
+  3. **BLE 自发射干扰抑制度**：在微弱卫星信号（C/N0 $\approx 32\text{ dB-Hz}$）下，主控开启 $+8\text{dBm}$ 连续发送 BLE 广播，GNSS 载噪比跌落 **$\Delta \text{C/N0} < 1.0\text{ dB}$**（验证 B39162 SAW 对 2.4GHz 的 $>38\text{dB}$ 抑制能力）。
+
+---
+
+### 2.7 nRF52840 QFN48 官方物理引脚最终交叉核对矩阵 (SSOT Baseline)
+
+依据 Nordic 官方数据手册 **`nRF52840 Product Specification v1.11` Section 7.1.2 (Table 62: QFN48 pin assignments)**，逐引脚核验并彻底锁定物理映射。全芯片引出 30 个物理 GPIO（P0 26个 + P1 4个），完全杜绝不存在管脚与引脚冲突：
+
+| 物理 Pin | 官方定义引脚名 | 本项目网络标号 | I/O方向 | 驱动模式与电气特性 | 连接目标器件与功能说明 |
+| :---: | :--- | :--- | :---: | :--- | :--- |
+| **Pin 1** | `DEC1` | `DEC1` | PWR | 1.1V 数字稳压去耦 | 外挂 100nF (C12) 至 GND |
+| **Pin 2** | `P0.00 / XL1` | `LFXO_IN` | 模拟时钟 | 32.768kHz 晶振输入 | 接 32.768kHz 晶体 Pin 1 (外挂匹配电容) |
+| **Pin 3** | `P0.01 / XL2` | `LFXO_OUT` | 模拟时钟 | 32.768kHz 晶振输出 | 接 32.768kHz 晶体 Pin 2 (外挂匹配电容) |
+| **Pin 4** | `P0.04 / AIN2`| `GNSS_LDO_EN` | OUT | Standard Drive | 控制 SGM2045-3.3 Pin 3 (EN)，高电平通电，低切断 |
+| **Pin 5** | `P0.05 / AIN3`| `GNSS_RXD` | IN | Standard Drive | 接 ATGM336H TXD (串联 1kΩ 限流保护电阻) |
+| **Pin 6** | `P0.07` | `GNSS_TXD` | OUT | Standard Drive | 接 ATGM336H RXD (串 1kΩ；模组断电前置浮空 Hi-Z) |
+| **Pin 7** | `P0.08` | `GNSS_1PPS` | IN | Standard Drive | 接 ATGM336H 1PPS 授时（经 PPI 捕获百纳秒时基） |
+| **Pin 8** | `P1.08` | `IMU_INT2` | IN | Standard Drive | 接 LSM6DSV16X INT2（MLC 运动模式识别中断） |
+| **Pin 9** | `P1.09` | `FLASH_CS` | OUT | Standard Drive | 接 W25Q512JV Pin 1 (/CS)，上电默认拉高 |
+| **Pin 10**| `P0.11` | `IMU_CS` | OUT | Standard Drive | 接 LSM6DSV16X Pin 1 (CS)，Active Low |
+| **Pin 11**| `P0.12` | `IMU_SCK` | OUT | High Drive (8MHz) | 接 LSM6DSV16X Pin 2 (SCL)，独立传感器 SPI 时钟 |
+| **Pin 12**| `VDD` | `VDD_3V4` | PWR | 主供电输入 | 连 SGM6040D 3.4V 主电轨 (并联 100nF 去耦) |
+| **Pin 13**| `P0.13` | `IMU_MISO` | IN | Standard Drive | 接 LSM6DSV16X Pin 4 (SDO)，传感器 SPI 数据输入 |
+| **Pin 14**| `P0.14` | `IMU_MOSI` | OUT | High Drive (8MHz) | 接 LSM6DSV16X Pin 3 (SDA)，传感器 SPI 数据输出 |
+| **Pin 15**| `P0.17` | `IMU_INT1` | IN | Standard Drive | 接 LSM6DSV16X INT1（计步/SFLP FIFO 唤醒中断） |
+| **Pin 16**| `P0.18 / nRESET`| `SYS_RESET` | IN (PU)| 内部弱上拉复位引脚 | 外部复位测试焊盘 / RC 去抖网络 |
+| **Pin 17**| `VDD` | `VDD_3V4` | PWR | 主供电输入 | 连 3.4V 主电轨 (并联 100nF 去耦) |
+| **Pin 18**| `P0.19` | `FLASH_SCK` | OUT | High Drive (8MHz) | 接 W25Q512JV Pin 6 (CLK)，高速 SPI 时钟 |
+| **Pin 19**| `P0.20` | `FLASH_MOSI` | OUT | High Drive (8MHz) | 接 W25Q512JV Pin 5 (DI / IO0) |
+| **Pin 20**| `P0.21` | `FLASH_MISO` | IN | Standard Drive | 接 W25Q512JV Pin 2 (DO / IO1) |
+| **Pin 21**| `P0.22` | `FLASH_WP` | OUT | Standard Drive | 接 W25Q512JV Pin 3 (/WP)，硬件写保护引脚 |
+| **Pin 22**| `P0.23` | `FLASH_HOLD` | OUT | Standard Drive | 接 W25Q512JV Pin 7 (/HOLD)，保持控制引脚 |
+| **Pin 23**| `P0.24` | `KEY1_POI` | IN (PU)| 弱上拉 + 低功耗唤醒| 按键 KEY1（短按: POI 打点；长按 3s: 蓝牙配对） |
+| **Pin 24**| `P1.00` | `KEY2_MODE` | IN (PU)| 弱上拉 + 低功耗唤醒| 按键 KEY2（长按 2s: 切换高精；短按: 电量查询） |
+| **Pin 25**| `VDD` | `VDD_3V4` | PWR | 主供电输入 | 连 3.4V 主电轨 (并联 100nF 去耦) |
+| **Pin 26**| `SWDIO` | `SWDIO` | I/O | SWD 调试数据线 | 独立 SWD 调试测试焊盘 |
+| **Pin 27**| `SWDCLK` | `SWDCLK` | IN (PD)| SWD 调试时钟线 | 独立 SWD 调试测试焊盘 |
+| **Pin 28**| `NC` | `NC` | - | 悬空引脚 | 芯片内部未连接，PCB 保持悬空不接地 |
+| **Pin 29**| `P0.09 / NFC1`| `DEBUG_TXD` | OUT | **Low Frequency Only** | 独立调试串口 TX (测试焊盘；**UICR NFCPINS=0**) |
+| **Pin 30**| `P0.10 / NFC2`| `DEBUG_RXD` | IN | **Low Frequency Only** | 独立调试串口 RX (测试焊盘；**UICR NFCPINS=0**) |
+| **Pin 31**| `ANT` | `RF_BLE` | RF | 50Ω 单端射频输出 | 匹配网络 $\rightarrow$ 2.4GHz 陶瓷天线 (带独立净空) |
+| **Pin 32**| `VSS_PA` | `GND` | PWR | 射频模拟地 | 专用地回路直连中心接地焊盘 |
+| **Pin 33**| `DEC6` | `DEC4_6` | PWR | 1.3V 稳压解耦 | **与 Pin 46 (DEC4) 板级短接**，并联 1µF+47nF |
+| **Pin 34**| `DEC3` | `DEC3` | PWR | 内部电源去耦 | 外挂 100pF (C11) 去耦电容 |
+| **Pin 35**| `XC1` | `HFXO_IN` | 模拟时钟 | 32MHz 晶体输入 | 接 32MHz 外部石英晶体 Pin 1 (12pF 匹配) |
+| **Pin 36**| `XC2` | `HFXO_OUT` | 模拟时钟 | 32MHz 晶体输出 | 接 32MHz 外部石英晶体 Pin 2 (12pF 匹配) |
+| **Pin 37**| `VDD` | `VDD_3V4` | PWR | 主供电输入 | 连 3.4V 主电轨 (并联 4.7µF 储能电容) |
+| **Pin 38**| `P1.15` | `PWR_DCDC_STOP`| OUT | **Low Frequency Only** | **控制 SGM6040D Pin 5 (STOP)**，高电平冻结开关噪声 |
+| **Pin 39**| `P0.03 / AIN1`| `BAT_ADC_EN` | OUT | **Low Frequency Only** | 电池采样使能，低电平导通 P-MOS，采完切断 |
+| **Pin 40**| `P0.02 / AIN0`| `BAT_ADC_IN` | IN (ADC)| **Low Frequency Only** | 电池分压采样输入 (1/2 分压，接 SAADC AIN0) |
+| **Pin 41**| `P0.28 / AIN4`| `LED_RED` | OUT | **Low Frequency Only** | 红色状态指示灯（低电平点亮，限流 1kΩ） |
+| **Pin 42**| `P0.29 / AIN5`| `LED_GREEN` | OUT | **Low Frequency Only** | 绿色状态指示灯（低电平点亮，限流 1kΩ） |
+| **Pin 43**| `P0.30 / AIN6`| `LED_BLUE` | OUT | **Low Frequency Only** | 蓝色状态指示灯（低电平点亮，限流 1kΩ） |
+| **Pin 44**| `P0.31 / AIN7`| `RESERVED_TP` | I/O | **Low Frequency Only** | 预留扩展引脚 / 备用模拟输入测试焊盘 |
+| **Pin 45**| `VSS` | `GND` | PWR | 核心地 | 直连中心地平面 |
+| **Pin 46**| `DEC4` | `DEC4_6` | PWR | 1.3V 稳压解耦 | **与 Pin 33 (DEC6) 板级短接** |
+| **Pin 47**| `DCC` | `DCC` | PWR | 片内 DCDC 电感输出| 串联 10µH + 15nH 功率电感接 VDD (DCDC 模式) |
+| **Pin 48**| `VDD` | `VDD_3V4` | PWR | 主供电输入 | 连 3.4V 主电轨 (并联 100nF 去耦) |
+| **PAD** | `EPAD (VSS)` | `GND` | PWR | 裸露中心地焊盘 | **必须打 9 个地过孔直连内层完整地平面** |
+
+> **⚠️ 官方强制低频限制（Low Frequency I/O Only $\le 10\text{kHz}$）原理图合规审查**：  
+> Nordic 官方手册明确规定：Pin 29, 30, 38, 39, 40, 41, 42, 43, 44 仅可配置为标准驱动低频 I/O（$\le 10\text{kHz}$），以保护 32MHz 晶振（Pin 35/36）与 2.4GHz 射频端口（Pin 31）免受数字高频谐波串扰。本项目中，高速 Flash SPI（P0.19~P0.23）与 IMU SPI（P0.11~P0.14）全部位于底部和左侧常规高速端口，低频引脚仅承担 LED、ADC 使能、按键及 DCDC STOP，完全符合原厂电气设计准则！

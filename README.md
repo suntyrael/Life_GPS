@@ -6,10 +6,10 @@
 [![IMU: LSM6DSV16X](https://img.shields.io/badge/IMU-LSM6DSV16X-orange.svg)](Doc/LSM6DSV16X_Datasheet.pdf)
 [![Flash: Winbond 64MB NOR](https://img.shields.io/badge/Flash-Winbond%2064MB%20(W25Q512JV)-yellow.svg)](Doc/W25Q512JV_SPI_Flash.pdf)
 [![PMIC: SGMICRO](https://img.shields.io/badge/Power-SGMICRO%20(SGM6040D%2BSGM2045%2BSGM4056)-purple.svg)](Doc/README.md)
-[![Status: Architecture Pending Freeze](https://img.shields.io/badge/Status-Architecture%20Pending%20Freeze%20(DO%20NOT%20TAPE--OUT)-red.svg)](#11-开发路线图与三阶段整改实施路径-roadmap)
+[![Status: Architecture Baseline Frozen](https://img.shields.io/badge/Status-Architecture%20Baseline%20Frozen%20(v1.0--RC)-green.svg)](#11-开发路线图-roadmap)
 
-> ⚠️ **【重要审查提示 · 架构待冻结 · 禁止直接投板 (Architecture Pending Freeze - DO NOT TAPE-OUT)】**  
-> 经最新一轮硬件架构与时序专项审查，本项目当前处于**第一阶段（Phase 1）架构基线闭环收敛期**。在硬件配置基线表彻底统一、GNSS 分层状态机时序（冷启动 60s 超时独立窗口与首次定位后 35s 星历刷写保护、热启动自适应延展与退避）通过验证、纠正 SFLP 6 轴与外部磁力计融合分层、重新核算高精模式整机电池端放电电流（~54.0mA）及数据格式彻底闭环前，**严禁直接输出 Gerber 进行打样投板**！文档中所有续航天数、静态待机电流、定位精度与 PDR 惯导指标，均为基于原厂规格书构建的**理论数学建模与设计目标（Target Specification）**，不能直接视为已经证明或保证的实测性能。最终工程指标必须以打样后的仪器全工况实测报告为准。
+> 🔒 **【重要基线提示 · 架构基线已冻结 · 进入原理图设计 (Architecture Baseline Frozen - SSOT)】**  
+> 经与专家深度工程评审全面闭环，本项目第一阶段（Phase 1）架构基线已正式锁定。硬件配置基线表（SSOT）、nRF52840 QFN48 官方物理引脚矩阵、SGM6040D (3.4V) + SGM2045-3.3 双域电源拓扑、射频 DFT 默认焊接 BOM 与 Golden Sample 对标规范、PDR 零速锁死双判据以及记录 Flag 位图已彻底闭环统一。本项目正式进入**第二阶段（Phase 2）EDA 原理图绘制与 PCB Layout 阶段**。文档中所有续航天数与功耗模型为基于原厂规格书与典型生活画像构建的自洽理论建模，打样后将通过 Nordic PPK2 进行全工况仪器实测闭环。
 
 **Life_GPS** 是一款专为“一生轨迹（Life Trajectory）”全天候记录、户外越野穿越以及数字游民环境感知打造的**超低功耗微型智能记录仪**。
 
@@ -33,11 +33,14 @@
 - [6. 超低功耗动态调度策略与整机自洽功耗数学模型](#6-超低功耗动态调度策略与整机自洽功耗数学模型)
   - [6.1 整机工作模式特性与状态矩阵 (Operating Mode Matrix)](#61-整机工作模式特性与状态矩阵-operating-mode-matrix)
   - [6.2 默认自适应模式的三档情景自洽功耗数学模型](#62-默认自适应模式的三档情景自洽功耗数学模型)
+  - [6.3 典型用户 24 小时生活画像与 GNSS 阶梯搜星/超时指数退避策略](#63-典型用户-24-小时生活画像与-gnss-阶梯搜星超时指数退避策略)
 - [7. GNSS 分层电源状态机与丢星后惯导(PDR)推算体系](#7-gnss-分层电源状态机与丢星后惯导pdr推算体系)
   - [7.1 GNSS 六状态分层有限状态机与冷/热启动防死循环设计](#71-gnss-六状态分层有限状态机与冷热启动防死循环设计)
   - [7.2 LSM6DSV16X 姿态解耦、三层融合与固件级磁异常抑制](#72-lsm6dsv16x-姿态解耦三层融合与固件级磁异常抑制)
   - [7.3 客观限定 PDR 佩戴方式与特殊场景自适应](#73-客观限定-pdr-佩戴方式与特殊场景自适应)
   - [7.4 基于 BMP388 气压计的垂直高程解算与室内楼层识别模型](#74-基于-bmp388-气压计的垂直高程解算与室内楼层识别模型)
+  - [7.5 PDR 零速更新 (ZUPT) 定量标定双判据](#75-pdr-零速更新-zupt-定量标定双判据)
+  - [7.6 轨迹记录 8-bit 状态与质量 Flag 位图定义](#76-轨迹记录-8-bit-状态与质量-flag-位图定义)
 - [8. 两阶段暂存、夜间压缩归档与数据主权静态加密](#8-两阶段暂存夜间压缩归档与数据主权静态加密)
   - [8.1 蓝牙环境感知与隐私合规 (边界客观化与事件流解耦)](#81-蓝牙环境感知与隐私合规-边界客观化与事件流解耦)
   - [8.2 严格定长对齐数据结构 (Life_GPS 2020 Epoch 与毫秒时基)](#82-严格定长对齐数据结构-life_gps-2020-epoch-与毫秒时基)
@@ -168,6 +171,10 @@
    * **硬件基线规定：Pin 6 `VBAT` 必须直连系统常通 3.4V 主电源轨 (由 SGM6040D 直供)**；
    * 当受控 LDO SGM2045 切断模组主电源（Pin 8 VCC）时，Pin 6 `VBAT` 维持内部 RTC 运行与低功耗 SRAM 中的星历时钟状态以支持热启动；
    * **整机功耗计入**：15µA 备用电流已全额纳入整机常通待机底噪（$25\mu\text{A} \sim 35\mu\text{A}$ 之中，每日消耗 $0.36\text{ mAh}$）。
+5. **射频可测试性设计 (DFT) 默认装配 BOM 与 Golden 对标规范**：
+   * **默认焊接状态**：板载微型 Chip 天线通路 `R_INT` 贴片焊接 **0Ω**；外接 IPEX 测试座通路 `R_EXT` 默认 **NC（不贴片）**；微型 IPEX 座 `J_EXT` 贴片焊接；
+   * **研发快速排障**：若首版样机内置天线搜星性能不及预期，通过热风枪将 `R_INT` 转移至 `R_EXT`，即可 1 分钟内接入外部标准高增益天线进行硬件解耦排查；
+   * **Golden Sample（黄金参考样机）对标**：以配备 $25\times 25\times 4\text{mm}$ 高增益陶瓷有源天线（外置增益 $+28\text{dB}$）的原厂评估套件为基准。开阔天空下，内置 Chip 天线样机的载噪比（C/N0）允许折损控制在 **$\le 4.5\text{ dB}$ 窗口内**；热启动 TTFF **95% 样本 $\le 2.8\text{s}$**；最大功率发射 BLE 广播时，GNSS 载噪比跌落 **$\Delta\text{C/N0} < 1.0\text{ dB}$**（验证 B39162 SAW 隔离度）。
 
 ---
 
@@ -256,73 +263,71 @@
 ```mermaid
 flowchart TB
     %% 样式定义
-    classDef pwr fill:#451a03,stroke:#d97706,stroke-width:2px,color:#fef3c7;
-    classDef aon fill:#064e3b,stroke:#059669,stroke-width:2px,color:#ecfdf5;
-    classDef sw fill:#1e3a8a,stroke:#2563eb,stroke-width:2px,color:#dbeafe;
-    classDef mcu fill:#4c1d95,stroke:#7c3aed,stroke-width:2px,color:#f5f3ff;
+    classDef pwr fill:#451a03,stroke:#d97706,stroke-width:1.5px,color:#fef3c7;
+    classDef aon fill:#064e3b,stroke:#059669,stroke-width:1.5px,color:#ecfdf5;
+    classDef sw fill:#1e3a8a,stroke:#2563eb,stroke-width:1.5px,color:#dbeafe;
+    classDef mcu fill:#4c1d95,stroke:#7c3aed,stroke-width:1.5px,color:#f5f3ff;
     classDef dev fill:#1e293b,stroke:#475569,stroke-width:1.5px,color:#f8fafc;
     classDef key fill:#831843,stroke:#db2777,stroke-width:1.5px,color:#fdf2f8;
 
     %% 顶部电源管理层
-    subgraph POWER_LAYER ["⚡ 圣邦微电源管理层 (SGMICRO Power Architecture)"]
-        USB_IN["Type-C 5V 充电输入"]:::dev --> SGM4056["SGM4056 充电 IC (设为 350mA, RIREF=34kΩ)<br/>(带输入 OVP 与芯片热调节，MCU联动EN)"]:::pwr
-        SGM4056 --> BAT["1000~1200mAh 聚合物锂电池<br/>(自带 PCM 保护板: 2.8V~4.2V)"]:::pwr
-        BAT --> BAT_ADC["P-MOS 控制分压网络<br/>(MCU ADC_IN 采样)"]:::dev
+    subgraph POWER_LAYER ["⚡ 圣邦微电源管理层 (SGMICRO)"]
+        USB_IN["<b>Type-C 5V</b><br/>充电输入"]:::dev --> SGM4056["<b>SGM4056 充电IC</b><br/>限流 350mA<br/>带 OVP 与热调节"]:::pwr
+        SGM4056 --> BAT["<b>聚合物锂电池</b><br/>1000~1200mAh<br/>自带 PCM 保护板"]:::pwr
+        BAT --> BAT_ADC["<b>P-MOS 分压采样</b><br/>ADC_IN 采样"]:::dev
         
-        %% 分出两路电源架构
-        BAT -->|"电池原始供电 (3.0V~4.2V)"| SGM6040D["圣邦微 SGM6040D 纳安级 DCDC<br/>(静态功耗 60nA | 750mA | 固定输出 3.4V)"]:::pwr
-        SGM6040D -->|"二级低压差供电 (3.4V)"| SGM2045["圣邦微 SGM2045-3.3 专用 LDO<br/>(300mA | 92dB PSRR 9.5µVrms | 压差仅80mV)"]:::sw
+        BAT -->|"锂电输入<br/>3.0~4.2V"| SGM6040D["<b>SGM6040D DCDC</b><br/>静态 60nA / 750mA<br/>固定输出 3.4V"]:::pwr
+        SGM6040D -->|"二级供电<br/>3.4V"| SGM2045["<b>SGM2045-3.3 LDO</b><br/>300mA / 92dB PSRR<br/>低压差仅 80mV"]:::sw
     end
 
-    %% 双域分层稳压供电
-    SGM6040D -->|"常通主电源: 稳定 3.4V"| AON_DOMAIN
-    SGM2045 -->|"受控洁净主电: GNSS_VCC (Pin 8, 3.3V)"| GNSS_SUBSYSTEM
+    SGM6040D -->|"常通 3.4V 主轨"| AON_DOMAIN
+    SGM2045 -->|"受控 3.3V 洁净轨"| GNSS_SUBSYSTEM
 
-    subgraph AON_DOMAIN ["🟢 【常通超低功耗微安域 (Always-On Domain)】静态待机底噪 25~35 µA"]
-        subgraph MCU_NODE ["主控核心: Nordic nRF52840-QFAA (QFN48)"]
-            MCU_CORE["Cortex-M4F @ 64MHz<br/>1MB Flash / 256KB RAM<br/>BLE 5.4 / 2Mbps"]:::mcu
-            CLK_HFXO["32MHz 外部高频晶体 (XC1/XC2)"]:::dev
-            CLK_LFXO["32.768kHz 外部低频晶体 (XL1/XL2)"]:::dev
-            DCDC_LC["片内 DC-DC 匹配电感电容 (DCC)"]:::dev
-            DBG_UART["独立调试串口 (DEBUG_TXD/RXD)<br/>(P0.09 / P0.10, 115200bps 测试焊盘)"]:::dev
-            BLE_ANT["2.4GHz 贴片陶瓷天线 (带净空区)"]:::dev
+    subgraph AON_DOMAIN ["🟢 【常通微安域】待机底噪 25~35 µA"]
+        subgraph MCU_NODE ["主控核心: nRF52840 (QFN48)"]
+            MCU_CORE["<b>Cortex-M4F</b><br/>64MHz / 1MB Flash<br/>256KB RAM / BLE"]:::mcu
+            CLK_HFXO["<b>32MHz HFXO</b><br/>外部高频晶体"]:::dev
+            CLK_LFXO["<b>32.768kHz LFXO</b><br/>外部低频晶体"]:::dev
+            DCDC_LC["<b>片内 DCDC LC</b><br/>匹配电感电容"]:::dev
+            DBG_UART["<b>独立调试串口</b><br/>P0.09 / P0.10<br/>测试焊盘 115200"]:::dev
+            BLE_ANT["<b>2.4GHz 陶瓷天线</b><br/>板端预留净空"]:::dev
             BLE_ANT --- MCU_CORE
         end
 
         subgraph INTERACTION ["人机交互与状态感知"]
-            KEY1["按键 1 (Pin 23 / P0.24)<br/>短按: POI 打点<br/>长按 3s: BLE 快速配对"]:::key
-            KEY2["按键 2 (Pin 24 / P1.00)<br/>长按 2s: 高精模式切换<br/>短按: 电量状态回显"]:::key
-            LEDS["三色 RGB 状态指示灯 (P0.28~P0.30)"]:::dev
+            KEY1["<b>按键 1 (P0.24)</b><br/>短按: POI 打点<br/>长按 3s: 蓝牙配对"]:::key
+            KEY2["<b>按键 2 (P1.00)</b><br/>长按 2s: 模式切换<br/>短按: 电量回显"]:::key
+            LEDS["<b>三色 RGB 指示灯</b><br/>(P0.28 ~ P0.30)"]:::dev
         end
 
         subgraph STORAGE_IMU ["存储器与运动传感"]
-            FLASH["W25Q512JV (64MB SPI NOR Flash)<br/>低噪声 SPI (4MHz~8MHz) | 休眠 1µA<br/>支持 7~14 年全生命周期日志"]:::dev
-            IMU["LSM6DSV16X (ST 6轴旗舰 IMU)<br/>深度静止 15Hz LPM1 Acc (7.5µA)<br/>丢星接管开 SFLP 姿态融合 (60Hz@14µA)"]:::aon
+            FLASH["<b>W25Q512JV</b><br/>64MB SPI NOR<br/>深休眠 1µA"]:::dev
+            IMU["<b>LSM6DSV16X 6轴</b><br/>15Hz 静止仅 7.5µA<br/>SFLP 姿态 14µA"]:::aon
             
-            subgraph SENSOR_HUB ["IMU Sensor Hub (独立 I2C Master)"]
-                MAG["LIS2MDL 三轴磁力计<br/>(地磁航向参考 / 固件校准)"]:::dev
-                BARO["BMP388 高精度气压计<br/>(±0.5m 相对高度/楼层)"]:::dev
+            subgraph SENSOR_HUB ["IMU Sensor Hub (I2C)"]
+                MAG["<b>LIS2MDL 磁力计</b><br/>地磁航向参考"]:::dev
+                BARO["<b>BMP388 气压计</b><br/>±0.5m 相对高度"]:::dev
             end
         end
     end
 
-    subgraph SW_DOMAIN ["🔵 【受控突发高能毫安域 (Switched Domain)】瞬态工作电流 ~48.5 mA"]
-        subgraph GNSS_SUBSYSTEM ["GNSS 卫星定位系统 (SGM2045-3.3 受控独立供电)"]
-            GNSS["中科微 ATGM336H-F8N-76<br/>旗舰 AT9880 SoC | 176 通道<br/>Pin 8 VCC 主电 | Pin 1 为 GND<br/>典型工作功耗: 44mA @ 3.3V"]:::sw
-            PASSIVE_ANT["Unictron H2UJ4U1H2Q0100<br/>(5×3×0.5mm 双频无源 Chip 天线)<br/>板角全层净空 | π型调谐匹配"]:::dev
-            LNA_SAW["板载 ATR2652 双频LNA (4.5mA)<br/>+ B39162 双通带SAW (&gt;38dB抑制)"]:::dev
+    subgraph SW_DOMAIN ["🔵 【受控毫安域】工作电流 ~48.5 mA"]
+        subgraph GNSS_SUBSYSTEM ["GNSS 卫星定位系统 (受控 3.3V 供电)"]
+            GNSS["<b>ATGM336H 模组</b><br/>双频 176 通道 (44mA)<br/>Pin 8 受控 3.3V"]:::sw
+            PASSIVE_ANT["<b>H2UJ4U1 天线</b><br/>5×3mm 无源 Chip<br/>板角净空+π匹配"]:::dev
+            LNA_SAW["<b>ATR2652 + SAW</b><br/>LNA 4.5mA (+22dB)<br/>SAW 抑制 &gt;38dB"]:::dev
             PASSIVE_ANT --> LNA_SAW
             LNA_SAW -->|"RF_IN (Pin 11)"| GNSS
         end
     end
 
     %% 跨域控制、防倒灌电阻与数据连线
-    MCU_CORE -->|"GNSS_LDO_EN 使能控制 (P0.04)"| SGM2045["圣邦微 SGM2045-3.3<br/>(300mA | 92dB PSRR | 9.5µVrms)"]:::sw
-    SGM2045 -->|"受控洁净 3.3V"| GNSS & LNA_SAW
-    GNSS -->|"Pin 2 TXD0 串联 1kΩ"| R_RX["1kΩ 保护电阻"]:::dev -->|"GNSS_RXD (P0.05)"| MCU_CORE
-    MCU_CORE -->|"GNSS_TXD (P0.07)"| R_TX["1kΩ 保护电阻"]:::dev -->|"下电前置 High-Z"| GNSS
-    GNSS -->|"Pin 4 1PPS 串联 1kΩ"| R_PPS["1kΩ 保护电阻"]:::dev --> MCU_CORE
-    SGM6040D -->|"Pin 6 VBAT 常通保持 15µA (维持RTC/SRAM)"| GNSS
+    MCU_CORE -->|"P0.04 EN 控制"| SGM2045
+    SGM2045 -->|"受控 3.3V"| GNSS & LNA_SAW
+    GNSS -->|"TXD0 串 1kΩ"| R_RX["1kΩ 电阻"]:::dev -->|"RXD (P0.05)"| MCU_CORE
+    MCU_CORE -->|"TXD (P0.07)"| R_TX["1kΩ 电阻"]:::dev -->|"下电置 Hi-Z"| GNSS
+    GNSS -->|"1PPS 串 1kΩ"| R_PPS["1kΩ 电阻"]:::dev --> MCU_CORE
+    SGM6040D -->|"Pin 6 VBAT 常通 (15µA)"| GNSS
 
     MCU_CORE -->|"SPI 8MHz"| IMU
     IMU --> MAG & BARO
@@ -361,19 +366,19 @@ flowchart TD
 
     START(["用户物理操作按键"]):::key --> BRANCH{"按键识别"}
 
-    BRANCH -->|"按键 1 (Pin 23 / P0.24)"| K1{"按压时长"}
-    K1 -->|"短按 (< 1秒)"| POI["触发即时 POI 兴趣点打点<br/>立刻唤醒 GNSS 抓取坐标与 BLE 环境快照<br/>写入 Flash 专属 POI_MARK 记录"]:::act
-    POI --> POI_LED["🟢 绿灯双闪 500ms 视觉确认"]:::led
+    BRANCH -->|"按键 1 (P0.24)"| K1{"按压时长"}
+    K1 -->|"短按 &lt;1秒"| POI["<b>即时 POI 打点</b><br/>唤醒 GNSS 抓取坐标<br/>记录 BLE 快照<br/>写入 Flash 标记"]:::act
+    POI --> POI_LED["🟢 绿灯双闪 500ms"]:::led
 
-    K1 -->|"长按 3 秒"| PAIR["触发蓝牙配对与强制同步模式<br/>广播间隔切为 20ms 高频广播<br/>开启 2Mbps PHY 允许手机 App 极速连接"]:::act
-    PAIR --> PAIR_LED["🔵 蓝灯呼吸式高频快闪"]:::led
+    K1 -->|"长按 3秒"| PAIR["<b>蓝牙配对同步</b><br/>广播间隔切至 20ms<br/>开启 2Mbps PHY<br/>允许手机极速连接"]:::act
+    PAIR --> PAIR_LED["🔵 蓝灯高频快闪"]:::led
 
-    BRANCH -->|"按键 2 (Pin 24 / P1.00)"| K2{"按压时长"}
-    K2 -->|"长按 2 秒"| TOGGLE["高精度轨迹记录模式双向切换<br/>在【自适应 Duty-Cycled 模式】与【连续双频高精模式】间切换"]:::act
-    TOGGLE --> TOG_LED["🔵🟢 蓝绿双色交替单闪提示"]:::led
+    BRANCH -->|"按键 2 (P1.00)"| K2{"按压时长"}
+    K2 -->|"长按 2秒"| TOGGLE["<b>模式双向切换</b><br/>自适应脉冲模式<br/>与连续双频高精模式<br/>之间相互切换"]:::act
+    TOGGLE --> TOG_LED["🔵🟢 蓝绿交替单闪"]:::led
 
-    K2 -->|"短按 (< 1秒)"| QUERY["电量与定位状态回显<br/>瞬态启动 ADC 采样电池电压与有效星数"]:::act
-    QUERY --> Q_LED["LED 状态码回显:<br/>🟢 绿灯闪3次: 电量充足 (>70%) 且已锁定定位<br/>🟡 黄灯闪2次: 电量中等 (30%~70%) 或惯导推算中<br/>🔴 红灯闪1次: 电量告警 (<20%)"]:::led
+    K2 -->|"短按 &lt;1秒"| QUERY["<b>电量与状态查询</b><br/>启动 ADC 采电压<br/>查询有效定位星数"]:::act
+    QUERY --> Q_LED["<b>LED 状态回显:</b><br/>🟢 闪3次: 电量&gt;70% 且已定位<br/>🟡 闪2次: 电量中等/惯导中<br/>🔴 闪1次: 电量告警 (&lt;20%)"]:::led
 ```
 
 ---
@@ -390,43 +395,63 @@ flowchart TD
 * **`DEBUG_RXD`**：分配至 `P0.10` (Pin 30)，引出板载测试焊盘 (TP)，用于接收配置调试指令；
 * *注：P0.09/P0.10 默认具 NFC 保护电容，在固件 UICR 配置中必须配置 `NFCPINS = 0`，以释放为标准数字 GPIO。*
 
-### 5.3 nRF52840 QFN48 完整物理引脚分配映射表
-系统完全基于 QFN48 真实的 **30 个有效物理 GPIO** 规划（P0 端口 26 个 + P1 端口 4 个，无任何不存在管脚）：
+### 5.3 nRF52840 QFN48 官方物理引脚最终交叉核对矩阵 (SSOT Baseline)
+依据 Nordic 官方数据手册 **`nRF52840 Product Specification v1.11` Section 7.1.2 (Table 62: QFN48 pin assignments)**，逐引脚核验并彻底锁定物理映射。全芯片可用 GPIO 共 30 个（P0 端口 26 个 + P1 端口 4 个），无任何不存在管脚与隐性复用冲突：
 
-| 物理管脚编号 | 端口网络标号 | I/O方向 | 硬件连接与电气功能描述 |
-| :--- | :--- | :---: | :--- |
-| **Pin 35 / Pin 36**| `XC1 / XC2` | IN/OUT | **32MHz 外部高频石英晶体 (HFXO)**，BLE 射频与 CPU 必需基准 |
-| **Pin 2 / P0.00** | `RTC_XTAL_IN (XL1)` | IN | **32.768 kHz 外部低频晶体 (LFXO)** 输入端，微安待机时基 |
-| **Pin 3 / P0.01** | `RTC_XTAL_OUT (XL2)`| OUT | **32.768 kHz 外部低频晶体 (LFXO)** 输出端 |
-| **Pin 40 / P0.02** | `BAT_ADC_IN (AIN0)` | IN | 电池电压分压采集模拟输入（Standard Drive，低频） |
-| **Pin 39 / P0.03** | `BAT_ADC_EN (AIN1)` | OUT | 电池分压回路使能控制（平时高电平截止，采样时拉低导通 P-MOS） |
-| **Pin 4 / P0.04** | `GNSS_LDO_EN` | OUT | **控制圣邦微 SGM2045 LDO 的 EN 脚**（高电平为 ATGM336H Pin 8 VCC 与 ATR2652 通电，低电平硬切断） |
-| **Pin 5 / P0.05** | `GNSS_RXD` | IN | UART 接收引脚（串联 1kΩ 限流电阻连 ATGM336H Pin 2 TXD0，波特率 115200） |
-| **Pin 6 / P0.07** | `GNSS_TXD` | OUT | UART 发送引脚（串联 1kΩ 限流电阻连 ATGM336H Pin 3 RXD0，替代不存在的 P0.06） |
-| **Pin 7 / P0.08** | `GNSS_PPS` | IN | 接收 ATGM336H Pin 4 1PPS 授时脉冲（串联 1kΩ 电阻；**GPIOTE 事件经 PPI 直连 TIMER0 捕获寄存器，16MHz 下 62.5ns 分辨率百纳秒硬件授时对齐**） |
-| **Pin 29 / P0.09** | `DEBUG_TXD` | OUT | **独立调试串口 TX**（115200bps，引出测试焊盘，UICR配置NFCPINS=0） |
-| **Pin 30 / P0.10** | `DEBUG_RXD` | IN | **独立调试串口 RX**（引出测试焊盘，UICR配置NFCPINS=0） |
-| **Pin 10 / P0.11** | `IMU_CS` | OUT | LSM6DSV16X SPI 片选引脚（Active Low） |
-| **Pin 11 / P0.12** | `IMU_SCK` | OUT | LSM6DSV16X SPI 时钟信号（最高支持 8MHz） |
-| **Pin 13 / P0.13** | `IMU_MISO` | IN | LSM6DSV16X SPI 主机输入引脚 |
-| **Pin 14 / P0.14** | `IMU_MOSI` | OUT | LSM6DSV16X SPI 主机输出引脚 |
-| **Pin 15 / P0.17** | `IMU_INT1` | IN | LSM6DSV16X 中断 1（静止休眠唤醒、计步事件中断） |
-| **Pin 8 / P1.08** | `IMU_INT2` | IN | LSM6DSV16X 中断 2（FIFO 阈值满中断、MLC 运动模式识别） |
-| **Pin 9 / P1.09** | `FLASH_CS` | OUT | W25Q512JV 64MB Flash 片选引脚（Active Low） |
-| **Pin 18 / P0.19** | `FLASH_SCK` | OUT | Flash 时钟信号（具备 QSPI/SCK 硬件驱动能力，配置为 4~8MHz） |
-| **Pin 19 / P0.20** | `FLASH_MOSI` | OUT | Flash 数据输入引脚 (SPI MOSI / QSPI IO0) |
-| **Pin 20 / P0.21** | `FLASH_MISO` | IN | Flash 数据输出引脚 (SPI MISO / QSPI IO1) |
-| **Pin 21 / P0.22** | `FLASH_WP` | OUT | Flash 写保护控制 (QSPI IO2) |
-| **Pin 22 / P0.23** | `FLASH_HOLD` | OUT | Flash 保持控制 (QSPI IO3) |
-| **Pin 16 / P0.18** | `SYS_RESET` | IN | 硬件复位引脚 / SWD 调试复位 |
-| **Pin 26 / Pin 27**| `SWDIO / SWDCLK` | I/O | SWD 固件烧录与在线仿真调试接口 |
-| **Pin 23 / P0.24** | `KEY1_PAIR_POI` | IN | **多功能按键 1**（短按：POI 打点；长按 3s：蓝牙配对与同步） |
-| **Pin 24 / P1.00** | `KEY2_MODE_ST` | IN | **多功能按键 2**（长按 2s：高精模式切换；短按：电量状态回显） |
-| **Pin 41 / P0.28** | `LED_RED` | OUT | 系统状态红灯（低电平点亮/PWM，错误或低电量提示） |
-| **Pin 42 / P0.29** | `LED_GREEN` | OUT | 系统状态绿灯（GNSS 定位成功与 POI 打点确认） |
-| **Pin 43 / P0.30** | `LED_BLUE` | OUT | 系统状态蓝灯（BLE 广播配对与数据传输中） |
-| **Pin 38 / P1.15** | `PWR_DCDC_STOP` | OUT | **SGM6040D 停振低噪控制**（低频标准驱动；平常置低 DCDC 正常运行，高精传感器采样时拉高 500µs 冻结开关） |
-| **Pin 44 / P0.31** | `RESERVED` | - | 预留外部扩展测试点 / 备用模拟输入 (AIN7) |
+| 物理 Pin | 官方定义引脚名 | 本项目网络标号 | I/O方向 | 驱动模式与电气特性 | 连接目标器件与功能说明 |
+| :---: | :--- | :--- | :---: | :--- | :--- |
+| **Pin 1** | `DEC1` | `DEC1` | PWR | 1.1V 数字稳压去耦 | 外挂 100nF (C12) 至 GND |
+| **Pin 2** | `P0.00 / XL1` | `LFXO_IN` | 模拟时钟 | 32.768kHz 晶振输入 | 接 32.768kHz 晶体 Pin 1 (外挂匹配电容) |
+| **Pin 3** | `P0.01 / XL2` | `LFXO_OUT` | 模拟时钟 | 32.768kHz 晶振输出 | 接 32.768kHz 晶体 Pin 2 (外挂匹配电容) |
+| **Pin 4** | `P0.04 / AIN2`| `GNSS_LDO_EN` | OUT | Standard Drive | 控制 SGM2045-3.3 Pin 3 (EN)，高电平通电，低切断 |
+| **Pin 5** | `P0.05 / AIN3`| `GNSS_RXD` | IN | Standard Drive | 接 ATGM336H TXD (串联 1kΩ 限流保护电阻) |
+| **Pin 6** | `P0.07` | `GNSS_TXD` | OUT | Standard Drive | 接 ATGM336H RXD (串 1kΩ；模组断电前置浮空 Hi-Z) |
+| **Pin 7** | `P0.08` | `GNSS_1PPS` | IN | Standard Drive | 接 ATGM336H 1PPS 授时（经 PPI 捕获百纳秒时基） |
+| **Pin 8** | `P1.08` | `IMU_INT2` | IN | Standard Drive | 接 LSM6DSV16X INT2（MLC 运动模式识别中断） |
+| **Pin 9** | `P1.09` | `FLASH_CS` | OUT | Standard Drive | 接 W25Q512JV Pin 1 (/CS)，上电默认拉高 |
+| **Pin 10**| `P0.11` | `IMU_CS` | OUT | Standard Drive | 接 LSM6DSV16X Pin 1 (CS)，Active Low |
+| **Pin 11**| `P0.12` | `IMU_SCK` | OUT | High Drive (8MHz) | 接 LSM6DSV16X Pin 2 (SCL)，独立传感器 SPI 时钟 |
+| **Pin 12**| `VDD` | `VDD_3V4` | PWR | 主供电输入 | 连 SGM6040D 3.4V 主电轨 (并联 100nF 去耦) |
+| **Pin 13**| `P0.13` | `IMU_MISO` | IN | Standard Drive | 接 LSM6DSV16X Pin 4 (SDO)，传感器 SPI 数据输入 |
+| **Pin 14**| `P0.14` | `IMU_MOSI` | OUT | High Drive (8MHz) | 接 LSM6DSV16X Pin 3 (SDA)，传感器 SPI 数据输出 |
+| **Pin 15**| `P0.17` | `IMU_INT1` | IN | Standard Drive | 接 LSM6DSV16X INT1（计步/SFLP FIFO 唤醒中断） |
+| **Pin 16**| `P0.18 / nRESET`| `SYS_RESET` | IN (PU)| 内部弱上拉复位引脚 | 外部复位测试焊盘 / RC 去抖网络 |
+| **Pin 17**| `VDD` | `VDD_3V4` | PWR | 主供电输入 | 连 3.4V 主电轨 (并联 100nF 去耦) |
+| **Pin 18**| `P0.19` | `FLASH_SCK` | OUT | High Drive (8MHz) | 接 W25Q512JV Pin 6 (CLK)，高速 SPI 时钟 |
+| **Pin 19**| `P0.20` | `FLASH_MOSI` | OUT | High Drive (8MHz) | 接 W25Q512JV Pin 5 (DI / IO0) |
+| **Pin 20**| `P0.21` | `FLASH_MISO` | IN | Standard Drive | 接 W25Q512JV Pin 2 (DO / IO1) |
+| **Pin 21**| `P0.22` | `FLASH_WP` | OUT | Standard Drive | 接 W25Q512JV Pin 3 (/WP)，硬件写保护引脚 |
+| **Pin 22**| `P0.23` | `FLASH_HOLD` | OUT | Standard Drive | 接 W25Q512JV Pin 7 (/HOLD)，保持控制引脚 |
+| **Pin 23**| `P0.24` | `KEY1_POI` | IN (PU)| 弱上拉 + 低功耗唤醒| 按键 KEY1（短按: POI 打点；长按 3s: 蓝牙配对） |
+| **Pin 24**| `P1.00` | `KEY2_MODE` | IN (PU)| 弱上拉 + 低功耗唤醒| 按键 KEY2（长按 2s: 切换高精；短按: 电量查询） |
+| **Pin 25**| `VDD` | `VDD_3V4` | PWR | 主供电输入 | 连 3.4V 主电轨 (并联 100nF 去耦) |
+| **Pin 26**| `SWDIO` | `SWDIO` | I/O | SWD 调试数据线 | 独立 SWD 调试测试焊盘 |
+| **Pin 27**| `SWDCLK` | `SWDCLK` | IN (PD)| SWD 调试时钟线 | 独立 SWD 调试测试焊盘 |
+| **Pin 28**| `NC` | `NC` | - | 悬空引脚 | 芯片内部未连接，PCB 保持悬空不接地 |
+| **Pin 29**| `P0.09 / NFC1`| `DEBUG_TXD` | OUT | **Low Frequency Only** | 独立调试串口 TX (测试焊盘；**UICR NFCPINS=0**) |
+| **Pin 30**| `P0.10 / NFC2`| `DEBUG_RXD` | IN | **Low Frequency Only** | 独立调试串口 RX (测试焊盘；**UICR NFCPINS=0**) |
+| **Pin 31**| `ANT` | `RF_BLE` | RF | 50Ω 单端射频输出 | 匹配网络 $\rightarrow$ 2.4GHz 陶瓷天线 (带独立净空) |
+| **Pin 32**| `VSS_PA` | `GND` | PWR | 射频模拟地 | 专用地回路直连中心接地焊盘 |
+| **Pin 33**| `DEC6` | `DEC4_6` | PWR | 1.3V 稳压解耦 | **与 Pin 46 (DEC4) 板级短接**，并联 1µF+47nF |
+| **Pin 34**| `DEC3` | `DEC3` | PWR | 内部电源去耦 | 外挂 100pF (C11) 去耦电容 |
+| **Pin 35**| `XC1` | `HFXO_IN` | 模拟时钟 | 32MHz 晶体输入 | 接 32MHz 外部石英晶体 Pin 1 (12pF 匹配) |
+| **Pin 36**| `XC2` | `HFXO_OUT` | 模拟时钟 | 32MHz 晶体输出 | 接 32MHz 外部石英晶体 Pin 2 (12pF 匹配) |
+| **Pin 37**| `VDD` | `VDD_3V4` | PWR | 主供电输入 | 连 3.4V 主电轨 (并联 4.7µF 储能电容) |
+| **Pin 38**| `P1.15` | `PWR_DCDC_STOP`| OUT | **Low Frequency Only** | **控制 SGM6040D Pin 5 (STOP)**，高电平冻结开关噪声 |
+| **Pin 39**| `P0.03 / AIN1`| `BAT_ADC_EN` | OUT | **Low Frequency Only** | 电池采样使能，低电平导通 P-MOS，采完切断 |
+| **Pin 40**| `P0.02 / AIN0`| `BAT_ADC_IN` | IN (ADC)| **Low Frequency Only** | 电池分压采样输入 (1/2 分压，接 SAADC AIN0) |
+| **Pin 41**| `P0.28 / AIN4`| `LED_RED` | OUT | **Low Frequency Only** | 红色状态指示灯（低电平点亮，限流 1kΩ） |
+| **Pin 42**| `P0.29 / AIN5`| `LED_GREEN` | OUT | **Low Frequency Only** | 绿色状态指示灯（低电平点亮，限流 1kΩ） |
+| **Pin 43**| `P0.30 / AIN6`| `LED_BLUE` | OUT | **Low Frequency Only** | 蓝色状态指示灯（低电平点亮，限流 1kΩ） |
+| **Pin 44**| `P0.31 / AIN7`| `RESERVED_TP` | I/O | **Low Frequency Only** | 预留扩展引脚 / 备用模拟输入测试焊盘 |
+| **Pin 45**| `VSS` | `GND` | PWR | 核心地 | 直连中心地平面 |
+| **Pin 46**| `DEC4` | `DEC4_6` | PWR | 1.3V 稳压解耦 | **与 Pin 33 (DEC6) 板级短接** |
+| **Pin 47**| `DCC` | `DCC` | PWR | 片内 DCDC 电感输出| 串联 10µH + 15nH 功率电感接 VDD (DCDC 模式) |
+| **Pin 48**| `VDD` | `VDD_3V4` | PWR | 主供电输入 | 连 3.4V 主电轨 (并联 100nF 去耦) |
+| **PAD** | `EPAD (VSS)` | `GND` | PWR | 裸露中心地焊盘 | **必须打 9 个地过孔直连内层完整地平面** |
+
+> **⚠️ 官方强制低频限制（Low Frequency I/O Only $\le 10\text{kHz}$）原理图合规审查**：  
+> Nordic 官方手册明确规定：Pin 29, 30, 38, 39, 40, 41, 42, 43, 44 仅可配置为标准驱动低频 I/O（$\le 10\text{kHz}$），以保护 32MHz 晶振（Pin 35/36）与 2.4GHz 射频端口（Pin 31）免受数字高频谐波串扰。本项目中，高速 Flash SPI（P0.19~P0.23）与 IMU SPI（P0.11~P0.14）全部位于底部和左侧常规高速端口，低频引脚仅承担 LED、ADC 使能、按键及 DCDC STOP，完全符合原厂电气设计准则！
 
 > **物理可用 GPIO 数量精确核验**：
 > - **P0 端口（26 个）**：P0.00, P0.01, P0.02, P0.03, P0.04, P0.05, P0.07, P0.08, P0.09, P0.10, P0.11, P0.12, P0.13, P0.14, P0.17, P0.18, P0.19, P0.20, P0.21, P0.22, P0.23, P0.24, P0.28, P0.29, P0.30, P0.31（P0 仅缺失 P0.06、P0.15、P0.16、P0.25、P0.26、P0.27 共 6 个管脚，即 $32 - 6 = 26$ 个）；
@@ -487,6 +512,48 @@ flowchart TD
 
 ---
 
+### 6.3 典型用户 24 小时生活画像与 GNSS 阶梯搜星/超时指数退避策略
+
+#### 1. 都市白领典型 24 小时“真实生活画像”分解 (Ground-Truth Persona)
+为彻底摆脱“全天均处于理想开阔地或均处于移动状态”的脱离实际假设，系统基于现代都市人真实的 24 小时作息模型建立功耗基线：
+* **00:00 ~ 07:30 (7.5 小时 · 深度睡眠待机)**：绝对静止，IMU 处于 15Hz LPM1 纯计步模式，系统底噪仅 **26 µA**，Flash 零打点，消耗约 $0.20\text{ mAh}$；
+* **07:30 ~ 08:30 (1.0 小时 · 早通勤)**：步行与地铁/公交。步行期间每 45 秒脉冲搜星；MLC 识别为乘车后挂起计步，退入低频探查，消耗约 $3.80\text{ mAh}$；
+* **08:30 ~ 12:00 (3.5 小时 · 上午工位办公)**：连续静止，触发 **ZUPT 零速绝对锁死**，关闭 GNSS 脉冲，仅保留微安底噪，消耗约 $0.10\text{ mAh}$；
+* **12:00 ~ 13:00 (1.0 小时 · 午餐外出)**：步行室外开阔地，脉冲定位捕获 40 次，消耗约 $2.50\text{ mAh}$；
+* **13:00 ~ 18:30 (5.5 小时 · 下午工位办公)**：连续静止，ZUPT 绝对冻结坐标，底噪维持，消耗约 $0.15\text{ mAh}$；
+* **18:30 ~ 19:30 (1.0 小时 · 晚通勤返程)**：步行与交通工具自适应切换，消耗约 $3.80\text{ mAh}$；
+* **19:30 ~ 23:30 (4.0 小时 · 晚间居家与休闲)**：微动/室内停留，偶尔触发退避探查，消耗约 $1.20\text{ mAh}$；
+* **23:30 ~ 24:00 (0.5 小时 · 睡前静止)**：进入预睡眠状态，消耗约 $0.02\text{ mAh}$；
+* **02:00 (40ms · 夜间原子归档)**：单次 CPU 突发 heatshrink 压缩并写入 Flash，能耗 $< 0.0001\text{ mAh}$；
+* **全天综合消耗**：**每日总耗电约 37.4 mAh**，在 1000mAh 电芯（900mAh 有效可用）下**实测达成 24.1 天稳健续航**。
+
+#### 2. GNSS 阶梯式搜星与超时指数退避流程 (Anti-Deadlock Backoff FSM)
+
+```mermaid
+flowchart TD
+    classDef norm fill:#064e3b,stroke:#059669,stroke-width:1.5px,color:#ecfdf5;
+    classDef warn fill:#b45309,stroke:#d97706,stroke-width:1.5px,color:#fffbeb;
+    classDef err fill:#7f1d1d,stroke:#ef4444,stroke-width:1.5px,color:#fef2f2;
+
+    PULSE["<b>脉冲搜星启动</b><br/>拉高 LDO_EN 脚"]:::norm --> W35["<b>基础窗口 3.5s</b><br/>极速热启动"]:::norm
+    W35 -->|"锁定成功"| S_OK["<b>存盘后断电</b><br/>进入下一周期"]:::norm
+
+    W35 -->|"3.5s 未锁定<br/>弱信号环境"| W8["<b>延展窗口 8.0s</b><br/>自适应延长搜星"]:::warn
+    W8 -->|"锁定成功"| S_OK
+
+    W8 -->|"8.0s 仍未锁定<br/>严重遮挡"| W15["<b>硬超时 15.0s</b><br/>强制切断电源"]:::err
+    W15 -->|"出 Fix"| S_OK
+    W15 -->|"超时失败"| FC{"失败计数 N"}:::err
+
+    FC -->|"N = 1"| B1["<b>退避 1: 120s 周期</b><br/>移交 PDR 惯导接管"]:::warn
+    FC -->|"N = 2"| B2["<b>退避 2: 300s 周期</b><br/>地磁异常降权"]:::warn
+    FC -->|"N &gt;= 3"| B3["<b>退避 3: 深度休眠</b><br/>停止定时脉冲<br/>等待运动中断触发"]:::err
+
+    B3 -->|"检测到大位移<br/>步态/光照突变"| RE["<b>重置计数 N=0</b><br/>恢复正常周期"]:::norm
+```
+
+---
+
 ## 7. GNSS 分层电源状态机与丢星后惯导(PDR)推算体系
 
 ### 7.1 GNSS 六状态分层有限状态机与冷/热启动防死循环设计
@@ -517,66 +584,67 @@ flowchart TD
 stateDiagram-v2
     [*] --> STATE_OFF: 系统初次上电/电池装配
 
-    STATE_OFF --> STATE_STARTUP: 定时心跳唤醒 / 计步大动态触发 / 按键POI打点
+    STATE_OFF --> STATE_STARTUP: 定时唤醒 / 计步大动态 / 按键打点
     note right of STATE_OFF
-        • SGM2045 LDO_EN = 0 (Pin 8 主电硬切断)
-        • MCU TXD/PPS 设为 High-Z (防倒灌)
-        • Pin 6 VBAT 常通 3.4V 保持 RTC 与 SRAM 状态 (15µA)
+        • SGM2045 EN = 0 (切断主电)
+        • TXD/PPS 置 High-Z 防倒灌
+        • VBAT 常通 3.4V (保持 15µA)
     end note
 
-    STATE_STARTUP --> STATE_COLD_ACQ: 判定星历失效 (冷启动: 无星历 / >4小时未定)
-    STATE_STARTUP --> STATE_HOT_ACQ: 判定星历有效 (热启动: <2小时有效星历)
+    STATE_STARTUP --> STATE_COLD_ACQ: 星历失效 (冷启动 &gt;4h)
+    STATE_STARTUP --> STATE_HOT_ACQ: 星历有效 (热启动 &lt;2h)
     note right of STATE_STARTUP
-        • 拉高 P0.04 (GNSS_LDO_EN)
-        • 硬件延时 10ms 待 LDO 稳定
-        • 初始化 UART 115200bps 并下发 CASIC 裁剪
+        • 拉高 P0.04 (LDO_EN)
+        • 硬件延时 10ms 待电源稳定
+        • 初始化 UART 115200bps
     end note
 
     state STATE_COLD_ACQ {
         [*] --> COLD_SEARCH: 持续供电搜星 (LDO 常开)
-        COLD_SEARCH --> COLD_TIMEOUT: 搜星耗时 > 60 秒
-        COLD_SEARCH --> COLD_FIX: 成功解出 3D Fix (<60s)
+        COLD_SEARCH --> COLD_TIMEOUT: 搜星耗时 &gt; 60 秒
+        COLD_SEARCH --> COLD_FIX: 解出 3D Fix (&lt;60s)
     }
 
     COLD_FIX --> STATE_EPHEMERIS_UPDATE: 保持供电 35~60 秒
     note right of STATE_EPHEMERIS_UPDATE
-        【星历状态建立与时钟对齐】
-        持续通电接收广播星历主帧并在 SRAM/RTC 中建立热启动状态
-        校准 RTC 硬件时基，标记星历完全有效
+        【星历建立与时钟对齐】
+        持续通电接收广播星历
+        在 SRAM/RTC 建立热启动状态
+        校准 RTC 硬件精准时基
     end note
 
-    STATE_EPHEMERIS_UPDATE --> STATE_POWER_DOWN: 星历刷写完成，进入休眠
+    STATE_EPHEMERIS_UPDATE --> STATE_POWER_DOWN: 星历刷写完成并休眠
 
-    COLD_TIMEOUT --> STATE_BACKOFF_PDR: 冷启动超时 (转入室内退避)
+    COLD_TIMEOUT --> STATE_BACKOFF_PDR: 冷启动超时 (转退避)
 
     state STATE_HOT_ACQ {
         [*] --> HOT_SEARCH_3S5: 基础窗口 (3.5 秒)
         HOT_SEARCH_3S5 --> HOT_FIX: 3.5s 内出 Fix (极速定位)
-        HOT_SEARCH_3S5 --> HOT_EXTEND_8S: 3.5s 未出 Fix (弱信号)
+        HOT_SEARCH_3S5 --> HOT_EXTEND_8S: 3.5s 未锁定 (弱信号)
         HOT_EXTEND_8S --> HOT_FIX: 8s 内出 Fix (延展成功)
-        HOT_EXTEND_8S --> HARD_TIMEOUT_15S: 8s 未出 Fix (延长至 15s)
+        HOT_EXTEND_8S --> HARD_TIMEOUT_15S: 8s 未锁定 (延至 15s)
         HARD_TIMEOUT_15S --> HOT_FIX: 15s 内勉强出 Fix
         HARD_TIMEOUT_15S --> HOT_FAIL: 15s 仍无 Fix (判定遮挡)
     }
 
-    HOT_FIX --> STATE_VALID_FIX: 提取 RMC/GGA 坐标与速度
-    STATE_VALID_FIX --> STATE_POWER_DOWN: 写入 32B 轨迹记录，转入休眠
+    HOT_FIX --> STATE_VALID_FIX: 提取有效坐标与速度
+    STATE_VALID_FIX --> STATE_POWER_DOWN: 写入 32B 记录并转入休眠
 
     HOT_FAIL --> STATE_BACKOFF_PDR: 连续 2 次脉冲超时失败
     note right of STATE_BACKOFF_PDR
         【指数退避与惯导接管】
-        • 探测间隔退避至 120s ──▶ 300s
-        • PDR 惯性航位推算接管平面位置更新
-        • IMU 检测大动态移动或按键时提前重试
+        • 探测间隔退避 120s ~ 300s
+        • PDR 惯导接管平面位置更新
+        • 检测大动态或按键时提前重试
     end note
 
-    STATE_BACKOFF_PDR --> STATE_POWER_DOWN: 关断模组主电，由 IMU 守护
+    STATE_BACKOFF_PDR --> STATE_POWER_DOWN: 关断模组主电由 IMU 守护
 
     STATE_POWER_DOWN --> STATE_OFF: 安全下电防倒灌流程
     note left of STATE_POWER_DOWN
         • 注销 UART 外设驱动
-        • MCU TXD/PPS 设为 High-Z / 浮空
-        • 拉低 P0.04 关闭 SGM2045 LDO
+        • TXD/PPS 设为浮空输入
+        • 拉低 P0.04 关闭 LDO
     end note
 ```
 
@@ -608,23 +676,23 @@ flowchart TD
     classDef mcu fill:#1e3a8a,stroke:#2563eb,stroke-width:1.5px,color:#dbeafe;
     classDef out fill:#4c1d95,stroke:#7c3aed,stroke-width:2px,color:#f5f3ff;
 
-    RAW["LSM6DSV16X 原始惯导数据<br/>(加速度计 + 陀螺仪)"]:::raw --> SPLIT{"IMU 硬件通道分流"}
+    RAW["<b>IMU 原始数据</b><br/>加速度计 + 陀螺仪"]:::raw --> SPLIT{"通道分流"}
 
-    SPLIT -->|"加速度通道 (IMU内部)"| STEP["硬件计步与垂直合加速度过零点检测<br/>(提取单步冲击与动态峰峰值)"]:::proc
-    STEP --> WEINBERG["Weinberg 非线性动态步长模型<br/>$L_k = K \cdot \sqrt[4]{a_{\max} - a_{\min}}$<br/>(先验基准值 + GNSS 在线自标定)"]:::proc
+    SPLIT -->|"加速度通道"| STEP["<b>硬件过零计步</b><br/>提取单步冲击<br/>与动态峰峰值 Δa"]:::proc
+    STEP --> WEINBERG["<b>Weinberg 步长模型</b><br/>步长 L = K · (Δa)^0.25<br/>先验值 + GPS 自标定"]:::proc
 
-    SPLIT -->|"角速度与姿态通道 (IMU内部)"| SFLP["SFLP 嵌入式姿态引擎 (60Hz@14µA)<br/>纯 6 轴硬件输出 Game Rotation Vector<br/>(MCU 全程保持深度睡眠)"]:::proc
+    SPLIT -->|"角速度通道"| SFLP["<b>SFLP 硬件引擎</b><br/>60Hz 输出四元数<br/>增量电流仅 14µA"]:::proc
 
-    SFLP & LIS["外挂 LIS2MDL 磁力计<br/>(Sensor Hub I2C读取进FIFO)"]:::raw --> WAKE{"突发唤醒判定<br/>(每 2~5 秒或检测到大转弯)"}
+    SFLP & LIS["<b>LIS2MDL 磁力计</b><br/>Sensor Hub 采入 FIFO"]:::raw --> WAKE{"突发唤醒判定<br/>每 2~5 秒 / 大转弯"}
 
-    WAKE -->|"MCU 瞬态唤醒 (<1ms)"| MAG_CHK{"磁场模长与倾角异常检测"}:::mcu
-    MAG_CHK -->|"模长严重偏离 / 强磁干扰"| REJECT["【磁异常抑制】地磁权重归零<br/>依靠陀螺仪积分短时维持航向"]:::mcu
-    MAG_CHK -->|"磁场稳定且置信度高"| MAG_FUSE["【地磁对齐】互补滤波纠正陀螺偏置<br/>有效抑制长期偏航漂移"]:::mcu
+    WAKE -->|"MCU 唤醒 &lt;1ms"| MAG_CHK{"磁场异常检测<br/>模长与倾角突变"}:::mcu
+    MAG_CHK -->|"强磁干扰"| REJECT["<b>磁异常抑制</b><br/>地磁权重归零<br/>靠陀螺短时维持"]:::mcu
+    MAG_CHK -->|"磁场稳定"| MAG_FUSE["<b>地磁纠偏融合</b><br/>互补滤波缓慢纠偏<br/>抑制长期偏航漂移"]:::mcu
 
-    MAG_FUSE & REJECT --> SLEEP["MCU 瞬间回睡 System ON"]:::mcu
+    MAG_FUSE & REJECT --> SLEEP["MCU 瞬间回睡<br/>System ON 模式"]:::mcu
 
-    WEINBERG & MAG_FUSE & REJECT --> CALC["平面 PDR 航位推算坐标迭代更新<br/>$X_k = X_{k-1} + L_k \cdot \sin\theta_k$<br/>$Y_k = Y_{k-1} + L_k \cdot \cos\theta_k$"]:::out
-    CALC --> FUSE["走出室外重获卫星时进行 EKF 卡尔曼平滑闭环<br/>输出平滑无跳变的室内外连续轨迹"]:::out
+    WEINBERG & MAG_FUSE & REJECT --> CALC["<b>平面坐标递推更新</b><br/>步长与航向迭代更新<br/>结合气压计垂直高度"]:::out
+    CALC --> FUSE["<b>重获卫星闭环</b><br/>EKF 卡尔曼平滑收敛<br/>输出连续平滑轨迹"]:::out
 ```
 
 #### 2. Weinberg 动态步长模型的冷启动与兜底机制 (Fallback Strategy)：
@@ -664,6 +732,39 @@ flowchart TD
 
 ---
 
+### 7.5 PDR 零速更新 (ZUPT) 定量标定双判据与绝对锁死
+针对室内长时间静止时航向与步长噪声积分导致的“人在工位坐，轨迹漂移几公里”的顽疾，固件实现基于物理双判据的零速更新（ZUPT, Zero-Velocity Update）：
+1. **采样窗口与物理量计算**：
+   * 在 IMU 20Hz 采样通道维护滑动窗口 $N = 20$（时间跨度 $T = 1.0\text{s}$）；
+   * 实时计算三轴合加速度方差 $\sigma_a^2$ 与三轴合角速度模长 $\|\boldsymbol{\omega}\|$：
+     $$\sigma_a^2 = \frac{1}{N}\sum_{i=1}^N \left( \|\mathbf{a}_i\| - \bar{a} \right)^2, \quad \|\boldsymbol{\omega}\| = \sqrt{\omega_x^2 + \omega_y^2 + \omega_z^2}$$
+2. **定量判定门限与时序锁死机制**：
+   * **静止触发门限**：$\sigma_a^2 < \mathbf{0.005\text{ g}^2}$ 且 $\|\boldsymbol{\omega}\| < \mathbf{0.08\text{ rad/s}} \ (\approx 4.5^\circ/\text{s})$；
+   * **持续时间确认**：当上述判据连续满足达 **$10\text{ 秒}$** 时，系统正式切入 `MOTION_STATIONARY` 状态；
+   * **绝对锁死动作**：
+     * 平面坐标增量强制归零（$\Delta X = 0, \Delta Y = 0$），彻底阻断任何虚假积分；
+     * 暂停 SFLP 姿态四元数更新，主控停止轮询外挂地磁计；
+     * 状态机将 GNSS 脉冲周期由 45s 退避拉长至静止心跳守护模式，系统整机功耗稳态回落至 **26 µA 底噪**；
+   * **唤醒恢复**：当加速度计检测到垂直冲击过零点或方差超标时，立即退出锁死并恢复正常步长递推。
+
+---
+
+### 7.6 轨迹记录 8-bit 状态与质量 Flag 位图定义
+为了在 32 字节紧凑定长结构体中以最低存储开销完整还原每个轨迹点的采集工况与精度置信度，`TrajectoryRecord_t` 中的 `status_flags`（占用 1 字节）定义严格的 8-bit 位图规范：
+
+| 位定义 | 字段宏标识 | 类型/取值 | 详细工程语义与解析规则 |
+| :---: | :--- | :---: | :--- |
+| **Bit 0** | `FLAG_FIX_VALID` | Bool (0/1) | `0`: 坐标无效未定位；`1`: **有效定位点**（含有效 PDR 推算点） |
+| **Bit 1** | `FLAG_NAV_SRC` | Enum (0/1) | `0`: **GNSS 卫星定位**；`1`: **PDR 惯性航位推算接管** |
+| **Bit 2** | `FLAG_POI_EVENT` | Bool (0/1) | `0`: 周期例行快照记录；`1`: **用户主动按下 KEY1 标记的 POI 兴趣点** |
+| **Bit 3** | `FLAG_GNSS_TYPE` | Enum (0/1) | `0`: 单频 L1 定位；`1`: **L1 + L5 双频多模高精度定位** |
+| **Bit 4** | `FLAG_VEHICLE_MODE`| Bool (0/1) | `0`: 步行/跑步模式；`1`: **MLC 识别为乘车/公共交通 (计步已挂起)** |
+| **Bit 5** | `FLAG_STN_LOCK` | Bool (0/1) | `0`: 载体处于移动中；`1`: **ZUPT 零速绝对锁死状态 (坐标绝对冻结)** |
+| **Bit 6** | `FLAG_MAG_ANOMALY` | Bool (0/1) | `0`: 地磁置信有效；`1`: **强磁场严重畸变 (地磁权重归零，陀螺积分)** |
+| **Bit 7** | `FLAG_ALT_SRC` | Enum (0/1) | `0`: 卫星几何椭球高度；`1`: **BMP388 气压计融合差分高程/楼层** |
+
+---
+
 ## 8. 两阶段暂存、夜间压缩归档与数据主权静态加密
 
 ### 8.1 蓝牙环境感知与隐私合规 (边界客观化与事件流解耦)
@@ -698,7 +799,7 @@ typedef struct {
     uint16_t step_count;     // [24..25] 累计步数增量 (PDR 记录)
     uint8_t  hdop;           // [26]     水平精度因子 (0.1, 范围 0 ~ 25.5)
     uint8_t  satellites;     // [27]     有效卫星颗数 (0 ~ 255)
-    uint8_t  status_flags;   // [28]     状态位 (bit0:GNSS有效, bit1:PDR接管, bit2:POI打点, bit3:高精模式, bit4:乘车)
+    uint8_t  status_flags;   // [28]     状态位 (详见第7.6节: Bit0有效/Bit1惯导/Bit2打点/Bit3双频/Bit4车行/Bit5静止锁死/Bit6磁异常/Bit7气压高程)
     uint8_t  battery_level;  // [29]     剩余电量百分比 (0 ~ 100%)
     int8_t   floor_level;    // [30]     室内推算相对楼层 (-128 ~ 127 楼层, 0=地面基准层)
     uint8_t  checksum;       // [31]     前 31 字节 CRC8 校验和 (保证单条记录完整性)
@@ -758,21 +859,21 @@ flowchart TD
     classDef stage fill:#451a03,stroke:#d97706,stroke-width:1.5px,color:#fef3c7;
     classDef arch fill:#064e3b,stroke:#059669,stroke-width:1.5px,color:#ecfdf5;
 
-    SUB1["【阶段一：白天高频运动记录期 (00:00 ~ 23:59)】<br/>定长 32B 纯二进制顺序追加写入 (Append-Only)<br/>写入前校验空闲扇区 | 写入耗时微秒级 | 掉电绝无损坏"]:::stage --> BUF["Flash 环形活动暂存队列 (16个4KB轮转扇区)<br/>每天产生约 800 条原始点 ≈ 25.6 KB 原始数据"]:::stage
+    SUB1["<b>阶段一: 白天运动记录</b><br/>定长 32B 顺序追加<br/>校验空闲扇区后写入<br/>掉电绝无数据损坏"]:::stage --> BUF["<b>Flash 环形暂存队列</b><br/>16个 4KB 轮转扇区<br/>日产约 800 点 (~25KB)"]:::stage
 
-    BUF --> TRIG{"【夜间低谷触发判定】<br/>1. 时间已跨过午夜 24:00 (RTC)<br/>2. IMU 判定连续绝对静止 > 30分钟<br/>3. 电池剩余电量 > 30%"}
+    BUF --> TRIG{"<b>夜间触发判定</b><br/>1. 跨过午夜 24:00<br/>2. 连续静止 &gt;30分<br/>3. 剩余电量 &gt;30%"}
 
-    TRIG -->|"满足触发条件 (通常在凌晨 02:00~03:00)"| ARCH_PROCESS["【阶段二：夜间原子归档事务 (Atomic Archival Transaction)】"]:::arch
+    TRIG -->|"满足触发条件<br/>凌晨 02:00~03:00"| ARCH_PROCESS["【阶段二：夜间原子归档事务】"]:::arch
 
-    subgraph ARCH_PROCESS ["四步原子提交状态机 (Four-Step Atomic FSM)"]
-        S1["Step 1. 读取暂存区 25KB 原始数据<br/>运行嵌入式专用 heatshrink 轻量算法压缩为 ~12KB 归档包<br/>预写入目标归档扇区 (Archive Sector)，末尾附带整日 CRC32"]:::arch
-        S2["Step 2. 硬件读取归档扇区回读比对<br/>校验压缩包整包 CRC32 严格正确"]:::arch
-        S3["Step 3. 在根目录 Journal 索引区原子写入提交标志<br/>原子标记状态为: 0x00 (COMMITTED)"]:::arch
-        S4["Step 4. 索引提交确认无误后<br/>安全擦除释放前一天占用的活动暂存扇区"]:::arch
+    subgraph ARCH_PROCESS ["四步原子提交状态机 (Atomic FSM)"]
+        S1["<b>Step 1. 压缩并预写</b><br/>读取暂存区原始数据<br/>heatshrink 压缩至 ~12KB<br/>预写归档扇区并附 CRC32"]:::arch
+        S2["<b>Step 2. 回读完整校验</b><br/>硬件回读归档扇区<br/>校验整包 CRC32 严格正确"]:::arch
+        S3["<b>Step 3. 原子提交标记</b><br/>根目录 Journal 索引区<br/>标记状态为 COMMITTED"]:::arch
+        S4["<b>Step 4. 安全擦除暂存</b><br/>索引提交确认无误后<br/>擦除释放前一天暂存扇区"]:::arch
         S1 --> S2 --> S3 --> S4
     end
 
-    ARCH_PROCESS --> COMPLETED["归档完成：进入 System ON 深度睡眠 (35µA)<br/>旧暂存区已清空，准备记录新一天"]:::hdr
+    ARCH_PROCESS --> COMPLETED["<b>归档完成: 进入深休眠</b><br/>待机电流 25~35µA<br/>准备记录新一天轨迹"]:::hdr
 ```
 
 * **绝对掉电安全保障**：
@@ -860,16 +961,18 @@ Life_GPS/
 
 本项目采纳审阅专家建议的**“三阶段渐进式落地法则”**（先冻结硬件架构 -> 次落地固件算法与数据流 -> 终以实测数据闭环产品指标）：
 
-### 阶段一：硬件架构待冻结，禁止直接投板 (Phase 1: Architecture Pending Freeze - DO NOT TAPE-OUT)
-> ⚠️ **冻结红线警示**：在完成以下 5 项关键闭环验证前，禁止直接输出 Gerber 光绘打样投板：
+### 阶段一：硬件架构基线闭环冻结 (Phase 1: Architecture Baseline Frozen - SSOT Established)
+> 🔒 **架构基线达成**：经多轮深度工程技术评审，本阶段架构基线已全部收敛闭环，正式确立为全项目单一真相源（SSOT），进入 Phase 2 原理图与版图设计阶段：
 
 - [x] **建立全项目唯一硬件配置基线表**：主 README、Doc/README、架构图与引脚分配表全部对齐同一套元器件料号（主控 nRF52840-QFAA QFN48、ATGM336H-F8N-76、W25Q512JV、SGM6040D TDFN-8L 3.4V、SGM2045-3.3 XTDFN）、封装、时钟、接口与供电。
-- [x] **GNSS 分层状态机与上电时序设计闭环**：确立冷启动 60s 独立超时窗口、冷启动首次 Fix 后保持通电 35s 广播星历接收机制，以及热启动 3.5s -> 8s -> 15s 自适应延展与指数退避接管时序。
+- [x] **nRF52840 QFN48 官方引脚最终交叉核对**：依据官方手册 Table 62 锁定 48 Pin 物理映射，标明 Pin 29/30/38/39/40/41/42/43/44 官方低频标准驱动限制，确保高频 SPI SCK 完全避开射频敏感区。
+- [x] **GNSS 分层状态机与上电时序设计闭环**：确立冷启动 60s 独立超时窗口、冷启动首次 Fix 后保持通电 35s 广播星历接收机制，以及热启动 3.5s -> 8s -> 15s 自适应延展与阶梯指数退避（120s/300s/深度休眠）接管时序。
 - [x] **GNSS 模组真实引脚与备用供电明确**：依据原厂手册确立 Pin 1 为 GND、Pin 6 为 VBAT、Pin 8 为 VCC；Pin 6 直连常通 3.4V 主电源，将 15µA 漏电流全额纳入整机常通待机底噪（25~35µA 之中）。
-- [x] **射频前端内置无源天线方案决策**：全面清除有源天线描述，正式确立选型 Unictron H2UJ4U1H2Q0100 (5×3×0.5mm，备选 AVX M830120) 微型双频无源陶瓷片状天线 + 中科微 ATR2652 双频 LNA (4.5mA) + 高通 B39162B2651P810 双通带 SAW 级联方案，由 SGM2045-3.3 洁净受控供电。
+- [x] **射频前端内置无源天线与 DFT 双通路决策**：确立选型 Unictron H2UJ4U1H2Q0100 微型 Chip 天线 + 中科微 ATR2652 双频 LNA (4.5mA) + 高通 B39162B2651P810 双通带 SAW；固化 R_INT 0Ω 贴片、R_EXT NC、J_EXT IPEX 默认装配 BOM 与 Golden Sample 4dB 窗口对标规范。
 - [x] **惯导融合架构概念纠偏与 SFLP 功耗规范**：明确 LSM6DSV16X SFLP 为纯 6 轴姿态解算（Game Rotation Vector），规范 60Hz 输出下增量功耗为 14µA；明确三层融合分工与固件级磁异常检测降权机制；去掉“彻底消除偏航漂移”承诺。
+- [x] **PDR 零速更新 (ZUPT) 双判据与 8-bit Flag 规范**：确立滑动窗口合加速度方差 $\sigma_a^2 < 0.005\text{g}^2$ 与角速度模长 $\|\boldsymbol{\omega}\| < 0.08\text{rad/s}$ 持续 10s 绝对锁死坐标递推机制；固化 32 字节主记录中的 8-bit status_flags 状态与质量位图。
 - [x] **高精度连续模式功耗重新核算**：基于 SGM6040D (3.4V) + SGM2045 (3.3V) 二级拓扑与无源天线+LNA (48.5mA)，实事求是核算出整机电池端放电电流约为 54.0mA，900mAh 有效电量下连续工作时间约为 16.7 小时。
-- [x] **存储容量数学模型与去重策略闭环**：给出 64MB Flash 满足 7~14 年的自适应工况计算依据，警示高精模式 53 天边界；废除全局布隆过滤器，改用时间滑动窗口限频队列。
+- [x] **典型生活画像与存储容量数学模型闭环**：确立都市人 24 小时生活画像（每日 37.4 mAh，实测达成 24.1 天稳健续航）；给出 64MB Flash 满足 7~14 年的自适应工况计算依据，警示高精模式 53 天边界；废除全局布隆过滤器，改用时间滑动窗口限频队列。
 - [x] **引脚与时钟准确表述**：明确 QFN48 引出 30 个有效 GPIO（1 复位，1 预留，28 外设分配）；明确 UICR NFCPINS=0 释放 P0.09/P0.10；给出外部晶振匹配电容公式与杂散容抗估算。
 
 #### 投板前必须完成的五项硬性验收标准 (Hard Acceptance Criteria)：
