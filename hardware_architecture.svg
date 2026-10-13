@@ -165,12 +165,12 @@
   <text x="680" y="518" fill="#fde047" font-size="10">VBAT 常通 (15µA): SRAM与RTC星历长效保存</text>
   <text x="680" y="536" fill="#fde047" font-size="10">热启动首捕 TTFF &lt; 1s (开机即锁星定位)</text>
 
-  <!-- RF Front-End LNA + SAW -->
+  <!-- RF Front-End Active Antenna -->
   <rect x="650" y="580" width="370" height="100" rx="8" fill="#1e293b" stroke="#e2e8f0" stroke-width="1"/>
-  <text x="835" y="604" text-anchor="middle" fill="#f8fafc" font-size="13" font-weight="700">微型陶瓷贴片天线与射频匹配前端</text>
-  <text x="835" y="624" text-anchor="middle" fill="#cbd5e1" font-size="10">外置 MAX2659 LNA 低噪放 (增益 20.5dB, NF 0.8dB)</text>
-  <text x="835" y="642" text-anchor="middle" fill="#94a3b8" font-size="10">双频窄带 SAW 滤波器 (压制 BLE 2.4GHz 强射频互调干扰)</text>
-  <text x="835" y="660" text-anchor="middle" fill="#38bdf8" font-size="10">50Ω 阻抗控制共面波导走线 ──▶ 15x15mm 无源陶瓷天线</text>
+  <text x="835" y="604" text-anchor="middle" fill="#f8fafc" font-size="13" font-weight="700">微型双频有源陶瓷天线前端架构</text>
+  <text x="835" y="624" text-anchor="middle" fill="#cbd5e1" font-size="10">双频 (L1+L5) 有源陶瓷贴片天线 (集成前置双频LNA+SAW)</text>
+  <text x="835" y="642" text-anchor="middle" fill="#94a3b8" font-size="10">Pin 14 VCC_RF (3.3V) 受控偏置供电 (带ESD与短路保护)</text>
+  <text x="835" y="660" text-anchor="middle" fill="#38bdf8" font-size="10">50Ω 共面波导阻抗控制直连 ──▶ 模组 Pin 11 RF_IN</text>
 
   <!-- Control & Data Links between domains -->
   <!-- Power Enable line -->
