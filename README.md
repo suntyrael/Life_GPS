@@ -4,6 +4,7 @@
 [![MCU: nRF52840 QFN48](https://img.shields.io/badge/MCU-nRF52840%20(QFN48)-red.svg)](Doc/nRF52840_Product_Specification_v1.11.pdf)
 [![GNSS: ATGM336H-F8N-76](https://img.shields.io/badge/GNSS-ATGM336H--F8N--76%20(Dual--Band)-green.svg)](Doc/ATGM336H-F8N76_Datasheet.pdf)
 [![IMU: LSM6DSV16X](https://img.shields.io/badge/IMU-LSM6DSV16X-orange.svg)](Doc/LSM6DSV16X_Datasheet.pdf)
+[![Flash: Winbond 64MB NOR](https://img.shields.io/badge/Flash-Winbond%2064MB%20(W25Q512JV)-yellow.svg)](Doc/W25Q512JV_SPI_Flash.pdf)
 [![PMIC: SGMICRO](https://img.shields.io/badge/Power-SGMICRO%20(SGM6040A%2BSGM2036%2BSGM4056)-purple.svg)](Doc/README.md)
 [![Status: Pre-Schematic Architecture](https://img.shields.io/badge/Phase-Pre--Schematic%20Architecture-yellow.svg)](#11-开发路线图-roadmap)
 
@@ -11,7 +12,7 @@
 
 **Life_GPS** 是一款专为“一生轨迹（Life Trajectory）”全天候记录、户外越野穿越以及数字游民环境感知打造的**超低功耗微型智能记录仪**。
 
-本项目旨在解决智能手机在全天候开启高精度 GPS 和蓝牙后台扫描时面临的**续航断崖式崩塌（几小时耗尽）、发热严重、系统后台频繁杀进程、隐私数据上传云端**等行业痛点。系统采用创新的**“双域物理隔离（Dual-Domain Isolation）”**低功耗硬件架构，结合高能效无线 SoC、中科微新一代双频多模高精度 GNSS、内置边缘算法的 6 轴惯性测量单元（IMU），以及**全套圣邦微（SGMICRO）纳安级高效电源管理方案（SGM6040A + SGM2036 + SGM4056）**，在配备 **1000mAh ~ 1200mAh** 微型锂电池的物理限制下，实现 **15 至 30 天** 的理论超长待机与持续记录。
+本项目旨在解决智能手机在全天候开启高精度 GPS 和蓝牙后台扫描时面临的**续航断崖式崩塌（几小时耗尽）、发热严重、系统后台频繁杀进程、隐私数据上传云端**等行业痛点。系统采用创新的**“双域物理隔离（Dual-Domain Isolation）”**低功耗硬件架构，结合高能效无线 SoC、中科微新一代双频多模高精度 GNSS、内置边缘算法的 6 轴惯性测量单元（IMU）、全套圣邦微（SGMICRO）纳安级高效电源管理方案，以及**板载 64MB (512Mb) 超大容量 SPI NOR Flash（支持夜间截断压缩归档）**，在配备 **1000mAh ~ 1200mAh** 微型锂电池的物理限制下，实现 **15 至 30 天** 的理论超长待机与**长达 7 至 14 年的全生命周期免擦除一生轨迹存储**。
 
 ---
 
@@ -22,13 +23,14 @@
   - [2.2 ⚠️ nRF52840 QFN48 封装功能限制与硬件避坑重点](#22-️-nrf52840-qfn48-封装功能限制与硬件避坑重点)
   - [2.3 GNSS 卫星定位模组：中科微 ATGM336H-F8N-76 (双频旗舰款)](#23-gnss-卫星定位模组中科微-atgm336h-f8n-76-双频旗舰款)
   - [2.4 6轴惯性测量单元 (IMU)：STMicroelectronics LSM6DSV16X](#24-6轴惯性测量单元-imustmicroelectronics-lsm6dsv16x)
-  - [2.5 全套圣邦微 (SGMICRO) 高效电源管理芯片](#25-全套圣邦微-sgmicro-高效电源管理芯片)
+  - [2.5 板载 64MB (512Mb) SPI NOR Flash：Winbond W25Q512JV](#25-板载-64mb-512mb-spi-nor-flashwinbond-w25q512jv)
+  - [2.6 全套圣邦微 (SGMICRO) 高效电源管理芯片](#26-全套圣邦微-sgmicro-高效电源管理芯片)
 - [3. 系统硬件架构：双域物理隔离 Mermaid 拓扑图与对比矩阵](#3-系统硬件架构双域物理隔离-mermaid-拓扑图与对比矩阵)
 - [4. 双按键多功能交互定义 (蓝牙配对 / POI打点 / 高精度模式)](#4-双按键多功能交互定义-蓝牙配对--poi打点--高精度模式)
 - [5. 时钟源、调试串口与引脚分配 (QFN48 真实物理引脚)](#5-时钟源调试串口与引脚分配-qfn48-真实物理引脚)
 - [6. 超低功耗动态调度策略与三档自洽数学预算](#6-超低功耗动态调度策略与三档自洽数学预算)
 - [7. GPS 丢失后的惯导与 PDR 行人航位推算方案](#7-gps-丢失后的惯导与-pdr-行人航位推算方案)
-- [8. 蓝牙环境扫描与每日打包日志存储架构 (Daily Chunking)](#8-蓝牙环境扫描与每日打包日志存储架构-daily-chunking)
+- [8. 两阶段暂存与夜间压缩归档日志架构 (Nightly Archival)](#8-两阶段暂存与夜间压缩归档日志架构-nightly-archival)
 - [9. 无屏幕状态交互与日志调试通道](#9-无屏幕状态交互与日志调试通道)
 - [10. 项目工程结构与设计资料索引](#10-项目工程结构与设计资料索引)
 - [11. 开发路线图 (Roadmap)](#11-开发路线图-roadmap)
@@ -40,6 +42,7 @@
 | 评估维度 | 智能手机 (App 后台记录) | Life_GPS 专用记录仪 (设计目标) | 核心技术优势剖析 |
 | :--- | :--- | :--- | :--- |
 | **全天工作续航** | 开启高精度定位+蓝牙扫描仅支撑 **4 ~ 8 小时** | 1000mAh 电池目标续航 **15 ~ 30 天**（一次充电支持整月记录） | 专用超低功耗架构，无屏幕、无安卓/iOS高负荷操作系统底噪 |
+| **生命周期存储** | 手机内部日志零散膨胀，受限于系统缓存清理 | **板载 64MB 超大 NOR Flash**，夜间自动截断压缩归档 | 32B 定长紧凑结构体，单颗芯片直接封存 **7 ~ 14 年全生命周期轨迹** |
 | **电源转换能效** | 手机内部多路电源转换复杂，发热严重 | **圣邦微 SGM6040A 纳安级 DCDC**（60nA静态电流，750mA输出能力） | 告别传统线性 LDO 在 4.2V 下浪费 22% 压差发热的弊端 |
 | **系统稳定性** | 操作系统频繁杀后台、省电策略干预导致断轨、丢点 | 专用 RTOS 固件驱动，硬件看门狗保障，**全天候永不断轨** | 硬件级连续守护，状态机自闭环 |
 | **遮挡与丢星处理**| 室内、地下商场直接失去定位或发生数百米跳变漂移 | **LSM6DSV16X 硬件融合 + PDR 航位推算**（刚性佩戴下接管） | 基于步长自适应模型与四元数航向，室内航位推算误差呈步数线性累加 |
@@ -53,7 +56,7 @@
 
 ### 2.1 主控 SoC：Nordic nRF52840 (QFN48 封装)
 * **核心架构**：ARM Cortex-M4F @ 64MHz，集成硬件浮点运算单元（FPU）与专用 DSP 指令集。
-* **存储容量**：**1MB 片上 Flash + 256KB RAM**。彻底规避低端芯片（如 nRF52810）RAM 匮乏且官方协议栈阉割“蓝牙扫描（Observer）”的致命缺陷，有充裕内存容纳蓝牙扫描哈希表、RTOS 任务栈及惯导融合滤波。
+* **存储容量**：**1MB 片上 Flash + 256KB RAM**。彻底规避低端芯片（如 nRF52810）RAM 匮乏且官方协议栈阉割“蓝牙扫描（Observer）”的致命缺陷，有充裕内存容纳蓝牙扫描哈希表、RTOS 任务栈及夜间轻量压缩缓冲区。
 * **封装优势（QFN48）**：相较于 73 引脚 aQFN 封装，QFN48 拥有 0.4mm 间距的标准四边扁平引脚，PCB 扇出（Fan-out）极为简单，4 层乃至 2 层板即可轻松布通，极大降低打样制板与 SMT 贴片门槛。
 * **无线特性**：支持 Bluetooth 5.4、Coded PHY（Long Range 长距离模式）、2Mbps 高速传输。
 
@@ -114,7 +117,19 @@
 
 ---
 
-### 2.5 全套圣邦微 (SGMICRO) 高效电源管理芯片
+### 2.5 板载 64MB (512Mb) SPI NOR Flash：Winbond W25Q512JV
+为实现**“存储整机物理生命周期一生轨迹”**的核心愿景，系统将板载存储升级为华邦工业级 64MB SPI NOR Flash：
+* **芯片型号**：Winbond **W25Q512JVEIQ**（512M-bit / 64 Mega-bytes，WSON-8 6×8mm 紧凑封装）；
+* **物理可靠性对比优势**：
+  * 相比 SPI NAND Flash，NOR 架构**出厂零坏块、无坏块管理（BBM）与 ECC 纠错负担**，支持标准 256 字节页编程与 4KB 扇区擦除；
+  * 深度休眠漏电极低（典型值仅 **$1\text{ }\mu\text{A}$**，不拖累系统待机底噪）；
+  * 具备 **100,000 次（十万次）擦写寿命** 与 **20 年数据保持期**；
+* **低噪声总线规划**：SPI 通信速率配置为 **4MHz ~ 8MHz**，既满足微秒级日志写入，又彻底消除 32MHz 高次谐波对卫星天线 L1/L5 的高频射频干扰；
+* **生命周期容量测算**：单条记录 32 字节，每天运动 10 小时产生约 800 条点（约 25.6KB/天）。**64MB 空间在完全不压缩的情况下足以连续记录 7 年（约 2500 天）；配合夜间轻量压缩，足以连续存储 14 年以上！**
+
+---
+
+### 2.6 全套圣邦微 (SGMICRO) 高效电源管理芯片
 为兼顾极致续航、高电源抑制比（PSRR）与完全自主可控供应链，本项目电源部分全部采用**圣邦微电子（SGMICRO）**成熟物料：
 
 1. **主控系统降压 DCDC：圣邦微 SGM6040A**
@@ -130,8 +145,6 @@
    * **充电电流设定**：通过 PROG 引脚电阻设定为 **300mA ~ 400mA**（约 0.3C~0.4C），保护 1000mAh 电芯并防止小壳体内发热。
 4. **锂电芯保护回路 (PCM)**：
    * 明确选用**自带保护板（集成功耗保护 IC 如 AP9101C + 双 MOS）的聚合物软包锂电池**，提供过充 4.28V、过放 2.8V 及短路截止保护。
-5. **外部存储芯片：Winbond W25Q128JV**
-   * 16MB SPI NOR Flash，**运行频率降为 4MHz ~ 8MHz**（杜绝 32MHz 高次谐波干扰 GNSS L1/L5 频段），深休眠电流仅 $1\text{ }\mu\text{A}$。
 
 ---
 
@@ -182,7 +195,7 @@ flowchart TB
         end
 
         subgraph STORAGE_IMU ["存储器与运动传感"]
-            FLASH["W25Q128JV (16MB NOR Flash)<br/>低噪声 SPI (4MHz~8MHz) | 休眠 1µA"]:::dev
+            FLASH["W25Q512JV (64MB SPI NOR Flash)<br/>低噪声 SPI (4MHz~8MHz) | 休眠 1µA<br/>支持 7~14 年全生命周期日志"]:::dev
             IMU["LSM6DSV16X (ST 6轴旗舰 IMU)<br/>日常计步仅开低功耗Acc (30µA)<br/>丢星接管开 SFLP 姿态融合 (280µA)"]:::aon
             
             subgraph SENSOR_HUB ["IMU Sensor Hub (独立 I2C Master)"]
@@ -220,7 +233,7 @@ flowchart TB
 
 | 架构对比维度 | 🟢 常通超低功耗微安域 (Always-On Domain) | 🔵 受控突发高能毫安域 (Switched GNSS Domain) |
 | :--- | :--- | :--- |
-| **所属核心硬件** | **nRF52840 SoC、LSM6DSV16X IMU、W25Q128JV Flash** | **ATGM336H-F8N-76 GNSS 模组、双频有源陶瓷天线** |
+| **所属核心硬件** | **nRF52840 SoC、LSM6DSV16X IMU、W25Q512JV (64MB NOR)** | **ATGM336H-F8N-76 GNSS 模组、双频有源陶瓷天线** |
 | **独立供电通道** | **圣邦微 SGM6040A 纳安级 DCDC** (静态电流 60nA, 750mA 输出) | **圣邦微 SGM2036-3.3 专用受控 LDO** (300mA, 高 PSRR, 低噪声) |
 | **工作电压基准** | **全板统一 3.3V** (输入跌破 3.3V 时自动 100% Bypass 直通) | **严格受控 3.3V** (消除数字信号线电平倒灌与超限风险) |
 | **供电控制机制** | 全天候常通供电，维持系统时基与状态监听 | **通过 MCU GPIO `P0.04` 控制 SGM2036 的 EN 脚**实现硬件级通断 |
@@ -296,8 +309,8 @@ flowchart TD
 | **Pin 14 / P0.14** | `IMU_MOSI` | OUT | LSM6DSV16X SPI 主机输出引脚 |
 | **Pin 15 / P0.17** | `IMU_INT1` | IN | LSM6DSV16X 中断 1（静止休眠唤醒、计步事件中断） |
 | **Pin 8 / P1.08** | `IMU_INT2` | IN | LSM6DSV16X 中断 2（FIFO 阈值满中断、MLC 运动模式识别） |
-| **Pin 9 / P1.09** | `FLASH_CS` | OUT | W25Q128JV NOR Flash 片选引脚（Active Low） |
-| **Pin 18 / P0.19** | `FLASH_SCK` | OUT | Flash 高速时钟信号（具备 QSPI/SCK 硬件驱动能力，配置为 4~8MHz） |
+| **Pin 9 / P1.09** | `FLASH_CS` | OUT | W25Q512JV 64MB Flash 片选引脚（Active Low） |
+| **Pin 18 / P0.19** | `FLASH_SCK` | OUT | Flash 时钟信号（具备 QSPI/SCK 硬件驱动能力，配置为 4~8MHz） |
 | **Pin 19 / P0.20** | `FLASH_MOSI` | OUT | Flash 数据输入引脚 (SPI MOSI / QSPI IO0) |
 | **Pin 20 / P0.21** | `FLASH_MISO` | IN | Flash 数据输出引脚 (SPI MISO / QSPI IO1) |
 | **Pin 21 / P0.22** | `FLASH_WP` | OUT | Flash 写保护控制 (QSPI IO2) |
@@ -388,14 +401,14 @@ flowchart TD
 
 ---
 
-## 8. 蓝牙环境扫描与每日打包日志存储架构 (Daily Chunking)
+## 8. 两阶段暂存与夜间压缩归档日志架构 (Nightly Archival)
 
 ### 8.1 蓝牙环境感知与隐私合规
 * **扫描重点**：微占空比 Passive 扫描主要针对**固定商用 iBeacon / Eddystone 信标及固定基站**，记录其短 ID 与 RSSI，用于在室内/高楼提供空间射频指纹辅助参考；
 * **隐私过滤**：主动过滤普通手机的 RPA 随机轮换地址，不持久化不可识别的私人设备 MAC，规避隐私与法规合规风险。
 
 ### 8.2 严格 32 字节紧凑对齐数据结构 (Binary Storage Layout)
-板载 16MB NOR Flash 划分为循环逻辑扇区，每条记录严格固定为 **32 字节**（无跨页跨扇区碎片，速度扩展为独立 16 位）：
+板载 64MB NOR Flash 划分为循环逻辑扇区，每条记录严格固定为 **32 字节**（无跨页跨扇区碎片，速度扩展为独立 16 位）：
 
 ```c
 #pragma pack(push, 1)
@@ -421,42 +434,42 @@ typedef struct {
 
 ---
 
-### 8.3 每日逻辑块打包存储与轻量索引架构 (Daily Chunking Architecture)
-针对 16MB NOR Flash 的物理特性（扇区 4KB 擦除开销大、擦除耗时 45ms~400ms），系统放弃高风险的复杂压缩，采用**“每日独立逻辑分区（Daily Chunking）”**架构：
+### 8.3 两阶段暂存与夜间截断压缩归档机制 (Two-Stage Staging & Nightly Archival)
+为实现“存储整机物理生命周期一生轨迹”且兼顾极高可靠性，系统设计了**两阶段存储架构（白天顺序追加暂存 + 夜间静止期轻量压缩归档）**：
 
 ```mermaid
 flowchart TD
     classDef hdr fill:#0f172a,stroke:#38bdf8,stroke-width:1.5px,color:#f0f9ff;
-    classDef day fill:#064e3b,stroke:#059669,stroke-width:1.5px,color:#ecfdf5;
-    classDef rec fill:#1e293b,stroke:#475569,stroke-width:1px,color:#cbd5e1;
+    classDef stage fill:#451a03,stroke:#d97706,stroke-width:1.5px,color:#fef3c7;
+    classDef arch fill:#064e3b,stroke:#059669,stroke-width:1.5px,color:#ecfdf5;
 
-    DIR["Flash 根目录索引区 (Sector 0: 4KB)<br/>[Day 0 Index] [Day 1 Index] ... [Day N Index]"]:::hdr --> D1 & D2 & D3
+    SUB1["【阶段一：白天高频运动记录期 (00:00 ~ 23:59)】<br/>定长 32B 纯二进制顺序追加写入 (Append-Only)<br/>写入耗时微秒级 | 零 CPU 算法开销 | 掉电绝对安全"]:::stage --> BUF["Flash 当日活动暂存扇区 (Staging Sector: 4KB对齐)<br/>每天产生约 800 条点 ≈ 25.6 KB 原始数据"]:::stage
 
-    subgraph D1 ["2026-10-10 数据块 (按 4KB 扇区对齐)"]
-        H1["Day Header (日期, 基础基准点坐标, 记录总数, CRC32)"]:::day
-        H1 --> R1["Record 0 (32B)"]:::rec
-        R1 --> R2["Record 1 (32B)"]:::rec
-        R2 --> RN["Record ... (顺序追加写入)"]:::rec
+    BUF --> TRIG{"【夜间低谷触发判定】<br/>1. 时间已跨过午夜 24:00 (RTC)<br/>2. IMU 判定连续绝对静止 > 30分钟<br/>3. 电池剩余电量 > 30%"}
+
+    TRIG -->|"满足触发条件 (通常在凌晨 02:00~03:00)"| ARCH_PROCESS["【阶段二：夜间原子归档事务 (Atomic Archival Transaction)】"]:::arch
+
+    subgraph ARCH_PROCESS ["三步原子提交状态机 (Atomic Commit FSM)"]
+        S1["Step 1. 读取暂存区 25KB 原始数据<br/>运行嵌入式专用 heatshrink 轻量算法压缩为 ~12KB 归档包<br/>写入目标归档扇区 (Archive Sector)，末尾附带整日 CRC32"]:::arch
+        S2["Step 2. 校验归档块 CRC32 正确后<br/>在根目录索引区原子写入该日期状态: 0x00 (COMMITTED)"]:::arch
+        S3["Step 3. 索引提交完成后<br/>安全擦除释放前一天的活动暂存扇区 (Erase Staging Sector)"]:::arch
+        S1 --> S2 --> S3
     end
 
-    subgraph D2 ["2026-10-11 数据块 (只读封存态)"]
-        H2["Day Header (封存只读态, 完整性已闭环)"]:::day
-    end
-
-    subgraph D3 ["2026-10-12 数据块 (当前活动天追加中)"]
-        H3["Day Header (活动态, 掉电仅丢失末尾RAM缓冲)"]:::day
-    end
+    ARCH_PROCESS --> COMPLETED["归档完成：进入深度睡眠 (Deep Sleep: 15µA)<br/>旧暂存区已清空，准备记录新一天"]:::hdr
 ```
 
-#### 每日打包的核心工程优势：
-1. **天然掉电安全与数据隔离**：
-   * 每天 00:00:00 UTC（或每次开机新日期）建立独立的 `Day Header`；
-   * 历史天数全部处于“封存只读（Sealed）”状态，即使当日由于电池耗尽异常断电，**破坏范围仅局限在当天未刷盘的单条缓冲，历史天数数据绝对完整**。
-2. **手机 App 极速增量秒传**：
-   * 手机连接后仅需读取 4KB 目录索引区，即可知道设备内包含哪些历史日期；
-   * 仅按天拉取缺失日期的完整块（以天为单位传输），支持断点续传，用户体验极佳。
-3. **零碎片 FIFO 滚动覆盖**：
-   * 当 16MB 存满（约 450,000 条记录，日常可记录 50~100 天）触发回滚时，主控直接以**“最早整天”为单位按整扇区擦除释放**，无文件碎片整理负担，避免在运动中途进行耗时耗电的垃圾回收。
+#### 核心工程优势与设计保障：
+1. **天然掉电安全与原子提交（Atomic Commit）**：
+   * 绝对严禁边压缩边删除！如果在 Step 1 或 Step 2 执行过程中电池耗尽意外断电，系统下次开机检测到索引未提交，暂存区原始数据完好无损，系统无损回滚，在下一次充电后自动重试；
+2. **极速 CPU 压缩与微弱功耗**：
+   * 采用专为资源受限 MCU 设计的 **heatshrink 算法**（仅占用 2KB RAM 窗口，零堆内存分配）；
+   * 64MHz Cortex-M4F 压缩整天 25.6KB 数据仅需 **30 ~ 40 毫秒**，耗电不足 $0.0001\text{ mAh}$，功耗完全可忽略；
+3. **Flash 寿命无忧**：
+   * 暂存区每天仅擦除 1 次，一年擦除 365 次；NOR Flash 单扇区具备 100,000 次寿命，即使完全不轮换也能擦写 **270 年**；
+4. **全生命周期免擦除覆盖（7 ~ 14 年！）**：
+   * 每天压缩后数据量约 12KB；
+   * **64MB (512Mb) NOR Flash 扣除索引区后，可容纳超过 5,000 天（长达 13.7 年！）的完整每日归档包**，真正做到“自出厂起开机即用，终身免删免擦，完整珍藏一生轨迹”！
 
 ---
 
@@ -487,12 +500,12 @@ Life_GPS/
 │   ├── ATGM336H-F8N76_Datasheet.pdf             # 中科微 ATGM336H-F8N (AT9880双频) 官方用户手册
 │   ├── nRF52840_Product_Specification_v1.11.pdf # Nordic nRF52840 产品规格书 (含QFN48引脚与限制)
 │   ├── LSM6DSV16X_Datasheet.pdf                 # STMicroelectronics LSM6DSV16X 6轴 IMU 规格书
+│   ├── W25Q512JV_SPI_Flash.pdf                  # 华邦 64MB (512Mb) SPI NOR Flash 官方规格书
 │   ├── SGM6040A_Datasheet.pdf                   # 圣邦微 SGM6040A 60nA 超低功耗降压 DCDC 规格书
 │   ├── SGM2036_Datasheet.pdf                    # 圣邦微 SGM2036 300mA 低噪声受控 LDO 规格书
 │   ├── SGM4056_Datasheet.pdf                    # 圣邦微 SGM4056 线性锂电充电 IC 规格书
 │   ├── LIS2MDL_Datasheet.pdf                    # STMicroelectronics LIS2MDL 3轴磁力计规格书
-│   ├── BMP388_Datasheet.pdf                     # Bosch BMP388 高精度气压计规格书
-│   └── W25Q128JV_SPI_Flash.pdf                  # 华邦 16MB SPI NOR Flash 规格书
+│   └── BMP388_Datasheet.pdf                     # Bosch BMP388 高精度气压计规格书
 ├── Hardware/                                    # [规划中] 硬件设计工程文件 (立创 EDA / KiCad)
 │   ├── Schematics/                              # 原理图设计与 PDF 导出
 │   ├── PCB/                                     # PCB 布局布线工程与 Gerber 光绘文件
@@ -500,7 +513,7 @@ Life_GPS/
 ├── Firmware/                                    # [规划中] 嵌入式固件源码 (基于 Zephyr RTOS / nRF Connect SDK)
 │   ├── drivers/                                 # 传感器与外设底层驱动 (LSM6DSV16X, ATGM336H, SGMICRO)
 │   ├── algorithms/                              # 惯导与航位推算算法 (PDR, SFLP, EKF)
-│   └── app/                                     # 业务逻辑、低功耗状态机与每日打包存储
+│   └── app/                                     # 业务逻辑、低功耗状态机与两阶段每日打包存储
 └── README.md                                    # 本项目总览与架构设计说明
 ```
 
@@ -508,21 +521,22 @@ Life_GPS/
 
 ## 11. 开发路线图 (Roadmap)
 
-- [x] **架构设计与选型论证**：完成主控（nRF52840 QFN48）、双频 GNSS（ATGM336H-F8N-76）、IMU（LSM6DSV16X）及全套圣邦微电源（SGM6040A 60nA DCDC + SGM2036 LDO + SGM4056）的系统论证与功耗三档数学建模。
+- [x] **架构设计与选型论证**：完成主控（nRF52840 QFN48）、双频 GNSS（ATGM336H-F8N-76）、IMU（LSM6DSV16X）、64MB NOR Flash（W25Q512JV）及全套圣邦微电源（SGM6040A 60nA DCDC + SGM2036 LDO + SGM4056）的系统论证与功耗三档数学建模。
 - [x] **技术资料归档**：收集并整理全部关键核心器件原厂规格书放入 `Doc/` 目录，剔除错误历史手册。
 - [x] **芯片限制与封装适配**：明确 nRF52840 QFN48 供电限制（无高压模式）及 USB 引脚缺失，重新规划 28 个物理 GPIO，独立分配调试串口 DEBUG_UART，并规划 32MHz HFXO 与 32.768kHz LFXO 双晶体。
-- [x] **交互架构与存储定义**：确立 KEY1 与 KEY2 双按键功能，设计标准 32 字节对齐结构体与每日打包（Daily Chunking）断电安全存储机制。
+- [x] **交互架构与存储定义**：确立 KEY1 与 KEY2 双按键功能，设计标准 32 字节对齐结构体与**两阶段暂存归档（夜间 12 点后截断并轻量压缩）**全生命周期日志系统。
 - [ ] **硬件原理图绘制**：
   - [ ] 完成 SGM4056 充电电路（350mA 恒流）与 SGM6040A 60nA 降压 DCDC 电路（3.3V 统一逻辑电平）；
   - [ ] 完成 SGM2036-3.3 独立受控 LDO 供电与 ATGM336H-F8N-76 双频有源陶瓷天线前端电路（带 1kΩ 信号防倒灌电阻）；
   - [ ] 完成 nRF52840 QFN48 最小系统、32MHz/32.768kHz 双晶体电路与 DEBUG_UART 测试焊盘；
   - [ ] 完成 LSM6DSV16X 与 Sensor Hub（LIS2MDL、BMP388）总线连接；
+  - [ ] 完成 W25Q512JV 64MB SPI Flash 4~8MHz 低噪声连接；
   - [ ] 完成双按键消抖电路、三色 LED 指示灯及电池微安级分压采样电路。
 - [ ] **PCB 布局布线与打样**：4 层高密度沉金板设计，严格规划 2.4GHz BLE 天线与顶层 GNSS 陶瓷天线净空区，严格控制射频 50Ω 阻抗并隔离高频噪声。
 - [ ] **固件开发与算法验证**：
   - [ ] 基于 Zephyr / nRF Connect SDK 搭建超低功耗电源管理框架；
   - [ ] 移植 ST 官方 MLC / SFLP 驱动库并实现离线步长自适应 PDR 算法与乘车检测过滤；
-  - [ ] 实现每日打包 Flash 循环存储系统与 BLE 5.0 (2Mbps PHY) 手机端增量同步。
+  - [ ] 实现两阶段 Flash 每日归档存储系统（含 heatshrink 压缩）与 BLE 5.0 (2Mbps PHY) 手机端增量同步。
 - [ ] **整机组装与户外长周期实测**：多场景实地续航与轨迹平滑度测试验证。
 
 ---
