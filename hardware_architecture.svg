@@ -39,12 +39,12 @@
   </defs>
 
   <!-- Title & Subtitle -->
-  <text x="540" y="38" text-anchor="middle" fill="#f8fafc" font-size="21" font-weight="700" letter-spacing="1">Life_GPS 系统硬件双域架构与互联拓扑图 (基线 v1.1)</text>
-  <text x="540" y="60" text-anchor="middle" fill="#94a3b8" font-size="12">常通超低功耗域 (Always-On Domain &lt; 15µA) 与 受控突发高能域 (Switched GNSS Domain ~48mA) 物理隔离对比设计 [架构待冻结]</text>
+  <text x="540" y="38" text-anchor="middle" fill="#f8fafc" font-size="21" font-weight="700" letter-spacing="1">Life_GPS 系统硬件双域架构与互联拓扑图 (基线 v1.3)</text>
+  <text x="540" y="60" text-anchor="middle" fill="#94a3b8" font-size="12">常通超低功耗域 (Always-On Domain 25~35µA, 典型26µA) 与 受控突发高能域 (Switched GNSS Domain ~48.5mA) 物理隔离对比设计 [架构待冻结]</text>
 
   <!-- 1. Top Power Management Section -->
   <rect x="40" y="78" width="1000" height="98" rx="10" fill="url(#pwrGrad)" stroke="#f59e0b" stroke-width="1.5" filter="url(#cardShadow)"/>
-  <text x="60" y="100" fill="#f59e0b" font-size="13" font-weight="700">⚡ 圣邦微电源管理层 (SGMICRO Power Architecture: 3.3V 统一逻辑电平)</text>
+  <text x="60" y="100" fill="#f59e0b" font-size="13" font-weight="700">⚡ 圣邦微电源管理层 (SGMICRO Power Architecture: 3.4V 常通主电 + 3.3V 洁净射频电)</text>
   
   <!-- USB-C Block -->
   <rect x="60" y="112" width="140" height="50" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1"/>
@@ -56,8 +56,8 @@
   <!-- SGM4056 Block -->
   <rect x="235" y="112" width="170" height="50" rx="6" fill="#1e293b" stroke="#f59e0b" stroke-width="1.2"/>
   <text x="320" y="131" text-anchor="middle" fill="#fef08a" font-size="11" font-weight="700">SGM4056 充电芯片</text>
-  <text x="320" y="146" text-anchor="middle" fill="#cbd5e1" font-size="9">350mA恒流控温 | OVP保护</text>
-  <text x="320" y="157" text-anchor="middle" fill="#94a3b8" font-size="8">JEITA NTC 温度监测保护</text>
+  <text x="320" y="146" text-anchor="middle" fill="#cbd5e1" font-size="9">350mA恒流(RIREF=34kΩ) | OVP</text>
+  <text x="320" y="157" text-anchor="middle" fill="#94a3b8" font-size="8">内部115℃热调节 | MCU联动NTC</text>
   
   <line x1="405" y1="137" x2="435" y2="137" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
 
@@ -86,7 +86,7 @@
   <!-- nRF52840 MCU Main Card -->
   <rect x="60" y="235" width="520" height="210" rx="8" fill="url(#mcuGrad)" stroke="#a855f7" stroke-width="1.5"/>
   <text x="80" y="258" fill="#f3e8ff" font-size="15" font-weight="700">主控芯片: Nordic nRF52840-QFAA (QFN48 封装, 6×6mm)</text>
-  <text x="80" y="275" fill="#d8b4fe" font-size="10">Normal 供电模式 (VDD 3.4V) | 30个物理有效 GPIO (28外设+1复位+1预留) | 无原生USB</text>
+  <text x="80" y="275" fill="#d8b4fe" font-size="10">Normal 供电模式 (VDD 3.4V) | 30个物理有效 GPIO (含P1.15控STOP) | 无原生USB</text>
 
   <!-- MCU Sub blocks -->
   <rect x="80" y="288" width="145" height="42" rx="4" fill="#1e1b4b" stroke="#6366f1" stroke-width="1"/>
@@ -144,7 +144,7 @@
 
   <rect x="330" y="615" width="235" height="60" rx="4" fill="#1e293b" stroke="#334155" stroke-width="1"/>
   <text x="447" y="633" text-anchor="middle" fill="#e2e8f0" font-size="10.5" font-weight="600">BMP388 高精度气压计</text>
-  <text x="447" y="648" text-anchor="middle" fill="#94a3b8" font-size="9">相对高度精度 ±0.08hPa (约 ±0.5m)</text>
+  <text x="447" y="648" text-anchor="middle" fill="#94a3b8" font-size="9">相对高度精度 typ. ±8Pa (约 ±0.66m)</text>
   <text x="447" y="662" text-anchor="middle" fill="#38bdf8" font-size="8.5">固件卡尔曼滤波实现室内楼层与爬坡识别</text>
 
 
@@ -184,12 +184,12 @@
 
   <!-- RF Front-End Architecture -->
   <rect x="650" y="570" width="370" height="120" rx="8" fill="#1e293b" stroke="#e2e8f0" stroke-width="1"/>
-  <text x="835" y="592" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="700">双频 L1+L5 射频前端架构 (内置无源陶瓷天线方案)</text>
-  <text x="835" y="610" text-anchor="middle" fill="#34d399" font-size="9.5" font-weight="600">【天线】内置微型双频无源陶瓷贴片天线 (高净空布设)</text>
+  <text x="835" y="592" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="700">双频 L1+L5 射频前端 (无源 Chip 天线 + LNA/SAW)</text>
+  <text x="835" y="610" text-anchor="middle" fill="#34d399" font-size="9.5" font-weight="600">【天线】Unictron H2UJ4U1H2Q0100 (5×3×0.5mm, 备选AVX M830120)</text>
   <text x="835" y="625" text-anchor="middle" fill="#cbd5e1" font-size="8.5">前置双频 LNA: 中科微 ATR2652 (增益 22dB, NF 0.75dB, 4.5mA)</text>
-  <text x="835" y="642" text-anchor="middle" fill="#38bdf8" font-size="9.5" font-weight="600">前置双通带 SAW: 高通 B39162B2651P810 (单进单出双通带)</text>
-  <text x="835" y="657" text-anchor="middle" fill="#cbd5e1" font-size="8.5">2.4GHz BLE 抑制 &gt; 38dB | 50Ω 共面波导连入模组 Pin 11 RF_IN</text>
-  <text x="835" y="675" text-anchor="middle" fill="#fbbf24" font-size="8.5">链路: 无源天线 ──▶ ATR2652 ──▶ B39162 SAW ──▶ ATGM336H RF_IN</text>
+  <text x="835" y="642" text-anchor="middle" fill="#38bdf8" font-size="9.5" font-weight="600">前置双通带 SAW: 高通 B39162B2651P810 (2.4GHz BLE 抑制 &gt; 38dB)</text>
+  <text x="835" y="657" text-anchor="middle" fill="#cbd5e1" font-size="8.5">前置净增益 ~20dB (切入模组 15~30dB 窗口) | 板角独立全层净空</text>
+  <text x="835" y="675" text-anchor="middle" fill="#fbbf24" font-size="8.5">链路: Chip天线 ──▶ π型匹配 ──▶ ATR2652 ──▶ B39162 SAW ──▶ RF_IN</text>
 
   <!-- Control & Data Links between domains with 1k Resistors -->
   <!-- Power Enable line -->
