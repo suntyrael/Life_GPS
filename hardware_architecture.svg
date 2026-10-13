@@ -69,11 +69,11 @@
   
   <line x1="625" y1="137" x2="680" y2="137" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrowAmber)"/>
 
-  <!-- SGM6040A DCDC Block -->
+  <!-- SGM6040D DCDC Block -->
   <rect x="680" y="112" width="340" height="50" rx="6" fill="#1e293b" stroke="#10b981" stroke-width="1.5"/>
-  <text x="850" y="130" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">SGM6040A 纳安级降压 DCDC (TDFN-8L, Iq = 60nA)</text>
-  <text x="850" y="145" text-anchor="middle" fill="#e2e8f0" font-size="10">系统常通电源: 标称 3.3V (末期 3.0~3.3V 直通 | 750mA)</text>
-  <text x="850" y="157" text-anchor="middle" fill="#94a3b8" font-size="8">TDFN-8L 支持 STOP 低噪模式 | 宽压覆盖全板各器件</text>
+  <text x="850" y="130" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">SGM6040D 纳安级降压 DCDC (TDFN-8L, Iq = 60nA)</text>
+  <text x="850" y="145" text-anchor="middle" fill="#e2e8f0" font-size="10">系统常通电源: 稳定 3.4V (750mA | 效率 &gt; 90%)</text>
+  <text x="850" y="157" text-anchor="middle" fill="#94a3b8" font-size="8">为主控/Flash/传感器(磁珠滤波)/GNSS VBAT供电 | 带STOP低噪引脚</text>
 
 
   <!-- 2. Dual-Domain Contrast Containers -->
@@ -86,7 +86,7 @@
   <!-- nRF52840 MCU Main Card -->
   <rect x="60" y="235" width="520" height="210" rx="8" fill="url(#mcuGrad)" stroke="#a855f7" stroke-width="1.5"/>
   <text x="80" y="258" fill="#f3e8ff" font-size="15" font-weight="700">主控芯片: Nordic nRF52840-QFAA (QFN48 封装, 6×6mm)</text>
-  <text x="80" y="275" fill="#d8b4fe" font-size="10">Normal 供电模式 (VDD_3V3) | 30个物理有效 GPIO (28外设+1复位+1预留) | 无原生USB</text>
+  <text x="80" y="275" fill="#d8b4fe" font-size="10">Normal 供电模式 (VDD 3.4V) | 30个物理有效 GPIO (28外设+1复位+1预留) | 无原生USB</text>
 
   <!-- MCU Sub blocks -->
   <rect x="80" y="288" width="145" height="42" rx="4" fill="#1e1b4b" stroke="#6366f1" stroke-width="1"/>
@@ -135,7 +135,7 @@
 
   <!-- Sensor Hub (LIS2MDL + BMP388) -->
   <rect x="60" y="580" width="520" height="110" rx="6" fill="#0f172a" stroke="#059669" stroke-width="1"/>
-  <text x="80" y="602" fill="#6ee7b7" font-size="11" font-weight="700">LSM6DSV16X 传感器集线器 (Sensor Hub 独立 I2C Master) ──▶ 固件分层融合架构</text>
+  <text x="80" y="602" fill="#6ee7b7" font-size="11" font-weight="700">传感器供电: 3.4V 经磁珠+电容 π型低噪滤波 (零额外LDO漏电) | Sensor Hub I2C Master</text>
   
   <rect x="80" y="615" width="235" height="60" rx="4" fill="#1e293b" stroke="#334155" stroke-width="1"/>
   <text x="197" y="633" text-anchor="middle" fill="#e2e8f0" font-size="10.5" font-weight="600">LIS2MDL 三轴磁力计</text>
@@ -151,13 +151,13 @@
   <!-- RIGHT: Switched GNSS High-Power Domain -->
   <rect x="630" y="190" width="410" height="515" rx="10" fill="url(#swGrad)" stroke="#3b82f6" stroke-width="1.8" filter="url(#cardShadow)"/>
   <rect x="645" y="202" width="330" height="24" rx="4" fill="#1e3a8a"/>
-  <text x="810" y="218" text-anchor="middle" fill="#93c5fd" font-size="11" font-weight="700">🔵 【受控突发高能域】 瞬态满载电流 44~50 mA</text>
+  <text x="810" y="218" text-anchor="middle" fill="#93c5fd" font-size="11" font-weight="700">🔵 【受控突发高能域】 瞬态满载电流 ~48.5 mA</text>
 
-  <!-- LDO SGM2036-3.3 -->
+  <!-- LDO SGM2045-3.3 -->
   <rect x="650" y="235" width="370" height="80" rx="8" fill="#1e293b" stroke="#38bdf8" stroke-width="1.5"/>
-  <text x="835" y="258" text-anchor="middle" fill="#38bdf8" font-size="13" font-weight="700">圣邦微 SGM2036-3.3 专用受控 LDO</text>
-  <text x="835" y="276" text-anchor="middle" fill="#e2e8f0" font-size="10">受控使能信号: P0.04 (GNSS_LDO_EN) | 输出 GNSS_3V3 (300mA)</text>
-  <text x="835" y="293" text-anchor="middle" fill="#34d399" font-size="9.5">超低噪声、高 PSRR 隔绝纹波 | 关断漏电仅 10nA</text>
+  <text x="835" y="258" text-anchor="middle" fill="#38bdf8" font-size="13" font-weight="700">圣邦微 SGM2045-3.3 专用受控 LDO</text>
+  <text x="835" y="276" text-anchor="middle" fill="#e2e8f0" font-size="10">微型 XTDFN-1×1-4L | 92dB PSRR | 9.5µVrms 超低噪 | 压差仅80mV</text>
+  <text x="835" y="293" text-anchor="middle" fill="#34d399" font-size="9.5">输出 GNSS_3V3 (300mA) 供给模组 Pin 8 VCC 与板载双频 LNA</text>
   <text x="835" y="306" text-anchor="middle" fill="#f87171" font-size="8.5">下电防倒灌: 下电前注销 UART，MCU TXD/PPS 设为 High-Z</text>
 
   <!-- ATGM336H-F8N76 GNSS Module Card -->
@@ -172,8 +172,8 @@
   <text x="680" y="420" fill="#38bdf8" font-size="9.5">默认波特率: 115200 bps (CASIC仅使能RMC/GGA压缩耗时)</text>
 
   <rect x="670" y="432" width="330" height="52" rx="3" fill="#1e293b"/>
-  <text x="680" y="449" fill="#fde047" font-size="9.5" font-weight="600">后备电源 VBAT (Pin 6) 直连常通 3.3V (15µA):</text>
-  <text x="680" y="464" fill="#cbd5e1" font-size="8.5">维持内部 RTC 时基与低功耗 SRAM 状态以支持热启动</text>
+  <text x="680" y="449" fill="#fde047" font-size="9.5" font-weight="600">后备电源 VBAT (Pin 6) 直连常通 3.4V (15µA):</text>
+  <text x="680" y="464" fill="#cbd5e1" font-size="8.5">由 SGM6040D 常通供电，维持内部 RTC 与 SRAM 热启动状态</text>
   <text x="680" y="477" fill="#94a3b8" font-size="8">待机功耗 0.36 mAh/天，计入整机常通待机预算</text>
 
   <rect x="670" y="490" width="330" height="60" rx="3" fill="#1e293b"/>
@@ -184,12 +184,12 @@
 
   <!-- RF Front-End Architecture -->
   <rect x="650" y="570" width="370" height="120" rx="8" fill="#1e293b" stroke="#e2e8f0" stroke-width="1"/>
-  <text x="835" y="592" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="700">双频 L1+L5 射频前端架构 (基准方案与选配方案)</text>
-  <text x="835" y="610" text-anchor="middle" fill="#34d399" font-size="9.5" font-weight="600">【基准路线】微型双频有源陶瓷贴片天线</text>
-  <text x="835" y="625" text-anchor="middle" fill="#cbd5e1" font-size="8.5">模组 Pin 14 VCC_RF (3.3V, 50mA短路限流) 受控偏置供电</text>
-  <text x="835" y="642" text-anchor="middle" fill="#38bdf8" font-size="9.5" font-weight="600">【分立选配】中科微 ATR2652 双频 LNA + 高通 B39162B2651P810 SAW</text>
-  <text x="835" y="657" text-anchor="middle" fill="#cbd5e1" font-size="8.5">单进单出双通带 | 2.4GHz BLE 抑制 &gt; 38dB 抗主控发射干扰</text>
-  <text x="835" y="675" text-anchor="middle" fill="#fbbf24" font-size="8.5">50Ω 共面波导阻抗控制 ──▶ 直连模组 Pin 11 RF_IN (ESD9R3.3ST5G 防护)</text>
+  <text x="835" y="592" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="700">双频 L1+L5 射频前端架构 (内置无源陶瓷天线方案)</text>
+  <text x="835" y="610" text-anchor="middle" fill="#34d399" font-size="9.5" font-weight="600">【天线】内置微型双频无源陶瓷贴片天线 (高净空布设)</text>
+  <text x="835" y="625" text-anchor="middle" fill="#cbd5e1" font-size="8.5">前置双频 LNA: 中科微 ATR2652 (增益 22dB, NF 0.75dB, 4.5mA)</text>
+  <text x="835" y="642" text-anchor="middle" fill="#38bdf8" font-size="9.5" font-weight="600">前置双通带 SAW: 高通 B39162B2651P810 (单进单出双通带)</text>
+  <text x="835" y="657" text-anchor="middle" fill="#cbd5e1" font-size="8.5">2.4GHz BLE 抑制 &gt; 38dB | 50Ω 共面波导连入模组 Pin 11 RF_IN</text>
+  <text x="835" y="675" text-anchor="middle" fill="#fbbf24" font-size="8.5">链路: 无源天线 ──▶ ATR2652 ──▶ B39162 SAW ──▶ ATGM336H RF_IN</text>
 
   <!-- Control & Data Links between domains with 1k Resistors -->
   <!-- Power Enable line -->

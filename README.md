@@ -5,7 +5,7 @@
 [![GNSS: ATGM336H-F8N-76](https://img.shields.io/badge/GNSS-ATGM336H--F8N--76%20(Dual--Band)-green.svg)](Doc/ATGM336H-F8N76_Datasheet.pdf)
 [![IMU: LSM6DSV16X](https://img.shields.io/badge/IMU-LSM6DSV16X-orange.svg)](Doc/LSM6DSV16X_Datasheet.pdf)
 [![Flash: Winbond 64MB NOR](https://img.shields.io/badge/Flash-Winbond%2064MB%20(W25Q512JV)-yellow.svg)](Doc/W25Q512JV_SPI_Flash.pdf)
-[![PMIC: SGMICRO](https://img.shields.io/badge/Power-SGMICRO%20(SGM6040A%2BSGM2036%2BSGM4056)-purple.svg)](Doc/README.md)
+[![PMIC: SGMICRO](https://img.shields.io/badge/Power-SGMICRO%20(SGM6040D%2BSGM2045%2BSGM4056)-purple.svg)](Doc/README.md)
 [![Status: Architecture Pending Freeze](https://img.shields.io/badge/Status-Architecture%20Pending%20Freeze%20(DO%20NOT%20TAPE--OUT)-red.svg)](#11-开发路线图与三阶段整改实施路径-roadmap)
 
 > ⚠️ **【重要审查提示 · 架构待冻结 · 禁止直接投板 (Architecture Pending Freeze - DO NOT TAPE-OUT)】**  
@@ -55,7 +55,7 @@
 | :--- | :--- | :--- | :--- |
 | **全天工作续航** | 开启高精度定位+蓝牙扫描仅支撑 **4 ~ 8 小时** | 1000mAh 电池目标续航 **15 ~ 30 天**（一次充电支持整月记录） | 专用超低功耗架构，无屏幕、无安卓/iOS高负荷操作系统底噪 |
 | **生命周期存储** | 手机内部日志零散膨胀，受限于系统缓存清理 | **板载 64MB 超大 NOR Flash**，夜间自动截断压缩归档 | 32B 定长紧凑结构体，单颗芯片直接封存 **7 ~ 14 年全生命周期轨迹** |
-| **电源转换能效** | 手机内部多路电源转换复杂，发热严重 | **圣邦微 SGM6040A 纳安级 DCDC**（60nA静态电流，750mA输出能力） | 告别传统线性 LDO 在 4.2V 下浪费 22% 压差发热的弊端 |
+| **电源转换能效** | 手机内部多路电源转换复杂，发热严重 | **圣邦微 SGM6040D 纳安级 DCDC**（60nA静态电流，750mA输出能力，固定3.4V） | 告别传统线性 LDO 在 4.2V 下浪费 22% 压差发热的弊端 |
 | **系统稳定性** | 操作系统频繁杀后台、省电策略干预导致断轨、丢点 | 专用 RTOS 固件驱动，硬件看门狗保障，**全天候永不断轨** | 硬件级连续守护，状态机自闭环 |
 | **遮挡与丢星处理**| 室内、地下商场直接失去定位或发生数百米跳变漂移 | **LSM6DSV16X 硬件融合 + PDR 航位推算**（刚性佩戴下接管） | 基于步长自适应模型与四元数航向，低频地磁融合约束发散，推算误差受控可预测 |
 | **环境感知能力** | 手机系统出于权限与隐私严格封锁底层 BLE 原始广播 | 全频段微占空比扫描，抓取周边固定 Beacon 基站短 ID 与 RSSI | 形成包含“地理位置 + 空间射频环境”的多维离线环境时空轨迹 |
@@ -71,16 +71,17 @@
 
 | 模块类别 | 选定器件完整型号 | 原厂品牌 | 封装规格 | 工作电压域 | 关键总线 / 目标时钟 | 上电 / 控制方式 | 归档官方规格书 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **主控 SoC** | **nRF52840-QFAA** | Nordic Semi | QFN48<br>*(6×6mm, 0.4mm pitch)* | 标称 3.3V<br>*(Normal 模式, 1.7~3.6V)* | 64MHz ARM Cortex-M4F<br>HFXO: 32MHz / LFXO: 32.768kHz | 全天候常通供电 (Always-On)<br>引出 30 个物理 GPIO (28外设+1复位+1预留) | `Doc/nRF52840_Product_Specification_v1.11.pdf` |
-| **GNSS 模组** | **ATGM336H-F8N-76** | 杭州中科微 | LCC-18<br>*(10.1×9.7mm)* | 主电: 2.7~3.6V (Pin 8)<br>后备: 1.5~3.6V (Pin 6) | UART 115200bps (8-N-1)<br>1PPS 硬件授时 (经 PPI 直连) | Pin 8 VCC 经 SGM2036 受控通断 (P0.04 EN)<br>Pin 6 VBAT 直连常通电源 (15µA)<br>Pin 1 为 GND | `Doc/ATGM336H-F8N76_Datasheet.pdf` |
-| **GNSS 射频 (基准)** | **微型双频有源陶瓷天线** | 行业定制 | 陶瓷贴片<br>*(18×18 或 25×25mm)* | 3.3V 受控 | 50Ω 共面波导阻抗控制<br>直连模组 Pin 11 RF_IN | 前置 LNA 由模组 Pin 14 `VCC_RF` 偏置供电<br>(输出 3.3V，短路限流 50mA，随模组主电同步切断) | `Doc/ATGM336H-F8N76_Datasheet.pdf` |
-| **GNSS 射频 (分立选配)** | **ATR2652** (双频 LNA) +<br>**B39162B2651P810** (双通带 SAW) | 中科微 +<br>Qualcomm | DFN-6 / SOT23-6 +<br>1511 (1.5×1.1mm) | 2.7~3.6V 受控 | 单进单出双通带 (L1+L5)<br>2.4GHz BLE 抑制 > 38dB | 挂载于受控 GNSS 电源轨<br>随模组同步休眠断电 | 原厂选型手册 |
-| **SPI NOR Flash** | **W25Q512JVEIQ** | Winbond (华邦) | WSON-8<br>*(6×8mm)* | 2.7~3.6V 常通 | 标准 4 线 SPI (模式 0)<br>**目标时钟: 4MHz ~ 8MHz (低噪声)** | CS 引脚控休眠 (P1.09)<br>深休眠漏电 1µA，十万次扇区擦写 | `Doc/W25Q512JV_SPI_Flash.pdf` |
-| **6轴 IMU** | **LSM6DSV16X** | STMicroelectronics | LGA-14<br>*(2.5×3.0mm)* | 1.71~3.6V 常通 | SPI 8MHz (直连主控)<br>SFLP 输出: 60Hz 姿态四元数 | 静止待机: 15Hz LPM1 Acc (~7.5µA)<br>PDR接管: Combo 0.65~0.9mA (SFLP增量14µA) | `Doc/LSM6DSV16X_Datasheet.pdf` |
-| **三轴磁力计** | **LIS2MDL** | STMicroelectronics | LGA-12<br>*(2.0×2.0mm)* | 1.71~3.6V 常通 | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSV16X Sensor Hub Master<br>数据进 IMU FIFO，MCU 固件执行磁校准 | `Doc/LIS2MDL_Datasheet.pdf` |
-| **气压高度计** | **BMP388** | Bosch Sensortec | LGA-10<br>*(2.0×2.0mm)* | 1.65~3.6V 常通 | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSV16X Sensor Hub Master<br>相对精度 ±0.08hPa (约 ±0.5m) | `Doc/BMP388_Datasheet.pdf` |
-| **常通降压 DCDC** | **SGM6040A-3.3** | 圣邦微 (SGMICRO) | **TDFN-2×1.5-8L**<br>*(锁定选用，带MODE/STOP)* | 输入 1.8~5.5V<br>输出标称 3.3V (末期旁路直通) | 750mA 输出能力，效率 > 90%<br>带 STOP 硬件低噪引脚 | 全板常通主电核心<br>静态电流仅 60nA (关断 25nA) | `Doc/SGM6040A_Datasheet.pdf` |
-| **受控低噪 LDO** | **SGM2036-3.3** | 圣邦微 (SGMICRO) | SOT-23-5 | 输入 3.0~4.2V<br>输出标称 3.3V (压差165mV) | 300mA 输出能力，超高 PSRR<br>低噪声隔绝开关纹波 | 专供 GNSS 模组主电源轨 (Pin 8 VCC)<br>由 P0.04 EN 硬件控制，关断漏电仅 10nA | `Doc/SGM2036_Datasheet.pdf` |
+| **主控 SoC** | **nRF52840-QFAA** | Nordic Semi | QFN48<br>*(6×6mm, 0.4mm pitch)* | 稳定 3.4V<br>*(Normal 模式, 1.7~3.6V)* | 64MHz ARM Cortex-M4F<br>HFXO: 32MHz / LFXO: 32.768kHz | 全天候常通供电 (Always-On)<br>引出 30 个物理 GPIO (28外设+1复位+1预留) | `Doc/nRF52840_Product_Specification_v1.11.pdf` |
+| **GNSS 模组** | **ATGM336H-F8N-76** | 杭州中科微 | LCC-18<br>*(10.1×9.7mm)* | 主电: 3.3V (Pin 8 VCC)<br>后备: 3.4V (Pin 6 VBAT) | UART 115200bps (8-N-1)<br>1PPS 硬件授时 (经 PPI 直连) | Pin 8 VCC 经 SGM2045-3.3 受控通断 (P0.04 EN)<br>Pin 6 VBAT 由 SGM6040D 常通供电 (15µA)<br>Pin 1 为 GND | `Doc/ATGM336H-F8N76_Datasheet.pdf` |
+| **GNSS 射频天线** | **内置微型双频无源陶瓷天线** | 行业标准件 | 陶瓷贴片<br>*(18×18×4 或 15×15×4mm)* | 无源器件 | 50Ω 共面波导阻抗控制<br>布设于 PCB 顶层独立净空区 | 纯无源内置天线，零直流功耗<br>微弱射频信号由板载前置双频 LNA 放大 | 天线规格书 |
+| **板载双频 LNA** | **ATR2652** | 杭州中科微 | DFN-6 / SOT23-6 | 3.3V 受控 | L1 增益 22.4dB / NF 0.85dB<br>L5 增益 22.0dB / NF 0.75dB | 挂载于受控 SGM2045-3.3 电源轨<br>工作电流仅 4.5mA，随模组同步休眠断电 | 原厂选型手册 |
+| **板载双通带 SAW** | **B39162B2651P810** | Qualcomm / RF360 | 1511<br>*(1.5×1.1mm)* | 无源器件 | 单进单出双通带 (L1+L5)<br>2.4GHz BLE 抑制 > 38dB | 位于 ATR2652 与模组 Pin 11 RF_IN 之间<br>强力消除板载蓝牙发射自干扰 | 原厂选型手册 |
+| **SPI NOR Flash** | **W25Q512JVEIQ** | Winbond (华邦) | WSON-8<br>*(6×8mm)* | 3.4V 常通<br>*(2.7~3.6V)* | 标准 4 线 SPI (模式 0)<br>**目标时钟: 4MHz ~ 8MHz (低噪声)** | CS 引脚控休眠 (P1.09)<br>深休眠漏电 1µA，十万次扇区擦写 | `Doc/W25Q512JV_SPI_Flash.pdf` |
+| **6轴 IMU** | **LSM6DSV16X** | STMicroelectronics | LGA-14<br>*(2.5×3.0mm)* | 3.4V 常通<br>*(磁珠+电容π型滤波)* | SPI 8MHz (直连主控)<br>SFLP 输出: 60Hz 姿态四元数 | 静止待机: 15Hz LPM1 Acc (~7.5µA)<br>PDR接管: Combo 0.65~0.9mA (SFLP增量14µA) | `Doc/LSM6DSV16X_Datasheet.pdf` |
+| **三轴磁力计** | **LIS2MDL** | STMicroelectronics | LGA-12<br>*(2.0×2.0mm)* | 3.4V 常通<br>*(磁珠+电容π型滤波)* | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSV16X Sensor Hub Master<br>数据进 IMU FIFO，MCU 固件执行磁校准 | `Doc/LIS2MDL_Datasheet.pdf` |
+| **气压高度计** | **BMP388** | Bosch Sensortec | LGA-10<br>*(2.0×2.0mm)* | 3.4V 常通<br>*(磁珠+电容π型滤波)* | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSV16X Sensor Hub Master<br>相对精度 ±0.08hPa (约 ±0.5m) | `Doc/BMP388_Datasheet.pdf` |
+| **常通降压 DCDC** | **SGM6040D** | 圣邦微 (SGMICRO) | **TDFN-2×1.5-8L**<br>*(锁定选用，带MODE/STOP)* | 输入 1.8~5.5V<br>**固定输出 3.4V** | 750mA 输出能力，效率 > 90%<br>带 STOP 硬件低噪引脚 | 全板常通核心（为MCU/Flash/传感器/GNSS VBAT供电）<br>静态电流仅 60nA (关断 25nA) | `Doc/SGM6040A_Datasheet.pdf` |
+| **受控低噪 LDO** | **SGM2045-3.3** | 圣邦微 (SGMICRO) | **XTDFN-1×1-4L**<br>*(超微型封装)* | 输入 1.4~5.5V (接电池或3.4V)<br>**固定输出 3.3V** | 300mA 输出能力，**92dB 超高 PSRR**<br>**9.5µVrms 超低噪声，压差仅 80mV** | 专供 GNSS Pin 8 VCC 及 ATR2652 双频 LNA<br>由 P0.04 EN 硬件控制，关断漏电仅 30nA | 原厂选型手册 |
 | **锂电充电 IC** | **SGM4056** | 圣邦微 (SGMICRO) | TDFN-3×3-8L<br>*(带底部散热EP)* | 输入 4.5~6.8V<br>OVP 6.8V | $R_{PROG}=2.8\text{k}\Omega$ 限制 350mA 恒流<br>最大发热 0.70W (3.0V起充) / 0.45W (3.7V平台) | TEMP 引脚外接电芯 NTC<br>实现 JEITA 硬件温度监测保护 | `Doc/SGM4056_Datasheet.pdf` |
 | **锂电保护板 (PCM)** | **DW01A + 8205A** 或<br>**AP9101C 系列** | 行业标准方案 | 电芯内置 PCM | 电池端保护 | 硬件级过放/过充/过流切断 | 3.0V 硬件切断过放保护 (漏电<0.1µA)<br>4.28V 过充保护，2.5A 短路锁死 | 保护板设计规范 |
 
@@ -104,7 +105,7 @@
    * **设计对策**：板载 Type-C 接口专用于 5V 锂电池充电输入；日常数据导出主要采用 **BLE 5.0 (2Mbps PHY) 高速无线同步**；同时系统在空闲 GPIO 上**引出了专用的独立硬件调试串口（DEBUG_UART: TXD/RXD）测试焊盘**，用于连接外部 USB-TTL 串口板输出固件实时 Log。
 2. **高压供电模式（High Voltage Supply Mode，REG0）内部短接失效**：
    * **原厂规格书明文**：*“Note: VDD and VDDH are shortcircuited inside the package. Therefore the device is only usable in Normal Voltage supply mode, and not High Voltage supply mode.”*
-   * **设计对策**：**严禁将单节锂电池（3.7V~4.2V）或 USB 5V 直接接给 nRF52840 芯片电源管脚**！系统必须由圣邦微 SGM6040A 降压 DCDC 将电池电压高效转换为 3.3V 后输入 VDD，工作在 Normal Voltage Supply Mode（1.7V~3.6V）。
+   * **设计对策**：**严禁将单节锂电池（3.7V~4.2V）或 USB 5V 直接接给 nRF52840 芯片电源管脚**！系统由圣邦微 SGM6040D 降压 DCDC 将电池电压高效转换为 3.4V 后输入 VDD，工作在 Normal Voltage Supply Mode（1.7V~3.6V）。片内高频 DCDC/LDO 自动转换，保持极高转换能效。
 3. **真实可用 GPIO 数量与系统规划（30 个）**：
    * Nordic 原厂物理事实：aQFN73 引出 48 个 GPIO，而 QFN48 **物理引出 30 个具备 GPIO 功能的管脚**：
      * P0 端口保留 26 个管脚（标准 32 个中**仅缺失 P0.06、P0.15、P0.16、P0.25、P0.26、P0.27 共 6 个管脚**，即 $32 - 6 = 26$）；
@@ -136,30 +137,30 @@
 | **启动时间 (TTFF)** | 冷启动 $\le 30\text{ s}$，**热启动 $\le 1\text{ s}$**，重捕获 $\le 1\text{ s}$ | 具备后备电源 VBAT 时，重新通电瞬间实现秒定 |
 | **最大定位更新率** | **最高 20 Hz** (默认 1Hz / 固件高精5Hz) | 满足户外冲刺、运动竞技及高精度赛段轨迹记录需求 |
 | **串口通信特性** | **默认 115200 bps**，8-N-1 | 相比老款 9600bps 提速 12 倍，大幅缩短数据吐出时间，帮助 MCU 提早休眠 |
-| **运行功耗参数** | **典型电流 44 mA @ 3.3V** (L1+L5双频满载) | 待机功耗 **< 20 µA**，后备电源 Pin 6 VBAT 供电电流仅 **15 µA** (每日约 0.36 mAh，直连系统常通域计入整机底噪) |
-| **独立供电架构** | **圣邦微 SGM2036-3.3 专用 LDO 供电** | **Pin 8 VCC 受控供电，带 EN 使能脚硬切断（关断漏电仅 10nA）**，低噪声高 PSRR 隔绝电源杂波；下电前 MCU IO 置 High-Z |
-| **射频前端天线方案** | **双频 L1+L5 射频前端**<br>*(双频有源陶瓷天线 或 ATR2652+SAW)* | **【基准路线】微型双频有源陶瓷贴片天线**，由模组 Pin 14 `VCC_RF`（输出 3.3V，短路限流 50mA）偏置供电，模组主电切断时同步断电零漏电；<br>**【分立选配】中科微 ATR2652 双频 LNA** + **高通 B39162B2651P810 双通带 SAW** |
+| **运行功耗参数** | **典型电流 44 mA @ 3.3V** (L1+L5双频满载) | 待机功耗 **< 20 µA**，后备电源 Pin 6 VBAT 供电电流仅 **15 µA** (由 SGM6040D 3.4V 常通供电，维持内部 RTC/SRAM) |
+| **独立供电架构** | **圣邦微 SGM2045-3.3 专用受控 LDO 供电** | **微型 XTDFN-1×1-4L，92dB PSRR，9.5µVrms 低噪，压差仅 80mV**；专供 Pin 8 VCC 与 ATR2652，关断漏电仅 30nA |
+| **射频前端天线方案** | **内置双频无源陶瓷天线 + 板载 LNA/SAW** | **【无源天线】内置微型双频无源陶瓷贴片天线** (PCB独立净空区)；<br>**【板载前端】中科微 ATR2652 双频 LNA** (4.5mA) + **高通 B39162B2651P810 双通带 SAW** (抑制 >38dB) |
 | **防倒灌硬件设计** | 信号线串联 1kΩ 隔离电阻 | `TXD`、`RXD`、`PPS` 线上串接 1kΩ 电阻；下电前注销 UART 并设为 High-Z，上电后延时 10ms 初始化 UART |
 
 #### GNSS 核心工程设计要点与能效权衡：
-1. **供电架构权衡 (LDO vs Buck Trade-off)**：
-   * SGM2036 线性 LDO 压降效率为 $\eta = 3.3\text{V} / V_{bat} \approx 78.6\% \sim 89.2\%$。在 44mA 满载下，电池端放电电流等同于 44mA，纯压差发热功率约为 $(3.8\text{V} - 3.3\text{V}) \times 44\text{mA} \approx 22\text{mW}$（满电 4.2V 时近 40mW）；相比开关 Buck（按 90% 效率折算电池端约 36mA），LDO 每天在 GNSS 脉冲期多损耗约 2.5~3.0mAh 电量（约占总预算 7%~9%）。
-   * **采纳专路 LDO 的核心理由**：在 52×36mm 的极小密闭外壳内，GNSS 接收天线对微弱卫星信号（-167dBm）极度敏感。开关 Buck 的功率电感漏磁与高频开关纹波（百 kHz 至数 MHz）极易通过地平面和近场耦合串入双频 L1/L5 射频前端，引起严重的载噪比（C/N0）跌落与丢星。因此工程上**坚决以牺牲约 8%~10% 的每日续航为代价，换取极度洁净的射频底噪与零外置功率电感空间**。同时在 Roadmap 中作为 V2 储备方案规划“微型 Buck 预降至 3.45V + 后级超低压差 LDO 至 3.3V”的二级供电拓扑。
+1. **二次降压供电拓扑 (DCDC 3.4V + SGM2045 LDO 3.3V)**：
+   * 本工程正式确立 **二级混合供电拓扑**：SGM2045-3.3 输入直接挂接在圣邦微 SGM6040D 的 **稳定 3.4V 电源轨** 上；
+   * **超低压差与零发热**：压差仅 $(3.4\text{V} - 3.3\text{V}) = \mathbf{0.1\text{ V}}$，在 GNSS 模组 (44mA) + ATR2652 (4.5mA) 合计 **48.5mA** 满载工作时，压差发热功率仅为 $0.1\text{V} \times 48.5\text{mA} = \mathbf{4.85\text{ mW}}$（相比从锂电池 4.2V 直接线性降压节省了近 90% 的压差热损耗！）；
+   * **极致射频底噪**：SGM2045 在 1kHz 下具备高达 **92 dB 的超高 PSRR** 和 **9.5 µVrms 超低底噪**，彻底吸收 SGM6040D 的 1.5MHz 开关纹波，为卫星接收机和前置 LNA 提供极致纯净的 3.3V 模拟电源；
 2. **固件级 NMEA 极速裁剪节能**：
    * 模组出厂默认输出全套 NMEA 报文（GGA、GSA、GSV×4、RMC、VTG、GLL 等），单 epoch 数据量达 1.2~1.8KB，在 115200bps 下传输需 100~150ms；
    * 本固件在每次快照唤醒模组后，通过专有 CASIC 指令关闭其余所有语句，**仅使能 `$GNRMC` 与 `$GNGGA`（单次约 200 字节，传输耗时压缩至 < 18ms）**。在每天约 800 次脉冲快照下，累计缩短 MCU 串口 DMA 接收等待与模组吐字时间，每日纯省约 **1.5 mAh** 宝贵电量。
-3. **射频前端双频 L1+L5 架构与方案决策**：
-   * **基准量产路线：微型双频有源陶瓷贴片天线**：
-     * **一体化链路优势**：定制微型双频有源陶瓷天线内部已集成针对 L1+L5 双频并发优化的陶瓷体、双频有源 LNA 与滤波网络，输出标准 50Ω 射频信号直接经微带线/共面波导连入模组 Pin 11 `RF_IN`，极大简化主板射频调试门槛；
-     * **受控偏置供电能力与联动切断**：天线内部 LNA 由 ATGM336H Pin 14 `VCC_RF`（3.3V 输出）供电。原厂规格书中 Pin 14 具备天线短路限流保护功能（**短路保护电流门限为 50mA**），实际有源天线负载建议设计在 **5mA ~ 15mA** 区间；在 SGM2036 切断模组主电源（Pin 8 VCC）时，`VCC_RF` **同步输出 0V**，天线零漏电，天然实现低功耗联动；
-   * **板载分立选配路线：中科微 ATR2652 + 高通 B39162B2651P810**：
-     * **原厂双频 LNA**：选用中科微专为其 AT9880 / ATGM336H 系列配套的原厂 `ATR2652`（L5 增益 22.0dB/NF 0.75dB，L1 增益 22.4dB/NF 0.85dB，带内平坦度 <0.5dB，工作电流 4.5mA，集成使能脚）；
-     * **单进单出双通带 SAW**：选用高通/RF360 `B39162B2651P810`（1511 封装，单进单出双通带，2.4GHz BLE 蓝牙抑制 >38dB，彻底防止主控发射自干扰）；
-     * 链路拓扑：`无源陶瓷天线` $\to$ `ATR2652 (LNA)` $\to$ `B39162B2651P810 (SAW)` $\to$ `ATGM336H Pin 11 RF_IN`。
+3. **射频前端内置无源陶瓷天线方案与级联链路设计**：
+   * **彻底清除有源天线**：整机按照 **内置无源陶瓷贴片天线** 规范设计，彻底杜绝外置同轴馈电带来的直流功耗与短路隐患；
+   * **板载前置双频 LNA (中科微 ATR2652)**：由于微型无源陶瓷天线在体积受限下增益较低，第一级采用中科微原厂配套的双频 LNA `ATR2652`（L5 增益 22.0dB / NF 0.75dB，L1 增益 22.4dB / NF 0.85dB，工作电流 4.5mA），直接贴装在天线输出端下方，以超低噪声系数主导整机接收灵敏度；
+   * **板载双通带 SAW (高通 B39162B2651P810)**：采用 1511 封装单进单出双通带声表滤波器，在 $2400 \sim 2483.5\text{ MHz}$ 频段具备 **$>38\text{ dB}$ 的带外深陷抑制**，彻底消除板载主控 nRF52840 蓝牙 2.4GHz 发射对 GNSS 接收机的射频互调饱和干扰；
+   * **推荐级联链路 (Post-LNA)**：
+     `内置无源陶瓷天线` $\longrightarrow$ `ATR2652 (LNA)` $\longrightarrow$ `B39162B2651P810 (SAW)` $\longrightarrow$ `ATGM336H Pin 11 (RF_IN)`；
+   * **LNA 受控供电**：ATR2652 供电端挂载在受控的 SGM2045-3.3 电源轨上，随模组主电同步断电，模组 Pin 14 `VCC_RF` 悬空不供电。
 4. **模组真实引脚映射与后备电源 VBAT 硬件连接**：
    * 依据中科微原厂手册：**Pin 1 为 GND**，**Pin 6 为 VBAT**（后备电源输入，1.5V~3.6V，典型静态电流 15µA），**Pin 8 为 VCC**（主电源输入，2.7V~3.6V）；
-   * **硬件基线规定：Pin 6 `VBAT` 必须直连系统常通主电源轨**；
-   * 当受控 LDO SGM2036 切断模组主电源（Pin 8 VCC）时，Pin 6 `VBAT` 维持内部 RTC 运行与低功耗 SRAM 中的星历时钟状态以支持热启动；
+   * **硬件基线规定：Pin 6 `VBAT` 必须直连系统常通 3.4V 主电源轨 (由 SGM6040D 直供)**；
+   * 当受控 LDO SGM2045 切断模组主电源（Pin 8 VCC）时，Pin 6 `VBAT` 维持内部 RTC 运行与低功耗 SRAM 中的星历时钟状态以支持热启动；
    * **整机功耗计入**：15µA 备用电流已全额纳入整机常通待机底噪（$25\mu\text{A} \sim 35\mu\text{A}$ 之中，每日消耗 $0.36\text{ mAh}$）。
 
 ---
@@ -202,28 +203,44 @@
 ### 2.6 全套圣邦微 (SGMICRO) 高效电源管理与保护方案
 为兼顾极致续航、高电源抑制比（PSRR）、严格热控制与完全自主可控供应链，本项目电源部分全部采用**圣邦微电子（SGMICRO）**成熟物料并匹配严谨的锂电与接口防护：
 
-1. **主控系统降压 DCDC：圣邦微 SGM6040A (锁定选用 TDFN-2×1.5-8L 封装)**
-   * **封装硬件特性闭环**：原厂规格书确认仅 **TDFN-8L (2×1.5mm)** 封装提供 MODE 和 STOP 硬件引脚（WLCSP-6B 无此引脚）。硬件设计必须选用 TDFN-8L 封装；
+### 2.6 全套圣邦微 (SGMICRO) 高效电源管理与传感器供电评估
+为兼顾极致续航、高电源抑制比（PSRR）、严格热控制与完全自主可控供应链，本项目电源部分全部采用**圣邦微电子（SGMICRO）**成熟物料并匹配严谨的锂电与接口防护：
+
+1. **主控系统常通降压 DCDC：圣邦微 SGM6040D (固定输出 3.4V)**
+   * **封装硬件特性闭环**：选用 **`SGM6040DXTHL8G/TR` (TDFN-2×1.5-8L)** 封装，原厂出厂**固定输出 3.4V**，免外围分压电阻，提供 MODE 和 STOP 硬件引脚；
    * **纳安级超低静态电流**：静态待机电流低至 **60 nA**，关断电流典型仅 **25 nA**；
-   * **微载荷极限效率**：在 $1\text{ }\mu\text{A}$ 微载荷输出下效率依然高达 **80%**，重载峰值效率超过 **90%**；
-   * **输出特性与 100% 旁路模式 (Bypass Mode)**：输入 1.8V ~ 5.5V，最大输出电流 **750 mA**；标称输出 3.3V。当单节锂电池处于 3.45V~4.2V 时稳定输出 3.3V；当电池放电至 **3.0V ~ 3.45V 放电末期** 时，DCDC 自动进入 **100% 占空比旁路直通模式**（静态电流仅 120nA），输出电压跟随电池电压降落（$V_{out} \approx V_{bat} - I \times R_{on}$）。全板器件最低工作电压均覆盖 2.7V，系统在 3.0V~3.6V 宽压容限区间安全稳定工作；
-   * **STOP 硬件低噪引脚**：具备 STOP 硬件控制脚，在 MCU 执行高灵敏度 ADC 采样时可瞬态冻结开关动作消除开关噪声。
-2. **GNSS 独立低噪声 LDO：圣邦微 SGM2036-3.3**
-   * **专路专供**：为 ATGM336H-F8N-76 模组 Pin 8 VCC 主电源轨供电，提供高达 300mA 洁净低纹波电源，满载典型压差 165mV；
-   * **受控物理切断**：具备逻辑使能脚（EN），由 nRF52840 GPIO `P0.04` 控制。休眠时拉低 EN，**关断漏电流仅 10 nA**，实现零漏电硬隔离。
-3. **锂电池充电管理：圣邦微 SGM4056 (严控发热与温度保护)**
+   * **微载荷极限效率**：在 $1\text{ }\mu\text{A}$ 微载荷输出下效率依然高达 **80%**，重载峰值效率超过 **90%**，最大输出电流 **750 mA**；
+   * **输出特性与 100% 旁路模式 (Bypass Mode)**：当单节锂电池处于 3.45V~4.2V 时稳定输出 3.4V；当电池放电至 **3.0V ~ 3.45V 放电末期** 时，自动进入 100% 占空比旁路直通模式（损耗仅 120nA），输出电压跟随电池电压降落。全板器件最低工作电压均覆盖 2.7V，系统在 3.0V~3.6V 宽压容限区间安全稳定工作；
+   * **供电覆盖**：3.4V 稳定供给 nRF52840 SoC (Normal 模式)、W25Q512JV SPI Flash、运动传感器体系（经磁珠滤波），以及 ATGM336H Pin 6 `VBAT`（15µA 维持内部 RTC/SRAM）；
+   * **STOP 硬件低噪引脚**：具备 STOP 硬件控制脚，在 MCU 执行高灵敏度 ADC/传感器采样时可瞬态冻结开关动作消除开关噪声。
+2. **GNSS 受控独立超低噪 LDO：圣邦微 SGM2045-3.3 (超高 PSRR)**
+   * **芯片型号与封装**：选用 **`SGM2045-3.3` (XTDFN-1×1-4L 微型封装)**，专为极致射频定位供电定制；
+   * **极致性能参数**：
+     * **92 dB 超高 PSRR (@1kHz)**：彻底阻绝上级电源开关纹波；
+     * **9.5 µVrms 超低底噪**：提供近乎蓄电池纯净度的模拟电源；
+     * **超低压差 (Ultra-Low Dropout)**：满载 300mA 压差仅 80~100mV；在 GNSS 模组 (44mA) + ATR2652 (4.5mA) 合计 **48.5mA** 满载下，**实测压差仅约 15 ~ 20 mV**；
+   * **二级混合拓扑降发热**：输入直接挂接在 SGM6040D 输出的 3.4V 轨上，压差仅 0.1V，满载压差发热仅 **4.85 mW**；关断漏电仅 **30 nA**，由 MCU GPIO `P0.04` 硬件控制切断。
+3. **专项评估：传感器是否需要单独的 LDO 供电？**
+   * **深度论证结论**：**传感器“不需要”也坚决不建议增加独立的 LDO 供电！**
+   * **核心依据剖析**：
+     * **待机底噪毁灭性影响**：若为传感器增加一颗独立 LDO，其静态电流 $I_Q$（典型 10~15µA）将直接导致传感器静止待机功耗由 7.5µA 暴增至 22.5µA，彻底摧毁全机 $25\sim 35\mu\text{A}$ 的待机预算；
+     * **物理滤波完全等效**：SGM6040D 开关频率 1.5MHz。在传感器电源入口串入 **`BLM15PX121 (120Ω@100MHz, DCR<0.2Ω)` 铁氧体磁珠** 与 **$10\mu\text{F} + 0.1\mu\text{F}$ 陶瓷电容** 构建 $\pi$ 型滤波网络，对 1.5MHz 开关纹波衰减达 **> 35 dB**（纹波压制到 $<0.5\text{mV}$），且**额外静态漏电为绝对的 0 nA**；
+     * **STOP 引脚零噪联动**：在需要高精度气压计/磁力计采样窗口期间，固件拉高 SGM6040D 的 STOP 引脚瞬态冻结开关动作，输出纹波归零（0mV），达到甚至优于专用 LDO 的静态纯净度；
+     * **器件自身抗噪**：LSM6DSV16X 内部自带模拟 LDO 和电荷泵，对中低频纹波自身具备 >50dB PSRR。外置 LDO 属过度设计；
+   * **落地实施方案**：传感器直接由 SGM6040D 3.4V 经磁珠 $\pi$ 型滤波供电，免除独立 LDO 成本、面积与漏电。
+4. **锂电池充电管理：圣邦微 SGM4056 (严控发热与温度保护)**
    * **IC 定位与充电参数**：1A 线性锂电池充电芯片，集成高达 26.5V 输入耐压与过压保护（OVP 6.8V），防电池倒灌漏电 $< 1\text{ }\mu\text{A}$，具备 CHRG/STDBY 充电状态指示；
    * **充电发热严谨核算与控温 (0.35C)**：本设计将 PROG 引脚电阻设定为 **$R_{PROG} = 2.8\text{ k}\Omega$**，将恒流充电严格限制在 **350 mA（0.35C）**：
      * **最大瞬态发热功耗**：在 5.0V 输入、电池放电截止点 3.0V 刚刚接入充电时，压差达 2.0V，最大瞬态耗散功率为 $(5.0\text{V} - 3.0\text{V}) \times 0.35\text{A} = \mathbf{0.70\text{ W}}$；
      * **典型平台发热功耗**：充至 3.7V 主平台时，压差功耗降为 $(5.0\text{V} - 3.7\text{V}) \times 0.35\text{A} \approx \mathbf{0.45\text{ W}}$；
      * **散热闭环**：选用带底部裸露散热焊盘（Exposed Pad）的 TDFN-3×3-8L 封装，PCB 底部打散热地过孔阵列，结合电芯 NTC 与 JEITA 规范实现多重热调节保护；
    * **温度监测保护 (NTC / JEITA)**：外接电芯内置 NTC 热敏电阻，在电池温度 $<0^\circ\text{C}$ 或 $>45^\circ\text{C}$ 时自动暂停充电。
-4. **锂电芯硬件保护板回路 (PCM 兜底防过放)**：
+5. **锂电芯硬件保护板回路 (PCM 兜底防过放)**：
    * SGM4056 仅负责充电过程管理，**本身不具备电池过放与短路保护功能**；
    * 本工程规定必须采用**自带保护板（集成专用保护 IC 如 DW01A / AP9101C + 8205A 复合双 N-MOS）的 1000mAh~1200mAh 聚合物电芯**，提供 **3.0V 硬件级过放切断保护**、4.28V 过充硬件保护及 2.5A 短路锁死机制，彻底消除长期密封存放导致电芯过放鼓包与损坏风险。
-5. **接口与天线 ESD / TVS 硬件防护**：
+6. **接口与天线 ESD / TVS 硬件防护**：
    * **Type-C 输入端口**：钥匙扣设备常伴随人体摩擦与频繁插拔，Type-C 的 VBUS 5V 输入与 CC1/CC2 引脚配置 **USBLC6-2SC6 超低结容 TVS 保护阵列**，耐受 IEC 61000-4-2 $\pm 15\text{kV}$ 空气放电与 $\pm 8\text{kV}$ 接触放电；
-   * **GNSS 射频天线端口**：天线 RF 输入端串入微型超低结容（$C_J < 0.2\text{ pF}$）双向射频 ESD 保护二极管（如 ESD9R3.3ST5G），在不衰减 L1/L5 射频信号的前提下杜绝人体触摸静电击穿模组 LNA。
+   * **GNSS 射频天线端口**：天线 RF 输入端串入微型超低结容（$C_J < 0.2\text{ pF}$）双向射频 ESD 保护二极管（如 ESD9R3.3ST5G），在不衰减 L1/L5 射频信号的前提下杜绝人体触摸静电击穿前置 LNA。
 
 ---
 
@@ -247,14 +264,14 @@ flowchart TB
         SGM4056 --> BAT["1000~1200mAh 聚合物锂电池<br/>(自带 PCM 保护板: 2.8V~4.2V)"]:::pwr
         BAT --> BAT_ADC["P-MOS 控制分压网络<br/>(MCU ADC_IN 采样)"]:::dev
         
-        %% 分出两路 3.3V 统一电源拓扑
-        BAT -->|"电池原始供电 (3.0V~4.2V)"| SGM6040A["圣邦微 SGM6040A 纳安级 DCDC<br/>(静态功耗 60nA | 750mA | 效率 > 90%)"]:::pwr
-        BAT -->|"电池原始供电 (3.0V~4.2V)"| SGM2036["圣邦微 SGM2036-3.3 专用 LDO<br/>(300mA | 高 PSRR 低噪声 | 关断漏电 10nA)"]:::sw
+        %% 分出两路电源架构
+        BAT -->|"电池原始供电 (3.0V~4.2V)"| SGM6040D["圣邦微 SGM6040D 纳安级 DCDC<br/>(静态功耗 60nA | 750mA | 固定输出 3.4V)"]:::pwr
+        SGM6040D -->|"二级低压差供电 (3.4V)"| SGM2045["圣邦微 SGM2045-3.3 专用 LDO<br/>(300mA | 92dB PSRR 9.5µVrms | 压差仅80mV)"]:::sw
     end
 
-    %% 双域标称 3.3V 宽压供电
-    SGM6040A -->|"常通电源: 标称 3.3V (末期 3.0~3.3V 直通)"| AON_DOMAIN
-    SGM2036 -->|"受控低噪声主电: GNSS_VCC (Pin 8, 3.3V)"| GNSS_SUBSYSTEM
+    %% 双域分层稳压供电
+    SGM6040D -->|"常通主电源: 稳定 3.4V"| AON_DOMAIN
+    SGM2045 -->|"受控洁净主电: GNSS_VCC (Pin 8, 3.3V)"| GNSS_SUBSYSTEM
 
     subgraph AON_DOMAIN ["🟢 【常通超低功耗微安域 (Always-On Domain)】静态待机底噪 25~35 µA"]
         subgraph MCU_NODE ["主控核心: Nordic nRF52840-QFAA (QFN48)"]
@@ -284,21 +301,23 @@ flowchart TB
         end
     end
 
-    subgraph SW_DOMAIN ["🔵 【受控突发高能毫安域 (Switched Domain)】瞬态工作电流 44~50 mA"]
-        subgraph GNSS_SUBSYSTEM ["GNSS 卫星定位系统 (受控独立供电)"]
+    subgraph SW_DOMAIN ["🔵 【受控突发高能毫安域 (Switched Domain)】瞬态工作电流 ~48.5 mA"]
+        subgraph GNSS_SUBSYSTEM ["GNSS 卫星定位系统 (SGM2045-3.3 受控独立供电)"]
             GNSS["中科微 ATGM336H-F8N-76<br/>旗舰 AT9880 SoC | 176 通道<br/>Pin 8 VCC 主电 | Pin 1 为 GND<br/>典型工作功耗: 44mA @ 3.3V"]:::sw
-            ACTIVE_ANT["双频微型有源陶瓷贴片天线<br/>(支持 L1+L5 / 50Ω 阻抗共面波导)"]:::dev
-            GNSS -->|"Pin 14 VCC_RF (3.3V输出, 短路限流50mA)"| ACTIVE_ANT
-            ACTIVE_ANT -->|"RF_IN (Pin 11)"| GNSS
+            PASSIVE_ANT["内置微型双频无源陶瓷天线<br/>(独立净空区 / 零直流功耗)"]:::dev
+            LNA_SAW["板载 ATR2652 双频LNA (4.5mA)<br/>+ B39162 双通带SAW (&gt;38dB抑制)"]:::dev
+            PASSIVE_ANT --> LNA_SAW
+            LNA_SAW -->|"RF_IN (Pin 11)"| GNSS
         end
     end
 
     %% 跨域控制、防倒灌电阻与数据连线
-    MCU_CORE -->|"GNSS_LDO_EN 使能控制 (P0.04)"| SGM2036
+    MCU_CORE -->|"GNSS_LDO_EN 使能控制 (P0.04)"| SGM2045["圣邦微 SGM2045-3.3<br/>(300mA | 92dB PSRR | 9.5µVrms)"]:::sw
+    SGM2045 -->|"受控洁净 3.3V"| GNSS & LNA_SAW
     GNSS -->|"Pin 2 TXD0 串联 1kΩ"| R_RX["1kΩ 保护电阻"]:::dev -->|"GNSS_RXD (P0.05)"| MCU_CORE
     MCU_CORE -->|"GNSS_TXD (P0.07)"| R_TX["1kΩ 保护电阻"]:::dev -->|"下电前置 High-Z"| GNSS
     GNSS -->|"Pin 4 1PPS 串联 1kΩ"| R_PPS["1kΩ 保护电阻"]:::dev --> MCU_CORE
-    SGM6040A -->|"Pin 6 VBAT 常通保持 15µA (维持RTC/SRAM)"| GNSS
+    SGM6040D -->|"Pin 6 VBAT 常通保持 15µA (维持RTC/SRAM)"| GNSS
 
     MCU_CORE -->|"SPI 8MHz"| IMU
     IMU --> MAG & BARO
@@ -312,14 +331,14 @@ flowchart TB
 
 | 架构对比维度 | 🟢 常通超低功耗微安域 (Always-On Domain) | 🔵 受控突发高能毫安域 (Switched GNSS Domain) |
 | :--- | :--- | :--- |
-| **所属核心硬件** | **nRF52840 SoC、LSM6DSV16X IMU、W25Q512JV (64MB NOR)** | **ATGM336H-F8N-76 GNSS 模组、双频有源陶瓷天线** |
-| **独立供电通道** | **圣邦微 SGM6040A 纳安级 DCDC** (静态电流 60nA, 750mA 输出) | **圣邦微 SGM2036-3.3 专用受控 LDO** (300mA, 高 PSRR, 低噪声) |
-| **工作电压基准** | **标称 3.3V (自适应宽压容限)**<br>锂电 >3.45V 稳压 3.3V；末期 3.0~3.45V 直通旁路，全板器件均满足 2.7~3.6V 宽压 | **严格受控 3.3V (专路 LDO)**<br>供给 Pin 8 VCC；低电量时低压差直通，消除电平倒灌与超限风险 |
-| **供电控制机制** | 全天候常通供电，维持系统时基与状态监听 | **通过 MCU GPIO `P0.04` 控制 SGM2036 的 EN 脚**实现硬件级通断 |
-| **静态休眠电流** | **$\mathbf{25\text{ }\mu\text{A} \sim 35\text{ }\mu\text{A}}$**<br>(System ON 1.5µA + RTC + IMU 15Hz LPM1 7.5µA + Flash 1µA + GNSS Pin 6 VBAT 15µA) | **$< 0.01\text{ }\mu\text{A}$** (SGM2036 关断漏电仅 10nA，彻底消除静电漏电) |
-| **动态运行电流** | $0.65\text{ mA} \sim 8\text{ mA}$ (BLE 广播/扫描/姿态运算) | **$44\text{ mA} \sim 50\text{ mA}$** (双频 176 通道满载搜星 + 有源天线) |
+| **所属核心硬件** | **nRF52840 SoC、LSM6DSV16X IMU、W25Q512JV (64MB NOR)** | **ATGM336H-F8N-76 GNSS 模组、内置双频无源陶瓷天线、ATR2652 双频 LNA** |
+| **独立供电通道** | **圣邦微 SGM6040D 纳安级 DCDC** (静态电流 60nA, 750mA 输出, 固定 3.4V) | **圣邦微 SGM2045-3.3 专用受控 LDO** (300mA, 92dB PSRR, 80mV压差, 9.5µVrms低噪) |
+| **工作电压基准** | **稳定 3.4V (SGM6040D 出厂固定输出)**<br>锂电 >3.45V 稳压 3.4V；末期 3.0~3.45V 直通旁路，全板器件均满足 2.7~3.6V 宽压 | **严格受控 3.3V (专路 LDO 92dB PSRR)**<br>供给 Pin 8 VCC 与 ATR2652；输入接 3.4V 轨，压差仅 0.1V 消除线性发热 |
+| **供电控制机制** | 全天候常通供电，维持系统时基与状态监听 | **通过 MCU GPIO `P0.04` 控制 SGM2045 的 EN 脚**实现硬件级通断 |
+| **静态休眠电流** | **$\mathbf{25\text{ }\mu\text{A} \sim 35\text{ }\mu\text{A}}$**<br>(System ON 1.5µA + RTC + IMU 15Hz LPM1 7.5µA + Flash 1µA + GNSS Pin 6 VBAT 15µA) | **$< 0.03\text{ }\mu\text{A}$** (SGM2045 关断漏电仅 30nA，彻底消除静电漏电) |
+| **动态运行电流** | $0.65\text{ mA} \sim 8\text{ mA}$ (BLE 广播/扫描/姿态运算) | **$\mathbf{48.5\text{ mA}}$** (双频 176 通道满载 44mA + ATR2652 双频 LNA 4.5mA) |
 | **运行占空比** | 100% 全天候在线守护 | 脉冲式快照工作（常规运动下仅占空约 **4% ~ 10%**） |
-| **后备保活设计** | 主控保持高精度时间戳与事件哈希表 | 模组 `Pin 6 VBAT` 接常通 3.3V (15µA)，维持 RTC/SRAM 热启动状态 |
+| **后备保活设计** | 主控保持高精度时间戳与事件哈希表 | 模组 `Pin 6 VBAT` 接常通 3.4V (15µA)，维持 RTC/SRAM 热启动状态 |
 
 ---
 
@@ -376,7 +395,7 @@ flowchart TD
 | **Pin 3 / P0.01** | `RTC_XTAL_OUT (XL2)`| OUT | **32.768 kHz 外部低频晶体 (LFXO)** 输出端 |
 | **Pin 40 / P0.02** | `BAT_ADC_IN (AIN0)` | IN | 电池电压分压采集模拟输入（Standard Drive，低频） |
 | **Pin 39 / P0.03** | `BAT_ADC_EN (AIN1)` | OUT | 电池分压回路使能控制（平时高电平截止，采样时拉低导通 P-MOS） |
-| **Pin 4 / P0.04** | `GNSS_LDO_EN` | OUT | **控制圣邦微 SGM2036 LDO 的 EN 脚**（高电平为 ATGM336H Pin 8 VCC 通电，低电平硬切断） |
+| **Pin 4 / P0.04** | `GNSS_LDO_EN` | OUT | **控制圣邦微 SGM2045 LDO 的 EN 脚**（高电平为 ATGM336H Pin 8 VCC 与 ATR2652 通电，低电平硬切断） |
 | **Pin 5 / P0.05** | `GNSS_RXD` | IN | UART 接收引脚（串联 1kΩ 限流电阻连 ATGM336H Pin 2 TXD0，波特率 115200） |
 | **Pin 6 / P0.07** | `GNSS_TXD` | OUT | UART 发送引脚（串联 1kΩ 限流电阻连 ATGM336H Pin 3 RXD0，替代不存在的 P0.06） |
 | **Pin 7 / P0.08** | `GNSS_PPS` | IN | 接收 ATGM336H Pin 4 1PPS 授时脉冲（串联 1kΩ 电阻；**GPIOTE 事件经 PPI 直连 TIMER0 捕获寄存器，16MHz 下 62.5ns 分辨率百纳秒硬件授时对齐**） |
@@ -421,18 +440,18 @@ flowchart TD
 
 | 工作模式 | 当前工程状态 | 电源与硬件工作配置 | 电池侧平均放电电流 (3.8V锂电) | 1000mAh 电池续航模型 (900mAh 有效电量) |
 | :--- | :--- | :--- | :--- | :--- |
-| **1. 深度静止待机模式** | **设计目标**<br>*(待仪器实测)* | SGM6040A 输出标称 3.3V；nRF52840 System ON 休眠 (1.5µA) + 32.768kHz RTC；LSM6DSV16X 深度静止 15Hz LPM1 加速度计 (~7.5µA)；W25Q512JV 深休眠 (1µA)；**GNSS Pin 8 主电切断，Pin 6 VBAT 常通保持 (15µA)**；整机静态待机底噪预算：7.5+15+1.5+1+1=26.0µA | **$\mathbf{25\text{ }\mu\text{A} \sim 35\text{ }\mu\text{A}}$**<br>(典型底噪约 26µA) | **理论待机约 1000 ~ 1400 天**<br>(静态存放长达 3 年，完全由电芯自放电主导) |
-| **2. 自适应轨迹记录模式 (默认)** | **计算模型**<br>*(待路测闭环)* | 每日 14h 静止待机 + 10h 移动通勤；GNSS 微占空比自适应脉冲供电（每 45~60s 唤醒 2.5~6s）；IMU 低功耗计步，丢星移交 PDR 惯导接管；BLE 微占空比扫描 | **$\mathbf{0.96\text{ mA} \sim 3.10\text{ mA}}$**<br>(典型通勤工况约 **1.79 mA**) | **理论设计目标：12.1 ~ 39.0 天**<br>(典型通勤工况 **20.9 天**；若配 1200mAh 电芯约 **25.1 天**) |
-| **3. 高精度连续记录模式 (按键切换)** | **计算模型**<br>*(待多工况实测)* | GNSS 100% 常开连续跟踪 (1~5Hz)；双频有源陶瓷天线前置 LNA 常通 (~6mA)；nRF52840 64MHz 运行 + Flash 连续写入 + BLE 广播；IMU Combo 模式 (0.8mA) | **$\mathbf{55\text{ mA} \sim 58\text{ mA}}$**<br>(典型放电电流 **55.8 mA**) | **理论设计目标：$\approx \mathbf{16.1\text{ 小时}}$**<br>(满足越野跑、骑行、户外赛事单日连续全开) |
+| **1. 深度静止待机模式** | **设计目标**<br>*(待仪器实测)* | SGM6040D 输出稳定 3.4V；nRF52840 System ON 休眠 (1.5µA) + 32.768kHz RTC；LSM6DSV16X 深度静止 15Hz LPM1 加速度计 (~7.5µA)；W25Q512JV 深休眠 (1µA)；**GNSS Pin 8 主电切断，Pin 6 VBAT 常通保持 (15µA)**；整机静态待机底噪预算：7.5+15+1.5+1+1=26.0µA | **$\mathbf{25\text{ }\mu\text{A} \sim 35\text{ }\mu\text{A}}$**<br>(典型底噪约 26µA) | **理论待机约 1000 ~ 1400 天**<br>(静态存放长达 3 年，完全由电芯自放电主导) |
+| **2. 自适应轨迹记录模式 (默认)** | **计算模型**<br>*(待路测闭环)* | 每日 14h 静止待机 + 10h 移动通勤；GNSS 微占空比自适应脉冲供电（每 45~60s 唤醒 2.5~6s）；IMU 低功耗计步，丢星移交 PDR 惯导接管；BLE 微占空比扫描 | **$\mathbf{0.94\text{ mA} \sim 3.01\text{ mA}}$**<br>(典型通勤工况约 **1.74 mA**) | **理论设计目标：12.5 ~ 40.1 天**<br>(典型通勤工况 **21.5 天**；若配 1200mAh 电芯约 **25.8 天**) |
+| **3. 高精度连续记录模式 (按键切换)** | **计算模型**<br>*(待多工况实测)* | GNSS 100% 常开连续跟踪 (1~5Hz)；内置无源陶瓷天线 + 板载 ATR2652 双频 LNA (4.5mA)；nRF52840 64MHz 运行 + Flash 连续写入 + BLE 广播；IMU Combo 模式 (0.8mA) | **$\mathbf{52\text{ mA} \sim 56\text{ mA}}$**<br>(典型放电电流 **54.0 mA**) | **理论设计目标：$\approx \mathbf{16.7\text{ 小时}}$**<br>(满足越野跑、骑行、户外赛事单日连续全开) |
 | **4. 低电量保护与硬件关断模式** | **设计规范**<br>*(硬件保护板)* | 电池跌破 3.3V 触发固件低电降级（关停 GNSS 脉冲，仅保留计步）；跌破 **3.0V** 由电芯 PCM 保护板硬件切断放电回路，防止电芯过放报废 | **$< 0.1\text{ }\mu\text{A}$**<br>(PCM 保护板硬件截止漏电) | **长期存放防过放保护**<br>(插入 Type-C 充电至 >3.4V 自动复位重启) |
 
 > **⚠️ 高精度模式整机放电电流严谨重新测算依据**：
 > - 早期粗略估算的 42mA 低于 GNSS 模组本身的单体典型功耗，在物理上不能成立，特此严格重新核算：
->   1. **GNSS 子系统 (SGM2036 供电轨)**：ATGM336H-F8N-76 双频 176 通道满载运行电流为 **44.0 mA**，双频有源陶瓷天线前置双频 LNA 典型工作电流为 **6.0 mA**，合计负载为 **50.0 mA @ 3.3V**。由于采用线性 LDO 供电，电池侧放电电流等同于负载电流，即 **电池端放电贡献为 50.0 mA**；
->   2. **主控与存储系统 (SGM6040A DCDC 供电轨)**：nRF52840 运行于 64MHz（开启 FPU/DMA 密集数据吞吐）约 4.5mA，Flash 连续写入平均约 1.5mA，BLE 广播约 0.5mA，总负载约 6.5mA @ 3.3V。按 SGM6040A 在此载荷下 90% 转换效率与 3.8V 标称电池电压折算：$I_{bat\_mcu} = (3.3\text{V} \times 6.5\text{mA}) / (3.8\text{V} \times 0.90) \approx \mathbf{5.0\text{ mA}}$；
->   3. **运动传感系统**：LSM6DSV16X 全开加速度计与陀螺仪（Combo 模式）约 0.8mA @ 3.3V，折算电池侧约 **0.8 mA**；
->   - **整机合计电池侧平均放电电流**：$50.0\text{mA} + 5.0\text{mA} + 0.8\text{mA} = \mathbf{55.8\text{ mA}}$；
->   - 在 1000mAh 聚合物锂电池（扣除老化的 **900 mAh 真实有效电量**）下，连续记录时长为：$900\text{ mAh} / 55.8\text{ mA} \approx \mathbf{16.1\text{ 小时}}$。
+>   1. **GNSS 子系统 (SGM2045 供电轨)**：ATGM336H-F8N-76 双频 176 通道满载运行电流为 **44.0 mA**，板载 ATR2652 双频 LNA 工作电流为 **4.5 mA**，合计负载为 **48.5 mA @ 3.3V**。由 SGM6040D 3.4V 轨二级降压供电，电池侧放电电流折算为：$(3.4\text{V} \times 48.5\text{mA}) / (3.8\text{V} \times 0.90) \approx \mathbf{48.2\text{ mA}}$；
+>   2. **主控与存储系统 (SGM6040D DCDC 供电轨)**：nRF52840 运行于 64MHz（开启 FPU/DMA 密集数据吞吐）约 4.5mA，Flash 连续写入平均约 1.5mA，BLE 广播约 0.5mA，总负载约 6.5mA @ 3.4V。折算电池侧放电电流：$(3.4\text{V} \times 6.5\text{mA}) / (3.8\text{V} \times 0.90) \approx \mathbf{5.0\text{ mA}}$；
+>   3. **运动传感系统**：LSM6DSV16X 全开加速度计与陀螺仪（Combo 模式）约 0.8mA @ 3.4V，折算电池侧约 **0.8 mA**；
+>   - **整机合计电池侧平均放电电流**：$48.2\text{mA} + 5.0\text{mA} + 0.8\text{mA} \approx \mathbf{54.0\text{ mA}}$；
+>   - 在 1000mAh 聚合物锂电池（扣除老化的 **900 mAh 真实有效电量**）下，连续记录时长为：$900\text{ mAh} / 54.0\text{ mA} \approx \mathbf{16.7\text{ 小时}}$。
 
 ---
 
@@ -441,7 +460,7 @@ flowchart TD
 
 > **900 mAh 有效可用电量扣减依据**：
 > 1. **锂电池常温自放电**：扣除约 2%~3% / 月的电化学自放电损失（折合约 20~30 mAh）；
-> 2. **截止电压与转换开销**：PCM 保护板 3.0V 截止与 SGM6040A 压差留存（约 30~40 mAh）；
+> 2. **截止电压与转换开销**：PCM 保护板 3.0V 截止与 SGM6040D 压差留存（约 30~40 mAh）；
 > 3. **户外低温环境折减**：户外 0℃~10℃ 环境下电化学活性衰减冗余（约 30~40 mAh）。
 
 | 功耗组成单元 | 🟢 乐观情景 (空旷郊外/星历极佳) | 🟡 典型情景 (城市开阔/步行通勤) | 🔴 悲观情景 (高楼峡谷/弱信号多遮挡) |
@@ -449,17 +468,17 @@ flowchart TD
 | **单次锁星出 Fix 耗时** | **2.5 秒** (极速热启动，0次超时) | **3.5 秒** (基准热启动，含遮挡) | **6.0 秒** (自适应延长，弱信号搜星) |
 | **采样周期** | 每 60 秒快照一次 (600次/天) | 每 45 秒快照一次 (800次/天) | 每 45 秒快照一次 (800次/天) |
 | **正常快照工作占空比** | **4.17%** | **7.78%** | **13.33%** |
-| **1. GNSS 正常脉冲定位能耗**<br>*(含模组44mA+有源天线6mA=50mA)* | $50\text{mA} \times 4.17\% \times 10\text{h} = \mathbf{20.85\text{ mAh}}$ | $50\text{mA} \times 7.78\% \times 10\text{h} = \mathbf{38.90\text{ mAh}}$ | $50\text{mA} \times 13.33\% \times 10\text{h} = \mathbf{66.65\text{ mAh}}$ |
-| **2. 丢星超时搜星惩罚项** | **0 次** 超时惩罚: $\mathbf{0.00\text{ mAh}}$ | **3 次** 15s 超时探查: $\mathbf{0.63\text{ mAh}}$ | **8 次** 15s 超时探查: $\mathbf{1.67\text{ mAh}}$ |
+| **1. GNSS 正常脉冲定位能耗**<br>*(含模组44mA+板载LNA 4.5mA=48.5mA)* | $48.5\text{mA} \times 4.17\% \times 10\text{h} = \mathbf{20.22\text{ mAh}}$ | $48.5\text{mA} \times 7.78\% \times 10\text{h} = \mathbf{37.73\text{ mAh}}$ | $48.5\text{mA} \times 13.33\% \times 10\text{h} = \mathbf{64.65\text{ mAh}}$ |
+| **2. 丢星超时搜星惩罚项** | **0 次** 超时惩罚: $\mathbf{0.00\text{ mAh}}$ | **3 次** 15s 超时探查: $\mathbf{0.61\text{ mAh}}$ | **8 次** 15s 超时探查: $\mathbf{1.62\text{ mAh}}$ |
 | **3. GNSS VBAT 常通保持** | $15\mu\text{A} \times 24\text{h} = \mathbf{0.36\text{ mAh}}$ | $15\mu\text{A} \times 24\text{h} = \mathbf{0.36\text{ mAh}}$ | $15\mu\text{A} \times 24\text{h} = \mathbf{0.36\text{ mAh}}$ |
 | **4. 静止待机 (14h, 常通域底噪)**| $26\mu\text{A} \times 14\text{h} = \mathbf{0.36\text{ mAh}}$ | $26\mu\text{A} \times 14\text{h} = \mathbf{0.36\text{ mAh}}$ | $30\mu\text{A} \times 14\text{h} = \mathbf{0.42\text{ mAh}}$ |
 | **5. IMU 计步与 PDR 磁融合** | 纯加速度计低功耗: $\mathbf{0.30\text{ mAh}}$ | 偶发 PDR+低频磁融合: $\mathbf{1.20\text{ mAh}}$ | 频繁室内长程 PDR: $\mathbf{3.00\text{ mAh}}$ |
 | **6. BLE 扫描与存储归档** | 极低占空比追加: $\mathbf{1.20\text{ mAh}}$ | 典型扫描+夜间归档: $\mathbf{1.60\text{ mAh}}$ | 高密度射频指纹写入: $\mathbf{2.20\text{ mAh}}$ |
-| **每日总耗电量估算** | **$\mathbf{23.07\text{ mAh / 天}}$** | **$\mathbf{43.05\text{ mAh / 天}}$** | **$\mathbf{74.30\text{ mAh / 天}}$** |
-| **日均放电电流** | $\approx 0.96\text{ mA}$ | $\approx 1.79\text{ mA}$ | $\approx 3.10\text{ mA}$ |
-| **预估理论续航 (1000mAh)** | **$\mathbf{39.0\text{ 天}}$** | **$\mathbf{20.9\text{ 天}}$** | **$\mathbf{12.1\text{ 天}}$** |
+| **每日总耗电量估算** | **$\mathbf{22.44\text{ mAh / 天}}$** | **$\mathbf{41.86\text{ mAh / 天}}$** | **$\mathbf{72.25\text{ mAh / 天}}$** |
+| **日均放电电流** | $\approx 0.94\text{ mA}$ | $\approx 1.74\text{ mA}$ | $\approx 3.01\text{ mA}$ |
+| **预估理论续航 (1000mAh)** | **$\mathbf{40.1\text{ 天}}$** | **$\mathbf{21.5\text{ 天}}$** | **$\mathbf{12.5\text{ 天}}$** |
 
-*注：若使用 1200mAh 电池（有效电量 1080mAh），典型工况下理论续航为 **25.1 天**；若在近郊低干扰环境下，续航可达整月以上。*
+*注：若使用 1200mAh 电池（有效电量 1080mAh），典型工况下理论续航为 **25.8 天**；若在近郊低干扰环境下，续航可达整月以上。*
 
 ---
 
@@ -495,9 +514,9 @@ stateDiagram-v2
 
     STATE_OFF --> STATE_STARTUP: 定时心跳唤醒 / 计步大动态触发 / 按键POI打点
     note right of STATE_OFF
-        • SGM2036 LDO_EN = 0 (Pin 8 主电硬切断)
+        • SGM2045 LDO_EN = 0 (Pin 8 主电硬切断)
         • MCU TXD/PPS 设为 High-Z (防倒灌)
-        • Pin 6 VBAT 常通 3.3V 保持 RTC 与 SRAM 状态 (15µA)
+        • Pin 6 VBAT 常通 3.4V 保持 RTC 与 SRAM 状态 (15µA)
     end note
 
     STATE_STARTUP --> STATE_COLD_ACQ: 判定星历失效 (冷启动: 无星历 / >4小时未定)
@@ -552,7 +571,7 @@ stateDiagram-v2
     note left of STATE_POWER_DOWN
         • 注销 UART 外设驱动
         • MCU TXD/PPS 设为 High-Z / 浮空
-        • 拉低 P0.04 关闭 SGM2036 LDO
+        • 拉低 P0.04 关闭 SGM2045 LDO
     end note
 ```
 
@@ -838,12 +857,12 @@ Life_GPS/
 ### 阶段一：硬件架构待冻结，禁止直接投板 (Phase 1: Architecture Pending Freeze - DO NOT TAPE-OUT)
 > ⚠️ **冻结红线警示**：在完成以下 5 项关键闭环验证前，禁止直接输出 Gerber 光绘打样投板：
 
-- [x] **建立全项目唯一硬件配置基线表**：主 README、Doc/README、架构图与引脚分配表全部对齐同一套元器件料号（主控 nRF52840-QFAA QFN48、ATGM336H-F8N-76、W25Q512JV、SGM6040A TDFN-8L）、封装、时钟、接口与供电。
+- [x] **建立全项目唯一硬件配置基线表**：主 README、Doc/README、架构图与引脚分配表全部对齐同一套元器件料号（主控 nRF52840-QFAA QFN48、ATGM336H-F8N-76、W25Q512JV、SGM6040D TDFN-8L 3.4V、SGM2045-3.3 XTDFN）、封装、时钟、接口与供电。
 - [x] **GNSS 分层状态机与上电时序设计闭环**：确立冷启动 60s 独立超时窗口、冷启动首次 Fix 后保持通电 35s 广播星历接收机制，以及热启动 3.5s -> 8s -> 15s 自适应延展与指数退避接管时序。
-- [x] **GNSS 模组真实引脚与备用供电明确**：依据原厂手册确立 Pin 1 为 GND、Pin 6 为 VBAT、Pin 8 为 VCC；Pin 6 直连常通主电源，将 15µA 漏电流全额纳入整机常通待机底噪（25~35µA 之中）。
-- [x] **射频前端双频方案决策**：确立微型双频有源陶瓷天线（模组 Pin 14 VCC_RF 3.3V/50mA短路限流偏置供电联动）为基准方案，中科微 ATR2652 + 高通 B39162B2651P810 为板载分立选配方案。
+- [x] **GNSS 模组真实引脚与备用供电明确**：依据原厂手册确立 Pin 1 为 GND、Pin 6 为 VBAT、Pin 8 为 VCC；Pin 6 直连常通 3.4V 主电源，将 15µA 漏电流全额纳入整机常通待机底噪（25~35µA 之中）。
+- [x] **射频前端内置无源天线方案决策**：全面清除有源天线描述，正式确立内置微型双频无源陶瓷贴片天线 + 中科微 ATR2652 双频 LNA (4.5mA) + 高通 B39162B2651P810 双通带 SAW 级联方案，由 SGM2045-3.3 洁净受控供电。
 - [x] **惯导融合架构概念纠偏与 SFLP 功耗规范**：明确 LSM6DSV16X SFLP 为纯 6 轴姿态解算（Game Rotation Vector），规范 60Hz 输出下增量功耗为 14µA；明确三层融合分工与固件级磁异常检测降权机制；去掉“彻底消除偏航漂移”承诺。
-- [x] **高精度连续模式功耗重新核算**：纠正 42mA 错误，实事求是核算出整机电池端放电电流约为 55.8mA，900mAh 有效电量下连续工作时间约为 16.1 小时。
+- [x] **高精度连续模式功耗重新核算**：基于 SGM6040D (3.4V) + SGM2045 (3.3V) 二级拓扑与无源天线+LNA (48.5mA)，实事求是核算出整机电池端放电电流约为 54.0mA，900mAh 有效电量下连续工作时间约为 16.7 小时。
 - [x] **存储容量数学模型与去重策略闭环**：给出 64MB Flash 满足 7~14 年的自适应工况计算依据，警示高精模式 53 天边界；废除全局布隆过滤器，改用时间滑动窗口限频队列。
 - [x] **引脚与时钟准确表述**：明确 QFN48 引出 30 个有效 GPIO（1 复位，1 预留，28 外设分配）；明确 UICR NFCPINS=0 释放 P0.09/P0.10；给出外部晶振匹配电容公式与杂散容抗估算。
 
@@ -853,22 +872,23 @@ Life_GPS/
 2. **GNSS 冷启动与星历状态保持有效性实测验收**：
    - 实测冷启动下模组持续供电并在 60s 内成功获得首定，首定后保持通电 35s 接收广播星历帧；随后切断 Pin 8 主电 30 分钟（保留 Pin 6 VBAT），再次唤醒时实测能否在 $\le 3.5\text{ s}$ 内完成热启动首捕秒定；
 3. **整机待机底噪与高精连续电流仪器实测验收**：
-   - 使用 Nordic PPK2 功耗分析仪实测深度静止模式整机电池端输入电流，必须稳定在 $\le 35\text{ }\mu\text{A}$（含 GNSS Pin 6 VBAT 15µA 与 IMU 15Hz LPM1 7.5µA）；实测高精度连续工作电流约为 $53\text{ mA} \sim 58\text{ mA}$；
+   - 使用 Nordic PPK2 功耗分析仪实测深度静止模式整机电池端输入电流，必须稳定在 $\le 35\text{ }\mu\text{A}$（含 GNSS Pin 6 VBAT 15µA 与 IMU 15Hz LPM1 7.5µA）；实测高精度连续工作电流约为 $52\text{ mA} \sim 56\text{ mA}$ (典型 54.0mA)；
 4. **Flash 掉电 Journaling 双备份与原子提交无损恢复验收**：
    - 在夜间归档压缩包写入期间执行随机强行断电拔电池 100 次，重新上电后验证暂存区数据 0 损坏、0 丢失，系统能够无损回滚并重试归档；
 5. **铁磁异常检测与 PDR 航向自适应降权实测验收**：
    - 在强磁场靠近（矢量模长偏离本地基准超过 $\pm 30\%$）或进入电梯轿厢时，验证固件能否毫秒级将地磁权重归零，防止航向突变发散。
 - [ ] **硬件原理图绘制与投板准备**：
   - [ ] 完成 SGM4056 充电电路（$R_{PROG}=2.8\text{k}\Omega$，350mA 恒流控温）、带保护板电芯（DW01A+8205A 硬件过放兜底）与 NTC/JEITA 温度监测网络；
-  - [ ] 完成 SGM6040A 60nA 纳安级降压 DCDC 电路（全板统一 3.3V 逻辑基准）；
+  - [ ] 完成 SGM6040D 60nA 纳安级降压 DCDC 电路（固定输出 3.4V 供电轨，带 MODE/STOP 引脚）；
+  - [ ] 完成传感器（LSM6DSV16X、LIS2MDL、BMP388）3.4V 磁珠+电容 π 型低噪滤波供电网络设计；
   - [ ] 完成 Type-C 输入 USBLC6-2SC6 TVS 保护阵列与 GNSS 天线射频超低结容（$<0.2\text{pF}$）ESD 二极管保护；
-  - [ ] 完成 SGM2036-3.3 独立受控 LDO 供电与 ATGM336H-F8N-76 双频射频前端电路（带 1kΩ 信号防倒灌限流电阻）；
+  - [ ] 完成 SGM2045-3.3 独立受控 LDO 供电与 ATGM336H-F8N-76 双频射频前端电路（92dB 高 PSRR，专供模组 Pin 8 VCC 与 ATR2652，带 1kΩ 信号防倒灌限流电阻）；
   - [ ] 完成 nRF52840 QFN48 最小系统、双晶体匹配电路与板载 DEBUG_UART 测试焊盘；
   - [ ] 完成 LSM6DSV16X 与 Sensor Hub（LIS2MDL 电子罗盘、BMP388 气压计）I2C 总线连接；
   - [ ] 完成 W25Q512JV 64MB SPI Flash 4~8MHz 低噪声布线；
   - [ ] 完成双按键消抖滤波、三色低功耗 LED 及微安级电池分压采样控制电路。
 - [ ] **4 层高密度沉金 PCB 设计与打样**：
-  - [ ] 顶层预留 $\ge 30 \times 30\text{ mm}$ 连续参考地平面，天线馈线 50Ω 共面波导阻抗控制；
+  - [ ] 顶层预留 $\ge 25 \times 25\text{ mm}$ 内置微型无源陶瓷天线独立净空区，馈线 50Ω 共面波导阻抗控制；
   - [ ] 严格隔离 2.4GHz BLE 板载天线与顶层 GNSS 双频陶瓷天线净空区，切断数字总线高频谐波串入；
   - [ ] 在 PCB 底层引出 **8 个量产测试点（ICT Test Points）**：`SWDIO`、`SWDCLK`、`DEBUG_TX`、`DEBUG_RX`、`VBAT`、`3V3`、`1PPS`、`GND`，便于产线顶针夹具自动化烧录与测试。
 
