@@ -2,7 +2,7 @@
 
 [![License: Hardware CERN-OHL-S / Software MIT](https://img.shields.io/badge/License-Hardware%20CERN--OHL--S%20%7C%20Software%20MIT-blue.svg)](LICENSE)
 [![MCU: nRF52840 QFN48](https://img.shields.io/badge/MCU-nRF52840%20(QFN48%20QFAA)-red.svg)](Doc/nRF52840_Product_Specification_v1.11.pdf)
-[![GNSS: ATGM336H-F8N-76](https://img.shields.io/badge/GNSS-ATGM336H--F8N--76%20(Dual--Band)-green.svg)](Doc/ATGM336H-F8N76_Datasheet.pdf)
+[![GNSS: ATGM336H-F8N76](https://img.shields.io/badge/GNSS-ATGM336H--F8N76%20(Dual--Band)-green.svg)](Doc/ATGM336H-F8N76_Datasheet.pdf)
 [![IMU: LSM6DSV16X](https://img.shields.io/badge/IMU-LSM6DSV16X-orange.svg)](Doc/LSM6DSV16X_Datasheet.pdf)
 [![Flash: Winbond 64MB NOR](https://img.shields.io/badge/Flash-Winbond%2064MB%20(W25Q512JV)-yellow.svg)](Doc/W25Q512JV_SPI_Flash.pdf)
 [![PMIC: SGMICRO](https://img.shields.io/badge/Power-SGMICRO%20(SGM6040D%2BSGM2045%2BSGM4056)-purple.svg)](Doc/README.md)
@@ -23,7 +23,7 @@
   - [2.0 唯一硬件配置基线表 (Hardware Configuration Baseline Matrix)](#20-唯一硬件配置基线表-hardware-configuration-baseline-matrix)
   - [2.1 主控 SoC：Nordic nRF52840 (QFN48 封装)](#21-主控-socnordic-nrf52840-qfn48-封装)
   - [2.2 ⚠️ nRF52840 QFN48 封装功能限制与硬件避坑重点](#22-️-nrf52840-qfn48-封装功能限制与硬件避坑重点)
-  - [2.3 GNSS 卫星定位模组：中科微 ATGM336H-F8N-76 (双频旗舰款)](#23-gnss-卫星定位模组中科微-atgm336h-f8n-76-双频旗舰款)
+  - [2.3 GNSS 卫星定位模组：中科微 ATGM336H-F8N76 (双频旗舰款)](#23-gnss-卫星定位模组中科微-atgm336h-f8n76-双频旗舰款)
   - [2.4 6轴惯性测量单元 (IMU)：STMicroelectronics LSM6DSV16X](#24-6轴惯性测量单元-imustmicroelectronics-lsm6dsv16x)
   - [2.5 板载 64MB (512Mb) SPI NOR Flash：Winbond W25Q512JV](#25-板载-64mb-512mb-spi-nor-flashwinbond-w25q512jv)
   - [2.6 全套圣邦微 (SGMICRO) 高效电源管理与保护方案](#26-全套圣邦微-sgmicro-高效电源管理与保护方案)
@@ -75,7 +75,7 @@
 | 模块类别 | 选定器件完整型号 | 原厂品牌 | 封装规格 | 工作电压域 | 关键总线 / 目标时钟 | 上电 / 控制方式 | 归档官方规格书 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **主控 SoC** | **nRF52840-QFAA** | Nordic Semi | QFN48<br>*(6×6mm, 0.4mm pitch)* | 稳定 3.4V<br>*(Normal 模式, 1.7~3.6V)* | 64MHz ARM Cortex-M4F<br>HFXO: 32MHz / LFXO: 32.768kHz | 全天候常通供电 (Always-On)<br>引出 30 个物理 GPIO (28外设+1复位+1预留) | `Doc/nRF52840_Product_Specification_v1.11.pdf` |
-| **GNSS 模组** | **ATGM336H-F8N-76** | 杭州中科微 | LCC-18<br>*(10.1×9.7mm)* | 主电: 3.3V (Pin 8 VCC)<br>后备: 3.4V (Pin 6 VBAT) | UART 115200bps (8-N-1)<br>1PPS 硬件授时 (经 PPI 直连) | Pin 8 VCC 经 SGM2045-3.3 受控通断 (P0.04 EN)<br>Pin 6 VBAT 由 SGM6040D 常通供电 (15µA)<br>Pin 1 为 GND | `Doc/ATGM336H-F8N76_Datasheet.pdf` |
+| **GNSS 模组** | **ATGM336H-F8N76** | 杭州中科微 | LCC-18<br>*(10.1×9.7mm)* | 主电: 3.3V (Pin 8 VCC)<br>后备: 3.4V (Pin 6 VBAT) | UART 115200bps (8-N-1)<br>1PPS 硬件授时 (经 PPI 直连) | Pin 8 VCC 经 SGM2045-3.3 受控通断 (P0.04 EN)<br>Pin 6 VBAT 由 SGM6040D 常通供电 (15µA)<br>Pin 1 为 GND | `Doc/ATGM336H-F8N76_Datasheet.pdf` |
 | **GNSS 射频天线** | **H2UJ4U1H2Q0100**<br>*(备选 M830120)* | Unictron (咏业)<br>/ Kyocera AVX | **超微型 Chip 天线**<br>*(5.0×3.0×0.5mm / 8.0×3.0mm)* | 无源器件 | 50Ω 共面波导 + π型调谐匹配<br>板角端全层独立净空区 | 纯无源超薄片状天线，零直流功耗<br>外置 ATR2652+SAW 补偿增益并抗BLE | 原厂数据手册 |
 | **板载双频 LNA** | **ATR2652** | 杭州中科微 | DFN-6 / SOT23-6 | 3.3V 受控 | L1 增益 22.4dB / NF 0.85dB<br>L5 增益 22.0dB / NF 0.75dB | 挂载于受控 SGM2045-3.3 电源轨<br>工作电流仅 4.5mA，随模组同步休眠断电 | 原厂选型手册 |
 | **板载双通带 SAW** | **B39162B2651P810** | Qualcomm / RF360 | 1511<br>*(1.5×1.1mm)* | 无源器件 | 单进单出双通带 (L1+L5)<br>2.4GHz BLE 抑制 > 38dB | 位于 ATR2652 与模组 Pin 11 RF_IN 之间<br>强力消除板载蓝牙发射自干扰 | 原厂选型手册 |
@@ -125,13 +125,13 @@
 
 ---
 
-### 2.3 GNSS 卫星定位模组：中科微 ATGM336H-F8N-76 (双频旗舰款)
+### 2.3 GNSS 卫星定位模组：中科微 ATGM336H-F8N76 (双频旗舰款)
 > **权威规格依据与来源声明**：依据中科微原厂官方《ATGM336H-F8N 模块用户手册》，本型号为中科微新一代基于 **AT9880 旗舰 SoC 架构** 的**全系统多频点（双频 L1+L5）高性能 GNSS 定位导航与高精度授时模组**。
 > *(注：-167dBm 跟踪灵敏度与最高 20Hz 更新率为模组产品手册给出的最佳工况标称值；底层 AT9880 单芯片规格书基础指标为 -162dBm 跟踪灵敏度与 10Hz 常规更新率。在实际固件部署中，自适应模式以 1Hz 快照为主，高精模式以 5Hz 连续解算为主，兼顾精度与功耗平衡)*：
 
 | 关键参数项目 | 官方规格书真实数据 | 详细特性与工程说明 |
 | :--- | :--- | :--- |
-| **具体订货型号** | **ATGM336H-F8N-76** | 全模多频版本（区别于单北斗专用的 AT9880B 系列），集成片上 Flash |
+| **具体订货型号** | **ATGM336H-F8N76** | 全模多频版本（区别于单北斗专用的 AT9880B 系列），集成片上 Flash |
 | **核心 SoC 芯片** | **中科微新一代 AT9880** | 多频多系统 GNSS SoC 单芯片，集成高性能嵌入式 CPU |
 | **支持卫星频点** | **L1 + L2/L5 多频点** | **BDS (B1I+B1C+B2a/B2b), GPS (L1+L2/L5), GALILEO (E1+E5a/E5b), GLONASS (L1), IRNSS (L5), QZSS, SBAS** |
 | **物理跟踪通道** | **176 通道** | 可同时跟踪多星座数十颗有效卫星，具备极强电离层延迟消除与多径抑制能力 |
@@ -341,7 +341,7 @@ flowchart TB
 
 | 架构对比维度 | 🟢 常通超低功耗微安域 (Always-On Domain) | 🔵 受控突发高能毫安域 (Switched GNSS Domain) |
 | :--- | :--- | :--- |
-| **所属核心硬件** | **nRF52840 SoC、LSM6DSV16X IMU、W25Q512JV (64MB NOR)** | **ATGM336H-F8N-76 模组、H2UJ4U1H2Q0100 无源 Chip 天线、ATR2652 双频 LNA** |
+| **所属核心硬件** | **nRF52840 SoC、LSM6DSV16X IMU、W25Q512JV (64MB NOR)** | **ATGM336H-F8N76 模组、H2UJ4U1H2Q0100 无源 Chip 天线、ATR2652 双频 LNA** |
 | **独立供电通道** | **圣邦微 SGM6040D 纳安级 DCDC** (静态电流 60nA, 750mA 输出, 固定 3.4V) | **圣邦微 SGM2045-3.3 专用受控 LDO** (300mA, 92dB PSRR, 80mV压差, 9.5µVrms低噪) |
 | **工作电压基准** | **稳定 3.4V (SGM6040D 出厂固定输出)**<br>锂电 >3.45V 稳压 3.4V；末期 3.0~3.45V 直通旁路，全板器件均满足 2.7~3.6V 宽压 | **严格受控 3.3V (专路 LDO 92dB PSRR)**<br>供给 Pin 8 VCC 与 ATR2652；输入接 3.4V 轨，压差仅 0.1V 消除线性发热 |
 | **供电控制机制** | 全天候常通供电，维持系统时基与状态监听 | **通过 MCU GPIO `P0.04` 控制 SGM2045 的 EN 脚**实现硬件级通断 |
@@ -477,7 +477,7 @@ flowchart TD
 
 > **⚠️ 高精度模式整机放电电流严谨重新测算依据**：
 > - 早期粗略估算的 42mA 低于 GNSS 模组本身的单体典型功耗，在物理上不能成立，特此严格重新核算：
->   1. **GNSS 子系统 (SGM2045 供电轨)**：ATGM336H-F8N-76 双频 176 通道满载运行电流为 **44.0 mA**，板载 ATR2652 双频 LNA 工作电流为 **4.5 mA**，合计负载为 **48.5 mA @ 3.3V**。由 SGM6040D 3.4V 轨二级降压供电，电池侧放电电流折算为：$(3.4\text{V} \times 48.5\text{mA}) / (3.8\text{V} \times 0.90) \approx \mathbf{48.2\text{ mA}}$；
+>   1. **GNSS 子系统 (SGM2045 供电轨)**：ATGM336H-F8N76 双频 176 通道满载运行电流为 **44.0 mA**，板载 ATR2652 双频 LNA 工作电流为 **4.5 mA**，合计负载为 **48.5 mA @ 3.3V**。由 SGM6040D 3.4V 轨二级降压供电，电池侧放电电流折算为：$(3.4\text{V} \times 48.5\text{mA}) / (3.8\text{V} \times 0.90) \approx \mathbf{48.2\text{ mA}}$；
 >   2. **主控与存储系统 (SGM6040D DCDC 供电轨)**：nRF52840 运行于 64MHz（开启 FPU/DMA 密集数据吞吐）约 4.5mA，Flash 连续写入平均约 1.5mA，BLE 广播约 0.5mA，总负载约 6.5mA @ 3.4V。折算电池侧放电电流：$(3.4\text{V} \times 6.5\text{mA}) / (3.8\text{V} \times 0.90) \approx \mathbf{5.0\text{ mA}}$；
 >   3. **运动传感系统**：LSM6DSV16X 全开加速度计与陀螺仪（Combo 模式）约 0.8mA @ 3.4V，折算电池侧约 **0.8 mA**；
 >   - **整机合计电池侧平均放电电流**：$48.2\text{mA} + 5.0\text{mA} + 0.8\text{mA} \approx \mathbf{54.0\text{ mA}}$；
@@ -964,7 +964,7 @@ Life_GPS/
 ### 阶段一：硬件架构基线闭环冻结 (Phase 1: Architecture Baseline Frozen - SSOT Established)
 > 🔒 **架构基线达成**：经多轮深度工程技术评审，本阶段架构基线已全部收敛闭环，正式确立为全项目单一真相源（SSOT），进入 Phase 2 原理图与版图设计阶段：
 
-- [x] **建立全项目唯一硬件配置基线表**：主 README、Doc/README、架构图与引脚分配表全部对齐同一套元器件料号（主控 nRF52840-QFAA QFN48、ATGM336H-F8N-76、W25Q512JV、SGM6040D TDFN-8L 3.4V、SGM2045-3.3 XTDFN）、封装、时钟、接口与供电。
+- [x] **建立全项目唯一硬件配置基线表**：主 README、Doc/README、架构图与引脚分配表全部对齐同一套元器件料号（主控 nRF52840-QFAA QFN48、ATGM336H-F8N76、W25Q512JV、SGM6040D TDFN-8L 3.4V、SGM2045-3.3 XTDFN）、封装、时钟、接口与供电。
 - [x] **nRF52840 QFN48 官方引脚最终交叉核对**：依据官方手册 Table 62 锁定 48 Pin 物理映射，标明 Pin 29/30/38/39/40/41/42/43/44 官方低频标准驱动限制，确保高频 SPI SCK 完全避开射频敏感区。
 - [x] **GNSS 分层状态机与上电时序设计闭环**：确立冷启动 60s 独立超时窗口、冷启动首次 Fix 后保持通电 35s 广播星历接收机制，以及热启动 3.5s -> 8s -> 15s 自适应延展与阶梯指数退避（120s/300s/深度休眠）接管时序。
 - [x] **GNSS 模组真实引脚与备用供电明确**：依据原厂手册确立 Pin 1 为 GND、Pin 6 为 VBAT、Pin 8 为 VCC；Pin 6 直连常通 3.4V 主电源，将 15µA 漏电流全额纳入整机常通待机底噪（25~35µA 之中）。
@@ -991,7 +991,7 @@ Life_GPS/
   - [ ] 完成 SGM6040D 60nA 纳安级降压 DCDC 电路（固定输出 3.4V 供电轨，Pin 5 VSET 直连 GND，P1.15 控制 STOP 引脚）；
   - [ ] 完成传感器（LSM6DSV16X、LIS2MDL、BMP388）3.4V 磁珠+电容 π 型低噪滤波供电网络设计；
   - [ ] 完成 Type-C 输入 USBLC6-2SC6 TVS 保护阵列与 GNSS 天线射频超低结容（$<0.2\text{pF}$）ESD 二极管保护；
-  - [ ] 完成 SGM2045-3.3 独立受控 LDO 供电与 ATGM336H-F8N-76 双频射频前端电路（92dB 高 PSRR，专供模组 Pin 8 VCC 与 ATR2652，带 1kΩ 信号防倒灌限流电阻）；
+  - [ ] 完成 SGM2045-3.3 独立受控 LDO 供电与 ATGM336H-F8N76 双频射频前端电路（92dB 高 PSRR，专供模组 Pin 8 VCC 与 ATR2652，带 1kΩ 信号防倒灌限流电阻）；
   - [ ] 完成 nRF52840 QFN48 最小系统、双晶体匹配电路与板载 DEBUG_UART 测试焊盘；
   - [ ] 完成 LSM6DSV16X 与 Sensor Hub（LIS2MDL 电子罗盘、BMP388 气压计）I2C 总线连接；
   - [ ] 完成 W25Q512JV 64MB SPI Flash 4~8MHz 低噪声布线；

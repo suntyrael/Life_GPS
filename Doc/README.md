@@ -16,7 +16,7 @@
 | 模块类别 | 选定器件完整型号 | 原厂品牌 | 封装规格 | 工作电压域 | 关键总线 / 目标时钟 | 上电 / 控制方式 | 归档官方规格书 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **主控 SoC** | **nRF52840-QFAA** | Nordic Semi | QFN48<br>*(6×6mm, 0.4mm pitch)* | 稳定 3.4V<br>*(Normal 模式, 1.7~3.6V)* | 64MHz ARM Cortex-M4F<br>HFXO: 32MHz / LFXO: 32.768kHz | 全天候常通供电 (Always-On)<br>引出 30 个物理 GPIO (28外设+1复位+1预留) | `nRF52840_Product_Specification_v1.11.pdf` |
-| **GNSS 模组** | **ATGM336H-F8N-76** | 杭州中科微 | LCC-18<br>*(10.1×9.7mm)* | 主电: 3.3V (Pin 8 VCC)<br>后备: 3.4V (Pin 6 VBAT) | UART 115200bps (8-N-1)<br>1PPS 硬件授时 (经 PPI 直连) | Pin 8 VCC 经 SGM2045-3.3 受控通断 (P0.04 EN)<br>Pin 6 VBAT 由 SGM6040D 常通供电 (15µA)<br>Pin 1 为 GND | `ATGM336H-F8N76_Datasheet.pdf` |
+| **GNSS 模组** | **ATGM336H-F8N76** | 杭州中科微 | LCC-18<br>*(10.1×9.7mm)* | 主电: 3.3V (Pin 8 VCC)<br>后备: 3.4V (Pin 6 VBAT) | UART 115200bps (8-N-1)<br>1PPS 硬件授时 (经 PPI 直连) | Pin 8 VCC 经 SGM2045-3.3 受控通断 (P0.04 EN)<br>Pin 6 VBAT 由 SGM6040D 常通供电 (15µA)<br>Pin 1 为 GND | `ATGM336H-F8N76_Datasheet.pdf` |
 | **GNSS 射频天线** | **H2UJ4U1H2Q0100**<br>*(备选 M830120)* | Unictron (咏业)<br>/ Kyocera AVX | **超微型 Chip 天线**<br>*(5.0×3.0×0.5mm / 8.0×3.0mm)* | 无源器件 | 50Ω 共面波导 + π型调谐匹配<br>板角端全层独立净空区 | 纯无源超薄片状天线，零直流功耗<br>外置 ATR2652+SAW 补偿增益并抗BLE | 原厂数据手册 |
 | **板载双频 LNA** | **ATR2652** | 杭州中科微 | DFN-6 / SOT23-6 | 3.3V 受控 | L1 增益 22.4dB / NF 0.85dB<br>L5 增益 22.0dB / NF 0.75dB | 挂载于受控 SGM2045-3.3 电源轨<br>工作电流仅 4.5mA，随模组同步休眠断电 | 原厂选型手册 |
 | **板载双通带 SAW** | **B39162B2651P810** | Qualcomm / RF360 | 1511<br>*(1.5×1.1mm)* | 无源器件 | 单进单出双通带 (L1+L5)<br>2.4GHz BLE 抑制 > 38dB | 位于 ATR2652 与模组 Pin 11 RF_IN 之间<br>强力消除板载蓝牙发射自干扰 | 原厂选型手册 |
@@ -104,7 +104,7 @@
 
 ### 2.4 主控与 GNSS 真实物理引脚核验
 * **主控料号**：全量统一为 **`nRF52840-QFAA` (QFN48, 6×6mm)**；
-* **GNSS 模组 (ATGM336H-F8N-76)**：
+* **GNSS 模组 (ATGM336H-F8N76)**：
   * **Pin 1 为 `GND`**（接地）；
   * **Pin 6 为 `VBAT`**（后备供电，1.5~3.6V），直连 SGM6040D 3.4V 常通轨，维持 RTC 与 SRAM（15µA）；
   * **Pin 8 为 `VCC`**（主供电，2.7~3.6V），由 SGM2045-3.3 受控供给；

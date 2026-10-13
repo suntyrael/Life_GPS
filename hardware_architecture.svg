@@ -162,7 +162,7 @@
 
   <!-- ATGM336H-F8N76 GNSS Module Card -->
   <rect x="650" y="325" width="370" height="235" rx="8" fill="#0f172a" stroke="#60a5fa" stroke-width="1.5"/>
-  <text x="670" y="348" fill="#93c5fd" font-size="14" font-weight="700">中科微 ATGM336H-F8N-76 双频旗舰 GNSS</text>
+  <text x="670" y="348" fill="#93c5fd" font-size="14" font-weight="700">中科微 ATGM336H-F8N76 双频旗舰 GNSS</text>
   <text x="670" y="367" fill="#f8fafc" font-size="10" font-weight="600">基于旗舰 AT9880 SoC | Pin 8 VCC 主电 | Pin 1 GND</text>
   
   <rect x="670" y="378" width="330" height="22" rx="3" fill="#1e293b"/>
