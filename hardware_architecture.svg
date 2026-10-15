@@ -44,7 +44,7 @@
 
   <!-- 1. Top Power Management Section -->
   <rect x="40" y="78" width="1000" height="98" rx="10" fill="url(#pwrGrad)" stroke="#f59e0b" stroke-width="1.5" filter="url(#cardShadow)"/>
-  <text x="60" y="100" fill="#f59e0b" font-size="13" font-weight="700">⚡ 圣邦微电源管理层 (SGMICRO Power Architecture: 3.4V 常通主电 + 3.3V 洁净射频电)</text>
+  <text x="60" y="100" fill="#f59e0b" font-size="13" font-weight="700">⚡ 圣邦微电源管理层 (SGMICRO Power Architecture: 1.9V 常通主电 + 1.8V 洁净射频电)</text>
   
   <!-- USB-C Block -->
   <rect x="60" y="112" width="140" height="50" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1"/>
@@ -69,11 +69,11 @@
   
   <line x1="625" y1="137" x2="680" y2="137" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrowAmber)"/>
 
-  <!-- SGM6040D DCDC Block -->
+  <!-- SGM6040A DCDC Block -->
   <rect x="680" y="112" width="340" height="50" rx="6" fill="#1e293b" stroke="#10b981" stroke-width="1.5"/>
-  <text x="850" y="130" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">SGM6040D 纳安级降压 DCDC (TDFN-8L, Iq = 60nA)</text>
-  <text x="850" y="145" text-anchor="middle" fill="#e2e8f0" font-size="10">系统常通电源: 稳定 3.4V (750mA | 效率 &gt; 90%)</text>
-  <text x="850" y="157" text-anchor="middle" fill="#94a3b8" font-size="8">为主控/Flash/传感器(磁珠滤波)/GNSS VBAT供电 | 带STOP低噪引脚</text>
+  <text x="850" y="130" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">SGM6040A 纳安级降压 DCDC (TDFN-8L, Iq = 60nA)</text>
+  <text x="850" y="145" text-anchor="middle" fill="#e2e8f0" font-size="10">系统常通电源: 设定 1.9V (RSET=909Ω | 750mA)</text>
+  <text x="850" y="157" text-anchor="middle" fill="#94a3b8" font-size="8">为主控/Flash/传感器(磁珠滤波)/GNSS VBAT供电 | STOP硬件接地关闭</text>
 
 
   <!-- 2. Dual-Domain Contrast Containers -->
@@ -86,7 +86,7 @@
   <!-- nRF52840 MCU Main Card -->
   <rect x="60" y="235" width="520" height="210" rx="8" fill="url(#mcuGrad)" stroke="#a855f7" stroke-width="1.5"/>
   <text x="80" y="258" fill="#f3e8ff" font-size="15" font-weight="700">主控芯片: Nordic nRF52840-QFAA (QFN48 封装, 6×6mm)</text>
-  <text x="80" y="275" fill="#d8b4fe" font-size="10">Normal 供电模式 (VDD 3.4V) | 30个物理有效 GPIO (含P1.15控STOP) | 无原生USB</text>
+  <text x="80" y="275" fill="#d8b4fe" font-size="10">Normal 供电模式 (VDD 1.9V) | 30个物理有效 GPIO (释放P0.22/23/P1.15) | 无原生USB</text>
 
   <!-- MCU Sub blocks -->
   <rect x="80" y="288" width="145" height="42" rx="4" fill="#1e1b4b" stroke="#6366f1" stroke-width="1"/>
@@ -117,9 +117,9 @@
   <text x="320" y="430" text-anchor="middle" fill="#fbbf24" font-size="9">⚡ 硬件时间同步: P0.08 GNSS 1PPS 脉冲 ──▶ GPIOTE/PPI ──▶ TIMER0 捕获寄存器 (62.5ns 百纳秒级对齐)</text>
 
   <!-- Flash & IMU under MCU -->
-  <!-- W25Q512JV Flash -->
+  <!-- W25Q512NW Flash -->
   <rect x="60" y="460" width="245" height="105" rx="6" fill="#1e293b" stroke="#64748b" stroke-width="1"/>
-  <text x="182" y="482" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="700">W25Q512JV (64MB SPI NOR)</text>
+  <text x="182" y="482" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="700">W25Q512NW (64MB 1.8V SPI NOR)</text>
   <text x="182" y="500" text-anchor="middle" fill="#94a3b8" font-size="9.5">总线: 低噪声 SPI (4~8MHz) | 休眠: 1µA</text>
   <text x="182" y="517" text-anchor="middle" fill="#38bdf8" font-size="9.5">严格定长 32B 记录 + 16B BLE 事件解耦</text>
   <text x="182" y="534" text-anchor="middle" fill="#a7f3d0" font-size="9">夜间 heatshrink 压缩归档 + 掉电 Journaling</text>
@@ -135,7 +135,7 @@
 
   <!-- Sensor Hub (LIS2MDL + BMP388) -->
   <rect x="60" y="580" width="520" height="110" rx="6" fill="#0f172a" stroke="#059669" stroke-width="1"/>
-  <text x="80" y="602" fill="#6ee7b7" font-size="11" font-weight="700">传感器供电: 3.4V 经磁珠+电容 π型低噪滤波 (零额外LDO漏电) | Sensor Hub I2C Master</text>
+  <text x="80" y="602" fill="#6ee7b7" font-size="11" font-weight="700">传感器供电: 1.9V 经磁珠+电容 π型低噪滤波 (零额外LDO漏电) | Sensor Hub I2C Master</text>
   
   <rect x="80" y="615" width="235" height="60" rx="4" fill="#1e293b" stroke="#334155" stroke-width="1"/>
   <text x="197" y="633" text-anchor="middle" fill="#e2e8f0" font-size="10.5" font-weight="600">LIS2MDL 三轴磁力计</text>
@@ -153,11 +153,11 @@
   <rect x="645" y="202" width="330" height="24" rx="4" fill="#1e3a8a"/>
   <text x="810" y="218" text-anchor="middle" fill="#93c5fd" font-size="11" font-weight="700">🔵 【受控突发高能域】 瞬态满载电流 ~48.5 mA</text>
 
-  <!-- LDO SGM2045-3.3 -->
+  <!-- LDO SGM2045-1.8 -->
   <rect x="650" y="235" width="370" height="80" rx="8" fill="#1e293b" stroke="#38bdf8" stroke-width="1.5"/>
-  <text x="835" y="258" text-anchor="middle" fill="#38bdf8" font-size="13" font-weight="700">圣邦微 SGM2045-3.3 专用受控 LDO</text>
-  <text x="835" y="276" text-anchor="middle" fill="#e2e8f0" font-size="10">微型 XTDFN-1×1-4L | 92dB PSRR | 9.5µVrms 超低噪 | 压差仅80mV</text>
-  <text x="835" y="293" text-anchor="middle" fill="#34d399" font-size="9.5">输出 GNSS_3V3 (300mA) 供给模组 Pin 8 VCC 与板载双频 LNA</text>
+  <text x="835" y="258" text-anchor="middle" fill="#38bdf8" font-size="13" font-weight="700">圣邦微 SGM2045-1.8 专用受控 LDO</text>
+  <text x="835" y="276" text-anchor="middle" fill="#e2e8f0" font-size="10">微型 XTDFN-1×1-4L | 92dB PSRR | 9.5µVrms 超低噪 | 压差仅100mV</text>
+  <text x="835" y="293" text-anchor="middle" fill="#34d399" font-size="9.5">输出 GNSS_1V8 (300mA) 供给模组 Pin 8 VCC 与板载双频 LNA</text>
   <text x="835" y="306" text-anchor="middle" fill="#f87171" font-size="8.5">下电防倒灌: 下电前注销 UART，MCU TXD/PPS 设为 High-Z</text>
 
   <!-- ATGM336H-F8N76 GNSS Module Card -->
@@ -172,8 +172,8 @@
   <text x="680" y="420" fill="#38bdf8" font-size="9.5">默认波特率: 115200 bps (CASIC仅使能RMC/GGA压缩耗时)</text>
 
   <rect x="670" y="432" width="330" height="52" rx="3" fill="#1e293b"/>
-  <text x="680" y="449" fill="#fde047" font-size="9.5" font-weight="600">后备电源 VBAT (Pin 6) 直连常通 3.4V (15µA):</text>
-  <text x="680" y="464" fill="#cbd5e1" font-size="8.5">由 SGM6040D 常通供电，维持内部 RTC 与 SRAM 热启动状态</text>
+  <text x="680" y="449" fill="#fde047" font-size="9.5" font-weight="600">后备电源 VBAT (Pin 6) 直连常通 1.9V (15µA):</text>
+  <text x="680" y="464" fill="#cbd5e1" font-size="8.5">由 SGM6040A 常通供电，维持内部 RTC 与 SRAM 热启动状态</text>
   <text x="680" y="477" fill="#94a3b8" font-size="8">待机功耗 0.36 mAh/天，计入整机常通待机预算</text>
 
   <rect x="670" y="490" width="330" height="60" rx="3" fill="#1e293b"/>
