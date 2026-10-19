@@ -1111,6 +1111,8 @@ Life_GPS/
 │   ├── SGM4056_Datasheet.pdf                    # 圣邦微 SGM4056 线性锂电充电 IC 规格书 (含/CHG与EN闭环)
 │   ├── LIS2MDL_Datasheet.pdf                    # STMicroelectronics LIS2MDL 3轴磁力计规格书
 │   └── BMP388_Datasheet.pdf                     # Bosch BMP388 高精度气压计规格书
+├── Life_GPS_SCH_V0.1.SVG                        # V0.1 官方正式投板硬件原理图 (嘉立创 EDA 导出)
+├── hardware_architecture.svg                    # 系统硬件双域架构与互联拓扑图 (V0.1 投板基线)
 ├── Hardware/                                    # [规划中 / TBD] 硬件设计工程文件 (立创 EDA / KiCad)
 │   ├── Schematics/                              # 原理图设计与 PDF 导出
 │   ├── PCB/                                     # PCB 布局布线工程与 Gerber 光绘文件
