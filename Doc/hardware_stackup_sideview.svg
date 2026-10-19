@@ -1,0 +1,350 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 760" width="100%" height="100%" style="background-color: #0b0f19; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;">
+  <defs>
+    <!-- 剖面斜线材质填充 (外壳塑料 PC/ABS) -->
+    <pattern id="hatchShell" width="8" height="8" patternTransform="rotate(45 0 0)" patternUnits="userSpaceOnUse">
+      <line x1="0" y1="0" x2="0" y2="8" stroke="#475569" stroke-width="1.2" opacity="0.4"/>
+    </pattern>
+    <!-- PCB 玻纤材质填充 -->
+    <pattern id="pcbCore" width="10" height="10" patternTransform="rotate(-30 0 0)" patternUnits="userSpaceOnUse">
+      <line x1="0" y1="0" x2="0" y2="10" stroke="#047857" stroke-width="1.5" opacity="0.3"/>
+    </pattern>
+
+    <!-- 渐变色定义 -->
+    <linearGradient id="topShellGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#334155"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+    
+    <linearGradient id="antennaGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0284c7"/>
+      <stop offset="30%" stop-color="#38bdf8"/>
+      <stop offset="70%" stop-color="#0ea5e9"/>
+      <stop offset="100%" stop-color="#0369a1"/>
+    </linearGradient>
+
+    <linearGradient id="pcbGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#064e3b"/>
+      <stop offset="50%" stop-color="#059669"/>
+      <stop offset="100%" stop-color="#064e3b"/>
+    </linearGradient>
+
+    <linearGradient id="batteryGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="15%" stop-color="#334155"/>
+      <stop offset="85%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+
+    <!-- 尺寸标注箭头定义 -->
+    <marker id="arrUp" viewBox="0 0 8 8" refX="4" refY="0" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 8 L 4 0 L 8 8 z" fill="#38bdf8" />
+    </marker>
+    <marker id="arrDown" viewBox="0 0 8 8" refX="4" refY="8" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 4 8 L 8 0 z" fill="#38bdf8" />
+    </marker>
+    <marker id="arrUpTotal" viewBox="0 0 8 8" refX="4" refY="0" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 8 L 4 0 L 8 8 z" fill="#f59e0b" />
+    </marker>
+    <marker id="arrDownTotal" viewBox="0 0 8 8" refX="4" refY="8" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 4 8 L 8 0 z" fill="#f59e0b" />
+    </marker>
+
+    <!-- 阴影滤镜 -->
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+
+  <!-- ================= 标题栏 ================= -->
+  <text x="550" y="36" text-anchor="middle" fill="#f8fafc" font-size="20" font-weight="700" letter-spacing="1">Life_GPS 硬件垂直堆叠结构剖面示意图 (侧视图)</text>
+  <text x="550" y="58" text-anchor="middle" fill="#94a3b8" font-size="12">基准参数：壳体 1.5mm | GPS天线 4.0mm | PCB 1.6mm | 背面器件 2.0mm | 电池 8.0mm [标称总厚度 18.6 mm]</text>
+
+  <!-- ================= 绘图坐标系基准 =================
+       堆叠居中区域：X: 280 ~ 820 (宽度 540px)
+       Z轴基准换算比例：1.0 mm = 18 px
+       Z0 (上壳外表面): Y = 95
+       上壳厚度 1.5 mm  -> 27 px   -> Y: 95 ~ 122
+       GPS天线/正面 4.0mm -> 72 px -> Y: 122 ~ 194
+       PCB板厚 1.6 mm   -> 29 px   -> Y: 194 ~ 223
+       PCB背面 2.0 mm   -> 36 px   -> Y: 223 ~ 259
+       电池厚度 8.0 mm  -> 144 px  -> Y: 259 ~ 403
+       下壳厚度 1.5 mm  -> 27 px   -> Y: 403 ~ 430
+       标称总高: 18.6 mm -> 335 px -> Y: 95 ~ 430
+  ====================================================== -->
+
+  <!-- 外壳包络虚线与背景光晕 -->
+  <rect x="270" y="88" width="560" height="348" rx="14" fill="#0f172a" stroke="#334155" stroke-dasharray="4,4" opacity="0.6"/>
+
+  <!-- ================= 1. 上壳 (Top Case) ================= -->
+  <!-- 顶面主壁 (1.5mm / 27px) -->
+  <rect x="280" y="95" width="540" height="27" rx="6" fill="url(#topShellGrad)" stroke="#475569" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="280" y="95" width="540" height="27" rx="6" fill="url(#hatchShell)"/>
+  <!-- 上壳侧壁延伸与装配企口 (剖面侧墙) -->
+  <rect x="280" y="95" width="22" height="150" fill="url(#topShellGrad)" stroke="#475569" stroke-width="1.5"/>
+  <rect x="280" y="95" width="22" height="150" fill="url(#hatchShell)"/>
+  <rect x="798" y="95" width="22" height="150" fill="url(#topShellGrad)" stroke="#475569" stroke-width="1.5"/>
+  <rect x="798" y="95" width="22" height="150" fill="url(#hatchShell)"/>
+  <!-- 上壳 PCB 定位限位支柱 -->
+  <rect x="302" y="122" width="16" height="72" fill="#1e293b" stroke="#475569" stroke-dasharray="2,2"/>
+  <rect x="782" y="122" width="16" height="72" fill="#1e293b" stroke="#475569" stroke-dasharray="2,2"/>
+  <text x="550" y="113" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">上壳顶壁 (Top Shell Plastic) — 壁厚 1.5 mm [PC+ABS 阻燃防摔材料]</text>
+
+  <!-- ================= 2. 正面器件层 (Top Components: 4.0mm / 72px) ================= -->
+  <!-- GPS 陶瓷贴片天线主体 (Ceramic Patch, 宽 180px, 高 72px = 4.0mm) -->
+  <g transform="translate(340, 122)">
+    <!-- 天线陶瓷基体 -->
+    <rect x="0" y="6" width="210" height="66" rx="4" fill="url(#antennaGrad)" stroke="#38bdf8" stroke-width="1.5" filter="url(#shadow)"/>
+    <!-- 天线顶层银层金属辐射电极 (Silver Electrode) -->
+    <rect x="10" y="0" width="190" height="6" rx="2" fill="#f59e0b" stroke="#fbbf24" stroke-width="1"/>
+    <!-- 天线底部银层与接地屏蔽 -->
+    <rect x="5" y="70" width="200" height="2" fill="#94a3b8"/>
+    <!-- 天线馈电探针贯穿引脚 (RF Feed Pin) -->
+    <line x1="60" y1="6" x2="60" y2="76" stroke="#fbbf24" stroke-width="2.5" stroke-linecap="round"/>
+    <!-- 标注文字 -->
+    <text x="105" y="42" text-anchor="middle" fill="#ffffff" font-size="13" font-weight="700">GPS/北斗陶瓷天线 (4.0 mm)</text>
+    <text x="105" y="58" text-anchor="middle" fill="#bae6fd" font-size="10">辐射面向上贴紧外壳 (无金属遮挡)</text>
+  </g>
+
+  <!-- 正面其他低矮器件 (LNA / SAW / 匹配阻容, 高约 1.0mm) -->
+  <g transform="translate(580, 176)">
+    <rect x="0" y="0" width="35" height="18" rx="2" fill="#334155" stroke="#94a3b8" stroke-width="1"/>
+    <text x="17" y="13" text-anchor="middle" fill="#94a3b8" font-size="9">LNA</text>
+    <rect x="45" y="4" width="25" height="14" rx="2" fill="#334155" stroke="#94a3b8" stroke-width="1"/>
+    <text x="57" y="15" text-anchor="middle" fill="#94a3b8" font-size="8">SAW</text>
+    <rect x="80" y="8" width="14" height="10" rx="1" fill="#475569" stroke="#64748b"/>
+    <rect x="100" y="8" width="14" height="10" rx="1" fill="#475569" stroke="#64748b"/>
+    <text x="135" y="14" fill="#64748b" font-size="9">正面低矮器件 (≤1.2mm)</text>
+  </g>
+
+  <!-- ================= 3. PCB 主板层 (Mainboard: 1.6mm / 29px) ================= -->
+  <!-- PCB 基板 (绿色阻焊 + 玻纤核心) -->
+  <g transform="translate(302, 194)">
+    <rect x="0" y="0" width="496" height="29" rx="3" fill="url(#pcbGrad)" stroke="#10b981" stroke-width="1.8" filter="url(#shadow)"/>
+    <rect x="0" y="0" width="496" height="29" rx="3" fill="url(#pcbCore)"/>
+    <!-- 铜皮层与金手指微线 -->
+    <line x1="6" y1="2" x2="490" y2="2" stroke="#fcd34d" stroke-width="1" stroke-dasharray="8,3"/>
+    <line x1="6" y1="27" x2="490" y2="27" stroke="#fcd34d" stroke-width="1" stroke-dasharray="8,3"/>
+    <!-- 过孔与测试点 -->
+    <circle cx="98" cy="14" r="3" fill="#0f172a" stroke="#fcd34d" stroke-width="1.5"/>
+    <circle cx="150" cy="14" r="3" fill="#0f172a" stroke="#fcd34d" stroke-width="1.5"/>
+    <circle cx="380" cy="14" r="3" fill="#0f172a" stroke="#fcd34d" stroke-width="1.5"/>
+    <!-- 文字标识 -->
+    <text x="248" y="19" text-anchor="middle" fill="#ecfdf5" font-size="12" font-weight="700">PCB 主板 (FR-4 四层高频板) — 板厚 1.6 mm</text>
+  </g>
+
+  <!-- ================= 4. PCB 背面器件层 (Bottom Components: 2.0mm / 36px) ================= -->
+  <!-- 背面屏蔽罩与关键芯片 (高 36px = 2.0mm) -->
+  <g transform="translate(320, 223)">
+    <!-- 金属屏蔽罩 (Shielding Can 罩住 GNSS / nRF52840 / PMIC) -->
+    <rect x="20" y="0" width="220" height="36" rx="2" fill="#475569" stroke="#94a3b8" stroke-width="1.2"/>
+    <rect x="25" y="4" width="210" height="28" fill="#1e293b"/>
+    <!-- 内部主控/存储芯片示意 -->
+    <rect x="35" y="8" width="60" height="20" rx="1" fill="#0f172a" stroke="#64748b"/>
+    <text x="65" y="22" text-anchor="middle" fill="#cbd5e1" font-size="9">nRF52840</text>
+    <rect x="105" y="8" width="55" height="20" rx="1" fill="#0f172a" stroke="#64748b"/>
+    <text x="132" y="22" text-anchor="middle" fill="#cbd5e1" font-size="9">ATGM336H</text>
+    <rect x="170" y="10" width="50" height="18" rx="1" fill="#0f172a" stroke="#64748b"/>
+    <text x="195" y="23" text-anchor="middle" fill="#cbd5e1" font-size="8">Flash/PMIC</text>
+    <!-- 屏蔽罩顶盖高度标注提示 -->
+    <text x="130" y="-3" text-anchor="middle" fill="#38bdf8" font-size="8">← 屏蔽架焊盘与框架 →</text>
+  </g>
+  <!-- 背面最高单体器件 (如降压电感 2.0mm / 电源芯片) -->
+  <g transform="translate(580, 223)">
+    <rect x="0" y="0" width="40" height="36" rx="2" fill="#1e293b" stroke="#e2e8f0" stroke-width="1.2"/>
+    <text x="20" y="22" text-anchor="middle" fill="#f8fafc" font-size="9" font-weight="600">电感</text>
+    <text x="20" y="32" text-anchor="middle" fill="#94a3b8" font-size="7">2.0mm</text>
+    
+    <rect x="52" y="0" width="48" height="26" rx="2" fill="#1e293b" stroke="#94a3b8"/>
+    <text x="76" y="17" text-anchor="middle" fill="#cbd5e1" font-size="8">SGM6040A</text>
+
+    <text x="115" y="22" fill="#f87171" font-size="10" font-weight="600">背面限高 2.0 mm 边界线</text>
+  </g>
+  <!-- 背面限高警戒虚线 -->
+  <line x1="302" y1="259" x2="798" y2="259" stroke="#ef4444" stroke-width="1" stroke-dasharray="3,3"/>
+
+  <!-- ================= 5. 绝缘隔离与装配间隙提示 (工程必须) ================= -->
+  <!-- 虚线示意绝缘片 (Mylar) -->
+  <rect x="310" y="259" width="480" height="4" fill="#f59e0b" opacity="0.8"/>
+  <text x="550" y="263" text-anchor="middle" fill="#fef08a" font-size="8" font-weight="600">绝缘麦拉片 (Mylar / 0.2~0.3mm) — 杜绝元件引脚刺穿电池铝塑膜</text>
+
+  <!-- ================= 6. 电池层 (Li-Po Battery: 8.0mm / 144px) ================= -->
+  <g transform="translate(310, 263)">
+    <!-- 电池电芯本体 (8.0mm 厚度 = 144px, 留出底部微量间隙) -->
+    <rect x="0" y="0" width="480" height="140" rx="8" fill="url(#batteryGrad)" stroke="#64748b" stroke-width="1.8" filter="url(#shadow)"/>
+    <!-- 电池铝塑膜封边侧耳与包胶 -->
+    <rect x="4" y="4" width="472" height="6" fill="#475569" opacity="0.6"/>
+    <rect x="4" y="130" width="472" height="6" fill="#475569" opacity="0.6"/>
+    <!-- 电池铭牌与参数标识 -->
+    <rect x="140" y="32" width="200" height="76" rx="4" fill="#0f172a" stroke="#334155"/>
+    <text x="240" y="56" text-anchor="middle" fill="#f8fafc" font-size="13" font-weight="700">可充电聚合物锂电池 (Li-Po Cell)</text>
+    <text x="240" y="76" text-anchor="middle" fill="#38bdf8" font-size="12" font-weight="600">标称厚度: 8.0 mm (1000~1200 mAh)</text>
+    <text x="240" y="94" text-anchor="middle" fill="#94a3b8" font-size="10">3.7V / 4.2V | 集成 PCM 保护板与引线</text>
+
+    <!-- 电池电极引线 (红色正极 / 黑色负极) -->
+    <path d="M 10 20 Q -15 20 -15 -10 Q -15 -40 10 -40" fill="none" stroke="#ef4444" stroke-width="2.5"/>
+    <path d="M 10 26 Q -22 26 -22 -10 Q -22 -44 10 -44" fill="none" stroke="#0f172a" stroke-width="2.5"/>
+    <text x="18" y="16" fill="#ef4444" font-size="8">BAT+</text>
+  </g>
+
+  <!-- ================= 7. 下壳 (Bottom Case: 1.5mm / 27px) ================= -->
+  <!-- 下壳侧壁延伸与卡扣接合部 (配合上壳企口) -->
+  <rect x="280" y="245" width="22" height="185" fill="url(#topShellGrad)" stroke="#475569" stroke-width="1.5"/>
+  <rect x="280" y="245" width="22" height="185" fill="url(#hatchShell)"/>
+  <rect x="798" y="245" width="22" height="185" fill="url(#topShellGrad)" stroke="#475569" stroke-width="1.5"/>
+  <rect x="798" y="245" width="22" height="185" fill="url(#hatchShell)"/>
+  <!-- 下壳底面主壁 (1.5mm / 27px) -->
+  <rect x="280" y="403" width="540" height="27" rx="6" fill="url(#topShellGrad)" stroke="#475569" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="280" y="403" width="540" height="27" rx="6" fill="url(#hatchShell)"/>
+  <text x="550" y="421" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">下壳底壁 (Bottom Shell Plastic) — 壁厚 1.5 mm [预留背胶/泡棉贴装位]</text>
+
+  <!-- 上下壳分型结合缝 (Parting Line / 企口止口槽) 标注 -->
+  <line x1="260" y1="245" x2="305" y2="245" stroke="#38bdf8" stroke-width="1.2"/>
+  <text x="250" y="248" text-anchor="end" fill="#38bdf8" font-size="9">上下壳分模面 (Split Line)</text>
+  <line x1="795" y1="245" x2="840" y2="245" stroke="#38bdf8" stroke-width="1.2"/>
+  <text x="850" y="248" fill="#38bdf8" font-size="9">止口卡扣结合防尘防水</text>
+
+  <!-- ================= 左侧尺寸标注链 (分层标注: 壳体/天线/板厚/背面/电池/底壳) ================= -->
+  <!-- 标注线 X 坐标: 延伸线从 280 伸到 190，尺寸线位于 X=195 -->
+  <!-- 上壳 1.5mm: Y 95 ~ 122 -->
+  <line x1="275" y1="95" x2="180" y2="95" stroke="#475569" stroke-width="1"/>
+  <line x1="275" y1="122" x2="180" y2="122" stroke="#475569" stroke-width="1"/>
+  <line x1="195" y1="95" x2="195" y2="122" stroke="#38bdf8" stroke-width="1.5" marker-start="url(#arrUp)" marker-end="url(#arrDown)"/>
+  <text x="185" y="112" text-anchor="end" fill="#38bdf8" font-size="11" font-weight="700">1.5 mm</text>
+  <text x="120" y="112" text-anchor="end" fill="#94a3b8" font-size="10">上壳厚度</text>
+
+  <!-- GPS天线正面高度 4.0mm: Y 122 ~ 194 -->
+  <line x1="335" y1="122" x2="180" y2="122" stroke="#475569" stroke-width="1"/>
+  <line x1="298" y1="194" x2="180" y2="194" stroke="#475569" stroke-width="1"/>
+  <line x1="195" y1="122" x2="195" y2="194" stroke="#38bdf8" stroke-width="1.5" marker-start="url(#arrUp)" marker-end="url(#arrDown)"/>
+  <text x="185" y="162" text-anchor="end" fill="#38bdf8" font-size="12" font-weight="700">4.0 mm</text>
+  <text x="120" y="162" text-anchor="end" fill="#94a3b8" font-size="10">GPS 天线</text>
+
+  <!-- PCB 板厚 1.6mm: Y 194 ~ 223 -->
+  <line x1="298" y1="223" x2="180" y2="223" stroke="#475569" stroke-width="1"/>
+  <line x1="195" y1="194" x2="195" y2="223" stroke="#10b981" stroke-width="1.5" marker-start="url(#arrUp)" marker-end="url(#arrDown)"/>
+  <text x="185" y="212" text-anchor="end" fill="#10b981" font-size="11" font-weight="700">1.6 mm</text>
+  <text x="120" y="212" text-anchor="end" fill="#94a3b8" font-size="10">PCB 板厚</text>
+
+  <!-- PCB 背面器件 2.0mm: Y 223 ~ 259 -->
+  <line x1="315" y1="259" x2="180" y2="259" stroke="#475569" stroke-width="1"/>
+  <line x1="195" y1="223" x2="195" y2="259" stroke="#38bdf8" stroke-width="1.5" marker-start="url(#arrUp)" marker-end="url(#arrDown)"/>
+  <text x="185" y="245" text-anchor="end" fill="#38bdf8" font-size="11" font-weight="700">2.0 mm</text>
+  <text x="120" y="245" text-anchor="end" fill="#94a3b8" font-size="10">背面器件限高</text>
+
+  <!-- 锂电池厚度 8.0mm: Y 259 ~ 403 -->
+  <line x1="305" y1="403" x2="180" y2="403" stroke="#475569" stroke-width="1"/>
+  <line x1="195" y1="259" x2="195" y2="403" stroke="#38bdf8" stroke-width="1.5" marker-start="url(#arrUp)" marker-end="url(#arrDown)"/>
+  <text x="185" y="335" text-anchor="end" fill="#38bdf8" font-size="13" font-weight="700">8.0 mm</text>
+  <text x="120" y="335" text-anchor="end" fill="#94a3b8" font-size="10">锂电池厚度</text>
+
+  <!-- 下壳 1.5mm: Y 403 ~ 430 -->
+  <line x1="275" y1="430" x2="180" y2="430" stroke="#475569" stroke-width="1"/>
+  <line x1="195" y1="403" x2="195" y2="430" stroke="#38bdf8" stroke-width="1.5" marker-start="url(#arrUp)" marker-end="url(#arrDown)"/>
+  <text x="185" y="420" text-anchor="end" fill="#38bdf8" font-size="11" font-weight="700">1.5 mm</text>
+  <text x="120" y="420" text-anchor="end" fill="#94a3b8" font-size="10">下壳厚度</text>
+
+
+  <!-- ================= 右侧总高度与工程间隙标注 ================= -->
+  <!-- 理论标称总高 18.6mm: Y 95 ~ 430 -->
+  <line x1="825" y1="95" x2="905" y2="95" stroke="#475569" stroke-width="1"/>
+  <line x1="825" y1="430" x2="905" y2="430" stroke="#475569" stroke-width="1"/>
+  <line x1="895" y1="95" x2="895" y2="430" stroke="#f59e0b" stroke-width="2" marker-start="url(#arrUpTotal)" marker-end="url(#arrDownTotal)"/>
+  
+  <!-- 总尺寸数值框 -->
+  <rect x="915" y="240" width="165" height="48" rx="6" fill="#1e293b" stroke="#f59e0b" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="925" y="260" fill="#f59e0b" font-size="13" font-weight="700">理论总高度 (标称直叠)</text>
+  <text x="925" y="278" fill="#fef08a" font-size="15" font-weight="800">Σ = 18.6 mm</text>
+
+  <!-- 工程实际量产建议总高 -->
+  <rect x="880" y="315" width="200" height="95" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+  <text x="892" y="335" fill="#38bdf8" font-size="11" font-weight="700">🛠️ 工程量产预留建议：</text>
+  <text x="892" y="354" fill="#94a3b8" font-size="10">• 绝缘麦拉片: +0.2~0.3 mm</text>
+  <text x="892" y="371" fill="#94a3b8" font-size="10">• 电池膨胀余量: +0.5~0.7 mm</text>
+  <text x="892" y="388" fill="#94a3b8" font-size="10">• 装配/背胶间隙: +0.3 mm</text>
+  <text x="892" y="403" fill="#10b981" font-size="10" font-weight="600">→ 实测整机厚度 ≈ 19.6~20.0 mm</text>
+
+
+  <!-- ================= 底部参数分析与工程设计规则汇总 ================= -->
+  <g transform="translate(40, 475)">
+    <!-- 汇总卡片背景 -->
+    <rect x="0" y="0" width="1020" height="255" rx="10" fill="#111827" stroke="#374151" stroke-width="1.2" filter="url(#shadow)"/>
+    
+    <!-- 标头 -->
+    <rect x="0" y="0" width="1020" height="36" rx="10" fill="#1f2937"/>
+    <text x="25" y="24" fill="#f3f4f6" font-size="13" font-weight="700">📋 Life_GPS 硬件堆叠工程关键设计规范 (Design Rules for Z-Stackup)</text>
+
+    <!-- 列 1: 堆叠尺寸明细表 -->
+    <g transform="translate(25, 52)">
+      <text x="0" y="0" fill="#f59e0b" font-size="12" font-weight="700">【1】各层高度尺寸汇总表 (SSOT)</text>
+      
+      <rect x="0" y="12" width="310" height="175" rx="4" fill="#1e293b" stroke="#334155"/>
+      <text x="12" y="32" fill="#94a3b8" font-size="10">部件名称</text>
+      <text x="180" y="32" fill="#94a3b8" font-size="10">标称高度</text>
+      <text x="250" y="32" fill="#94a3b8" font-size="10">所在位置</text>
+      <line x1="8" y1="38" x2="302" y2="38" stroke="#334155" stroke-width="1"/>
+
+      <text x="12" y="56" fill="#cbd5e1" font-size="10">上壳顶壁 (Top Shell)</text>
+      <text x="180" y="56" fill="#38bdf8" font-size="10" font-weight="600">1.50 mm</text>
+      <text x="250" y="56" fill="#94a3b8" font-size="10">Z 顶层</text>
+
+      <text x="12" y="78" fill="#cbd5e1" font-size="10">GPS 陶瓷天线 (Patch)</text>
+      <text x="180" y="78" fill="#38bdf8" font-size="10" font-weight="600">4.00 mm</text>
+      <text x="250" y="78" fill="#94a3b8" font-size="10">PCB 正面</text>
+
+      <text x="12" y="100" fill="#cbd5e1" font-size="10">PCB 主板 (FR-4)</text>
+      <text x="180" y="100" fill="#10b981" font-size="10" font-weight="600">1.60 mm</text>
+      <text x="250" y="100" fill="#94a3b8" font-size="10">中间承载</text>
+
+      <text x="12" y="122" fill="#cbd5e1" font-size="10">背面器件最高点 (电感/罩)</text>
+      <text x="180" y="122" fill="#38bdf8" font-size="10" font-weight="600">2.00 mm</text>
+      <text x="250" y="122" fill="#94a3b8" font-size="10">PCB 背面</text>
+
+      <text x="12" y="144" fill="#cbd5e1" font-size="10">可充电锂电池 (Li-Po)</text>
+      <text x="180" y="144" fill="#38bdf8" font-size="10" font-weight="600">8.00 mm</text>
+      <text x="250" y="144" fill="#94a3b8" font-size="10">背面堆叠</text>
+
+      <text x="12" y="166" fill="#cbd5e1" font-size="10">下壳底壁 (Bottom Shell)</text>
+      <text x="180" y="166" fill="#38bdf8" font-size="10" font-weight="600">1.50 mm</text>
+      <text x="250" y="166" fill="#94a3b8" font-size="10">Z 底层</text>
+
+      <line x1="8" y1="172" x2="302" y2="172" stroke="#334155" stroke-width="1"/>
+      <text x="12" y="184" fill="#f59e0b" font-size="10" font-weight="700">理论刚性合计 (Nominal Sum)</text>
+      <text x="180" y="184" fill="#f59e0b" font-size="11" font-weight="800">18.60 mm</text>
+      <text x="250" y="184" fill="#f59e0b" font-size="10">刚性直叠</text>
+    </g>
+
+    <!-- 列 2: 结构安全性与射频要点 -->
+    <g transform="translate(365, 52)">
+      <text x="0" y="0" fill="#38bdf8" font-size="12" font-weight="700">【2】射频辐射与天线净空规范</text>
+      
+      <rect x="0" y="12" width="310" height="175" rx="4" fill="#1e293b" stroke="#334155"/>
+      <text x="12" y="32" fill="#cbd5e1" font-size="10" font-weight="600">📡 GPS 陶瓷天线朝向与介质要求：</text>
+      <text x="12" y="50" fill="#94a3b8" font-size="9.5">• 辐射电极必须正面朝向天空（正对顶壳）</text>
+      <text x="12" y="67" fill="#94a3b8" font-size="9.5">• 天线顶面与上壳内壁贴合，严禁金属遮挡</text>
+      <text x="12" y="84" fill="#94a3b8" font-size="9.5">• 外壳选用低介电损耗塑料 (PC/ABS, εr≈2.8~3.2)</text>
+      <text x="12" y="101" fill="#94a3b8" font-size="9.5">• 外壳严禁采用金属喷涂、导电漆或金属铭牌</text>
+
+      <text x="12" y="124" fill="#cbd5e1" font-size="10" font-weight="600">🛡️ PCB 地平面与背面隔离：</text>
+      <text x="12" y="142" fill="#94a3b8" font-size="9.5">• 陶瓷天线投影正下方 PCB 需完整铺铜铺地</text>
+      <text x="12" y="159" fill="#94a3b8" font-size="9.5">• 射频走线需做 50Ω 共面波导并包地打孔打满</text>
+      <text x="12" y="176" fill="#94a3b8" font-size="9.5">• 背面 2.0mm 器件须加金属屏蔽罩杜绝数字杂散</text>
+    </g>
+
+    <!-- 列 3: 结构安全与整机减薄建议 -->
+    <g transform="translate(705, 52)">
+      <text x="0" y="0" fill="#10b981" font-size="12" font-weight="700">【3】电池安全与结构优化建议</text>
+      
+      <rect x="0" y="12" width="300" height="175" rx="4" fill="#1e293b" stroke="#334155"/>
+      <text x="12" y="32" fill="#cbd5e1" font-size="10" font-weight="600">⚠️ 电池防刺破与热膨胀保护：</text>
+      <text x="12" y="50" fill="#f87171" font-size="9.5">• 严禁电池直接压迫背面元件引脚与锐利焊点！</text>
+      <text x="12" y="67" fill="#94a3b8" font-size="9.5">• 必须贴合 0.2mm 绝缘麦拉片或注塑中框隔板</text>
+      <text x="12" y="84" fill="#94a3b8" font-size="9.5">• 8.0mm 锂电池充放电存在 8~10% 厚度膨胀，</text>
+      <text x="12" y="101" fill="#94a3b8" font-size="9.5">  结构空间需按 8.6~8.8mm 预留避免压迫挤爆</text>
+
+      <text x="12" y="124" fill="#cbd5e1" font-size="10" font-weight="600">💡 极致减薄方案参考 (降至 13~15mm)：</text>
+      <text x="12" y="142" fill="#94a3b8" font-size="9.5">• 方案 A：PCB 板厚从 1.6mm 优化为 1.0/1.2mm</text>
+      <text x="12" y="159" fill="#94a3b8" font-size="9.5">• 方案 B：电池与 PCB 水平并排放置 (错位堆叠)</text>
+      <text x="12" y="176" fill="#94a3b8" font-size="9.5">• 方案 C：外壳局部掏空/开沉孔收纳天线与电感</text>
+    </g>
+  </g>
+</svg>
