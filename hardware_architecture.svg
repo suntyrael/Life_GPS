@@ -1,29 +1,29 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 720" width="100%" height="100%" style="background-color: #0d1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 760" width="100%" height="100%" style="background-color: #0b0f19; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
   <defs>
     <!-- Gradients -->
     <linearGradient id="pwrGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.2"/>
-      <stop offset="100%" stop-color="#b45309" stop-opacity="0.3"/>
+      <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#b45309" stop-opacity="0.28"/>
     </linearGradient>
     <linearGradient id="aonGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#10b981" stop-opacity="0.15"/>
-      <stop offset="100%" stop-color="#047857" stop-opacity="0.25"/>
+      <stop offset="0%" stop-color="#10b981" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#047857" stop-opacity="0.22"/>
     </linearGradient>
     <linearGradient id="swGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.15"/>
-      <stop offset="100%" stop-color="#1d4ed8" stop-opacity="0.25"/>
+      <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#1d4ed8" stop-opacity="0.22"/>
     </linearGradient>
     <linearGradient id="mcuGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#8b5cf6" stop-opacity="0.25"/>
-      <stop offset="100%" stop-color="#6d28d9" stop-opacity="0.4"/>
+      <stop offset="0%" stop-color="#8b5cf6" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#6d28d9" stop-opacity="0.38"/>
     </linearGradient>
-    
+
     <!-- Filter for subtle drop shadow -->
     <filter id="cardShadow" x="-10%" y="-10%" width="120%" height="120%">
-      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.5"/>
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.6"/>
     </filter>
-    
-    <!-- Marker for arrows -->
+
+    <!-- Markers for arrows -->
     <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M 0 1 L 10 5 L 0 9 z" fill="#94a3b8" />
     </marker>
@@ -36,172 +36,201 @@
     <marker id="arrowAmber" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M 0 1 L 10 5 L 0 9 z" fill="#f59e0b" />
     </marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#ef4444" />
+    </marker>
   </defs>
 
   <!-- Title & Subtitle -->
-  <text x="540" y="38" text-anchor="middle" fill="#f8fafc" font-size="21" font-weight="700" letter-spacing="1">Life_GPS 系统硬件双域架构与互联拓扑图 (基线 v1.3)</text>
-  <text x="540" y="60" text-anchor="middle" fill="#94a3b8" font-size="12">常通超低功耗域 (Always-On Domain 25~35µA, 典型26µA) 与 受控突发高能域 (Switched GNSS Domain ~48.5mA) 物理隔离对比设计 [架构待冻结]</text>
+  <text x="560" y="34" text-anchor="middle" fill="#f8fafc" font-size="20" font-weight="700" letter-spacing="1">Life_GPS 系统硬件双域架构与互联拓扑图 (V0.1 投板基线)</text>
+  <text x="560" y="55" text-anchor="middle" fill="#94a3b8" font-size="11.5">常通超低功耗域 (Always-On Domain ~17.9µA, 关机&lt;1µA) 与 受控突发高能域 (Switched GNSS Domain 8.5~15.2mA) 物理隔离拓扑 [V0.1 投板闭环]</text>
 
-  <!-- 1. Top Power Management Section -->
-  <rect x="40" y="78" width="1000" height="98" rx="10" fill="url(#pwrGrad)" stroke="#f59e0b" stroke-width="1.5" filter="url(#cardShadow)"/>
-  <text x="60" y="100" fill="#f59e0b" font-size="13" font-weight="700">⚡ 圣邦微电源管理层 (SGMICRO Power Architecture: 1.9V 常通主电 + 1.8V 洁净射频电)</text>
-  
+  <!-- ================= 1. Top Power Management Section ================= -->
+  <rect x="35" y="72" width="1050" height="96" rx="10" fill="url(#pwrGrad)" stroke="#f59e0b" stroke-width="1.5" filter="url(#cardShadow)"/>
+  <text x="55" y="93" fill="#f59e0b" font-size="12.5" font-weight="700">⚡ 圣邦微电源管理层 (SGMICRO Power Architecture: 1.9V 常通主电 + 1.8V 洁净射频电)</text>
+
   <!-- USB-C Block -->
-  <rect x="60" y="112" width="140" height="50" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1"/>
-  <text x="130" y="133" text-anchor="middle" fill="#e2e8f0" font-size="11" font-weight="600">Type-C 5V 充电输入</text>
-  <text x="130" y="149" text-anchor="middle" fill="#94a3b8" font-size="9">USBLC6-2SC6 TVS防护</text>
+  <rect x="55" y="105" width="135" height="50" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+  <text x="122" y="125" text-anchor="middle" fill="#e2e8f0" font-size="10.5" font-weight="600">Type-C 5V 充电输入</text>
+  <text x="122" y="141" text-anchor="middle" fill="#94a3b8" font-size="9">USBLC6-2SC6 TVS 防护</text>
   
-  <line x1="200" y1="137" x2="235" y2="137" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="190" y1="130" x2="225" y2="130" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
   
   <!-- SGM4056 Block -->
-  <rect x="235" y="112" width="170" height="50" rx="6" fill="#1e293b" stroke="#f59e0b" stroke-width="1.2"/>
-  <text x="320" y="131" text-anchor="middle" fill="#fef08a" font-size="11" font-weight="700">SGM4056 充电芯片</text>
-  <text x="320" y="146" text-anchor="middle" fill="#cbd5e1" font-size="9">350mA恒流(RIREF=34kΩ) | OVP</text>
-  <text x="320" y="157" text-anchor="middle" fill="#94a3b8" font-size="8">内部115℃热调节 | MCU联动NTC</text>
+  <rect x="225" y="105" width="200" height="50" rx="6" fill="#1e293b" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="325" y="123" text-anchor="middle" fill="#fef08a" font-size="11" font-weight="700">SGM4056 线性充电芯片</text>
+  <text x="325" y="138" text-anchor="middle" fill="#cbd5e1" font-size="8.5">350mA恒流(R8=34k) | 35mA截止(R9=340k)</text>
+  <text x="325" y="149" text-anchor="middle" fill="#94a3b8" font-size="8">P0.20 CHG_STAT(状态) / P0.21 CHG_EN(JEITA)</text>
   
-  <line x1="405" y1="137" x2="435" y2="137" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="425" y1="130" x2="455" y2="130" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
 
   <!-- Battery Block -->
-  <rect x="435" y="112" width="190" height="50" rx="6" fill="#334155" stroke="#f59e0b" stroke-width="1.5"/>
-  <text x="530" y="131" text-anchor="middle" fill="#fef08a" font-size="11" font-weight="700">1000~1200mAh 锂电池</text>
-  <text x="530" y="146" text-anchor="middle" fill="#cbd5e1" font-size="9">自带 PCM 硬件保护板</text>
-  <text x="530" y="157" text-anchor="middle" fill="#f87171" font-size="8">3.0V 过放切断 / 4.28V 过充保护</text>
+  <rect x="455" y="105" width="180" height="50" rx="6" fill="#334155" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="545" y="123" text-anchor="middle" fill="#fef08a" font-size="11" font-weight="700">1000~1200mAh 锂电池</text>
+  <text x="545" y="138" text-anchor="middle" fill="#cbd5e1" font-size="8.5">自带 PCM 硬件保护板 (DW01A+8205A)</text>
+  <text x="545" y="149" text-anchor="middle" fill="#f87171" font-size="8">3.0V 过放切断 / 4.28V 过充保护</text>
   
-  <line x1="625" y1="137" x2="680" y2="137" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrowAmber)"/>
+  <!-- BAT_ADC Arrow to MCU -->
+  <line x1="635" y1="130" x2="690" y2="130" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrowAmber)"/>
 
   <!-- SGM6040A DCDC Block -->
-  <rect x="680" y="112" width="340" height="50" rx="6" fill="#1e293b" stroke="#10b981" stroke-width="1.5"/>
-  <text x="850" y="130" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">SGM6040A 纳安级降压 DCDC (TDFN-8L, Iq = 60nA)</text>
-  <text x="850" y="145" text-anchor="middle" fill="#e2e8f0" font-size="10">系统常通电源: 设定 1.9V (RSET=909Ω | 750mA)</text>
-  <text x="850" y="157" text-anchor="middle" fill="#94a3b8" font-size="8">为主控/Flash/传感器(磁珠滤波)/GNSS VBAT供电 | STOP硬件接地关闭</text>
+  <rect x="690" y="105" width="375" height="50" rx="6" fill="#1e293b" stroke="#10b981" stroke-width="1.5"/>
+  <text x="877" y="123" text-anchor="middle" fill="#34d399" font-size="11.5" font-weight="700">SGM6040A 纳安级降压 DCDC (TDFN-8L, Iq = 60nA)</text>
+  <text x="877" y="138" text-anchor="middle" fill="#e2e8f0" font-size="9.5">系统常通主供电: 设定 1.9V (R4=909Ω | 750mA能力 | 效率&gt;90%)</text>
+  <text x="877" y="149" text-anchor="middle" fill="#94a3b8" font-size="8">为主控/Flash/传感器(磁珠π滤波)/GNSS V_BCKP供电 | STOP硬件接地关闭</text>
 
 
-  <!-- 2. Dual-Domain Contrast Containers -->
+  <!-- ================= 2. Dual-Domain Contrast Containers ================= -->
 
   <!-- LEFT: Always-On Low Power Domain -->
-  <rect x="40" y="190" width="560" height="515" rx="10" fill="url(#aonGrad)" stroke="#10b981" stroke-width="1.8" filter="url(#cardShadow)"/>
-  <rect x="55" y="202" width="310" height="24" rx="4" fill="#065f46"/>
-  <text x="210" y="218" text-anchor="middle" fill="#a7f3d0" font-size="11" font-weight="700">🟢 【常通超低功耗域】 静态待机底噪 25~35 µA</text>
+  <rect x="35" y="180" width="590" height="555" rx="10" fill="url(#aonGrad)" stroke="#10b981" stroke-width="1.8" filter="url(#cardShadow)"/>
+  <rect x="50" y="192" width="350" height="22" rx="4" fill="#065f46"/>
+  <text x="225" y="207" text-anchor="middle" fill="#a7f3d0" font-size="10.5" font-weight="700">🟢 【常通超低功耗域】 静态待机 ~17.9 µA / System OFF 关机 &lt;1 µA</text>
 
   <!-- nRF52840 MCU Main Card -->
-  <rect x="60" y="235" width="520" height="210" rx="8" fill="url(#mcuGrad)" stroke="#a855f7" stroke-width="1.5"/>
-  <text x="80" y="258" fill="#f3e8ff" font-size="15" font-weight="700">主控芯片: Nordic nRF52840-QFAA (QFN48 封装, 6×6mm)</text>
-  <text x="80" y="275" fill="#d8b4fe" font-size="10">Normal 供电模式 (VDD 1.9V) | 30个物理有效 GPIO (释放P0.22/23/P1.15) | 无原生USB</text>
+  <rect x="50" y="222" width="560" height="236" rx="8" fill="url(#mcuGrad)" stroke="#a855f7" stroke-width="1.5"/>
+  <text x="70" y="244" fill="#f3e8ff" font-size="14" font-weight="700">主控芯片: Nordic nRF52840-QFAA (QFN48 封装, 6×6mm)</text>
+  <text x="70" y="260" fill="#d8b4fe" font-size="9.5">Normal 模式 (VDD 1.9V) | 30个物理 GPIO (26个外设分配 + 4个预留测试) | 无原生USB</text>
 
-  <!-- MCU Sub blocks -->
-  <rect x="80" y="288" width="145" height="42" rx="4" fill="#1e1b4b" stroke="#6366f1" stroke-width="1"/>
-  <text x="152" y="305" text-anchor="middle" fill="#c7d2fe" font-size="10" font-weight="600">32MHz + 32.768kHz</text>
-  <text x="152" y="320" text-anchor="middle" fill="#818cf8" font-size="8">HFXO (18pF) / LFXO (15pF)</text>
+  <!-- MCU Sub blocks (Row 1) -->
+  <rect x="70" y="272" width="130" height="42" rx="4" fill="#1e1b4b" stroke="#6366f1" stroke-width="1"/>
+  <text x="135" y="289" text-anchor="middle" fill="#c7d2fe" font-size="9.5" font-weight="600">32MHz + 32.768kHz</text>
+  <text x="135" y="303" text-anchor="middle" fill="#818cf8" font-size="8">HFXO (12pF) / LFXO (12pF)</text>
 
-  <rect x="235" y="288" width="155" height="42" rx="4" fill="#1e1b4b" stroke="#6366f1" stroke-width="1"/>
-  <text x="312" y="305" text-anchor="middle" fill="#c7d2fe" font-size="10" font-weight="600">BLE 5.4 / 2Mbps PHY</text>
-  <text x="312" y="320" text-anchor="middle" fill="#818cf8" font-size="8">陶瓷天线 | 离线高速无线同步</text>
+  <rect x="208" y="272" width="130" height="42" rx="4" fill="#1e1b4b" stroke="#6366f1" stroke-width="1"/>
+  <text x="273" y="289" text-anchor="middle" fill="#c7d2fe" font-size="9.5" font-weight="600">BLE 5.4 / 2Mbps PHY</text>
+  <text x="273" y="303" text-anchor="middle" fill="#818cf8" font-size="8">陶瓷天线 L3 | 离线高速同步</text>
 
-  <rect x="400" y="288" width="160" height="42" rx="4" fill="#1e1b4b" stroke="#6366f1" stroke-width="1"/>
-  <text x="480" y="305" text-anchor="middle" fill="#c7d2fe" font-size="10" font-weight="600">独立调试串口 TP</text>
-  <text x="480" y="320" text-anchor="middle" fill="#818cf8" font-size="8">P0.09/P0.10 (UICR NFCPINS=0)</text>
+  <rect x="346" y="272" width="130" height="42" rx="4" fill="#1e1b4b" stroke="#6366f1" stroke-width="1"/>
+  <text x="411" y="289" text-anchor="middle" fill="#c7d2fe" font-size="9.5" font-weight="600">独立调试串口 H1</text>
+  <text x="411" y="303" text-anchor="middle" fill="#818cf8" font-size="8">P0.24 TX / P1.00 RX (115200)</text>
 
-  <!-- Two Buttons Interaction in MCU -->
-  <rect x="80" y="342" width="235" height="64" rx="6" fill="#1e1b4b" stroke="#ec4899" stroke-width="1.2"/>
-  <text x="197" y="360" text-anchor="middle" fill="#fbcfe8" font-size="11" font-weight="700">🔘 按键 1 (Pin 23 / P0.24): POI &amp; 配对</text>
-  <text x="197" y="376" text-anchor="middle" fill="#f472b6" font-size="9.5">短按: 即刻抓取坐标与环境快照打点</text>
-  <text x="197" y="392" text-anchor="middle" fill="#94a3b8" font-size="9">长按 3s: 启动 BLE 快速配对/高速同步</text>
+  <rect x="484" y="272" width="112" height="42" rx="4" fill="#1e1b4b" stroke="#10b981" stroke-width="1"/>
+  <text x="540" y="289" text-anchor="middle" fill="#a7f3d0" font-size="9.5" font-weight="600">硬件看门狗 WDT</text>
+  <text x="540" y="303" text-anchor="middle" fill="#34d399" font-size="8">30s 超时 | 休眠持续计数</text>
 
-  <rect x="325" y="342" width="235" height="64" rx="6" fill="#1e1b4b" stroke="#ec4899" stroke-width="1.2"/>
-  <text x="442" y="360" text-anchor="middle" fill="#fbcfe8" font-size="11" font-weight="700">🔘 按键 2 (Pin 24 / P1.00): 模式 &amp; 状态</text>
-  <text x="442" y="376" text-anchor="middle" fill="#f472b6" font-size="9.5">长按 2s: 切换超低功耗自适应 / 连续高精</text>
-  <text x="442" y="392" text-anchor="middle" fill="#94a3b8" font-size="9">短按: RGB LED 状态与电量回显</text>
+  <!-- Two Buttons Interaction in MCU (Row 2) -->
+  <rect x="70" y="322" width="265" height="74" rx="6" fill="#1e1b4b" stroke="#ec4899" stroke-width="1.2"/>
+  <text x="202" y="338" text-anchor="middle" fill="#fbcfe8" font-size="10.5" font-weight="700">🔘 按键 1 (SW7, P0.08 / KEY1_POI)</text>
+  <text x="202" y="353" text-anchor="middle" fill="#f472b6" font-size="9">短按: 即刻抓取坐标与环境快照打点</text>
+  <text x="202" y="367" text-anchor="middle" fill="#94a3b8" font-size="8.5">长按 3s: 启动 BLE 快速配对 / 极速数据同步</text>
+  <text x="202" y="382" text-anchor="middle" fill="#fbbf24" font-size="8.5">长按 8s: 与SW1联动长按 8 秒开机 / 关机</text>
 
-  <!-- PPI 1PPS Hardware Capture -->
-  <rect x="80" y="414" width="480" height="23" rx="3" fill="#1e1b4b" stroke="#f59e0b" stroke-width="0.8"/>
-  <text x="320" y="430" text-anchor="middle" fill="#fbbf24" font-size="9">⚡ 硬件时间同步: P0.08 GNSS 1PPS 脉冲 ──▶ GPIOTE/PPI ──▶ TIMER0 捕获寄存器 (62.5ns 百纳秒级对齐)</text>
+  <rect x="345" y="322" width="251" height="74" rx="6" fill="#1e1b4b" stroke="#ec4899" stroke-width="1.2"/>
+  <text x="470" y="338" text-anchor="middle" fill="#fbcfe8" font-size="10.5" font-weight="700">🔘 按键 2 (SW1, P1.08 / KEY2_MODE)</text>
+  <text x="470" y="353" text-anchor="middle" fill="#f472b6" font-size="9">短按: 三色 RGB LED 状态与电量回显</text>
+  <text x="470" y="367" text-anchor="middle" fill="#94a3b8" font-size="8.5">长按 2s: 切换默认自适应 / 高精度连续模式</text>
+  <text x="470" y="382" text-anchor="middle" fill="#fbbf24" font-size="8.5">长按 8s: 触发 8s 关机 (绿3-&gt;蓝3-&gt;红3倒序提示)</text>
+
+  <!-- LED & Battery ADC Bar (Row 3) -->
+  <rect x="70" y="403" width="526" height="45" rx="4" fill="#1e1b4b" stroke="#f59e0b" stroke-width="0.8"/>
+  <text x="200" y="420" text-anchor="middle" fill="#fbbf24" font-size="9.5" font-weight="600">💡 三色 LED (DTC143Z 驱动): P0.29 红 / P0.30 蓝 / P0.31 绿</text>
+  <text x="200" y="437" text-anchor="middle" fill="#cbd5e1" font-size="8">开机提示: 红3-&gt;蓝3-&gt;绿3慢闪 | 关机提示: 绿3-&gt;蓝3-&gt;红3慢闪 (1Hz)</text>
+  <text x="460" y="420" text-anchor="middle" fill="#38bdf8" font-size="9.5" font-weight="600">🔋 电池分压采样: P0.02 (BAT_ADC)</text>
+  <text x="460" y="437" text-anchor="middle" fill="#94a3b8" font-size="8">1MΩ + 330kΩ 分压 (漏电 3.2µA) + 100nF C14</text>
 
   <!-- Flash & IMU under MCU -->
   <!-- W25Q512NW Flash -->
-  <rect x="60" y="460" width="245" height="105" rx="6" fill="#1e293b" stroke="#64748b" stroke-width="1"/>
-  <text x="182" y="482" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="700">W25Q512NW (64MB 1.8V SPI NOR)</text>
-  <text x="182" y="500" text-anchor="middle" fill="#94a3b8" font-size="9.5">总线: 低噪声 SPI (4~8MHz) | 休眠: 1µA</text>
-  <text x="182" y="517" text-anchor="middle" fill="#38bdf8" font-size="9.5">严格定长 32B 记录 + 16B BLE 事件解耦</text>
-  <text x="182" y="534" text-anchor="middle" fill="#a7f3d0" font-size="9">夜间 heatshrink 压缩归档 + 掉电 Journaling</text>
-  <text x="182" y="551" text-anchor="middle" fill="#fbbf24" font-size="8.5">自适应模式支持 7~14 年全生命周期存储</text>
+  <rect x="50" y="468" width="270" height="110" rx="6" fill="#1e293b" stroke="#64748b" stroke-width="1"/>
+  <text x="185" y="489" text-anchor="middle" fill="#f1f5f9" font-size="11.5" font-weight="700">W25Q512NW (64MB 1.8V SPI NOR)</text>
+  <text x="185" y="507" text-anchor="middle" fill="#94a3b8" font-size="9">标准 4 线 SPI: P1.09 CS / P0.19 CLK / 8MHz</text>
+  <text x="185" y="523" text-anchor="middle" fill="#38bdf8" font-size="9">P0.22 (SPI_MOSI, DI) / P0.23 (SPI_MISO, DO)</text>
+  <text x="185" y="539" text-anchor="middle" fill="#a7f3d0" font-size="8.5">/WP 与 /HOLD 硬件直连 1.9V | 深休眠仅 1µA</text>
+  <text x="185" y="555" text-anchor="middle" fill="#fbbf24" font-size="8.5">严格定长 32B 记录 + 16B BLE | 7~14年免擦</text>
+  <text x="185" y="569" text-anchor="middle" fill="#cbd5e1" font-size="8">夜间 heatshrink 压缩归档 + 掉电 Journaling</text>
 
-  <!-- LSM6DSV16X IMU -->
-  <rect x="320" y="460" width="260" height="105" rx="6" fill="#1e293b" stroke="#10b981" stroke-width="1.5"/>
-  <text x="450" y="482" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">LSM6DSV16X (ST 6轴旗舰 IMU)</text>
-  <text x="450" y="500" text-anchor="middle" fill="#94a3b8" font-size="9.5">深度静止唤醒: 15Hz LPM1 加速度计 (~7.5µA)</text>
-  <text x="450" y="517" text-anchor="middle" fill="#10b981" font-size="9.5">SFLP 内核: 纯 6 轴姿态四元数 (60Hz@14µA)</text>
-  <text x="450" y="534" text-anchor="middle" fill="#cbd5e1" font-size="9">MLC 运动模式识别 + FSM 状态机</text>
-  <text x="450" y="551" text-anchor="middle" fill="#f472b6" font-size="8.5">PDR 航位推算接管 | Qvar 外壳触控</text>
+  <!-- LSM6DSVTR IMU -->
+  <rect x="330" y="468" width="280" height="110" rx="6" fill="#1e293b" stroke="#10b981" stroke-width="1.5"/>
+  <text x="470" y="489" text-anchor="middle" fill="#34d399" font-size="11.5" font-weight="700">LSM6DSVTR (ST 6轴 IMU, LGA-14)</text>
+  <text x="470" y="507" text-anchor="middle" fill="#94a3b8" font-size="9">总线: P0.11 CS / P0.12 CLK / P0.04 MISO / P0.05 MOSI</text>
+  <text x="470" y="523" text-anchor="middle" fill="#10b981" font-size="9">静止唤醒: 15Hz LPM1 (~7.5µA) | 单 INT1 (P0.07)</text>
+  <text x="470" y="539" text-anchor="middle" fill="#cbd5e1" font-size="8.5">SFLP 硬件 6 轴姿态四元数 (60Hz@14µA) | PDR 惯导接管</text>
+  <text x="470" y="555" text-anchor="middle" fill="#f472b6" font-size="8.5">背面横向贴装标定: X_body=-Y_imu, Y_body=X_imu, Z_body=-Z_imu</text>
+  <text x="470" y="569" text-anchor="middle" fill="#a7f3d0" font-size="8">Sensor Hub AUX I2C Master 采集磁力计与气压计</text>
 
   <!-- Sensor Hub (LIS2MDL + BMP388) -->
-  <rect x="60" y="580" width="520" height="110" rx="6" fill="#0f172a" stroke="#059669" stroke-width="1"/>
-  <text x="80" y="602" fill="#6ee7b7" font-size="11" font-weight="700">传感器供电: 1.9V 经磁珠+电容 π型低噪滤波 (零额外LDO漏电) | Sensor Hub I2C Master</text>
+  <rect x="50" y="588" width="560" height="135" rx="6" fill="#0f172a" stroke="#059669" stroke-width="1"/>
+  <text x="70" y="608" fill="#6ee7b7" font-size="11" font-weight="700">传感器供电: 1.9V 经磁珠+电容 π型滤波 (零额外LDO漏电) | LSM6DSVTR Sensor Hub AUX I2C</text>
   
-  <rect x="80" y="615" width="235" height="60" rx="4" fill="#1e293b" stroke="#334155" stroke-width="1"/>
-  <text x="197" y="633" text-anchor="middle" fill="#e2e8f0" font-size="10.5" font-weight="600">LIS2MDL 三轴磁力计</text>
-  <text x="197" y="648" text-anchor="middle" fill="#94a3b8" font-size="9">提供地磁航向参考信息</text>
-  <text x="197" y="662" text-anchor="middle" fill="#f87171" font-size="8.5">固件负责硬/软铁校准与磁异常抑制</text>
+  <rect x="70" y="618" width="250" height="95" rx="4" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+  <text x="195" y="636" text-anchor="middle" fill="#e2e8f0" font-size="10.5" font-weight="600">LIS2MDL 三轴磁力计 (LGA-12)</text>
+  <text x="195" y="652" text-anchor="middle" fill="#94a3b8" font-size="8.5">挂载 AUX I2C (Pin 1 SCL / Pin 4 SDA, 2.2kΩ上拉)</text>
+  <text x="195" y="667" text-anchor="middle" fill="#38bdf8" font-size="8.5">背面逆时针90°贴装: 与 IMU 物理敏感轴 1:1 天然同向</text>
+  <text x="195" y="682" text-anchor="middle" fill="#a7f3d0" font-size="8">EXT_CFG_A/B 保持默认映射，无驱动重映射开销</text>
+  <text x="195" y="697" text-anchor="middle" fill="#f87171" font-size="8">固件负责硬/软铁校准与动态室内磁异常抑制</text>
 
-  <rect x="330" y="615" width="235" height="60" rx="4" fill="#1e293b" stroke="#334155" stroke-width="1"/>
-  <text x="447" y="633" text-anchor="middle" fill="#e2e8f0" font-size="10.5" font-weight="600">BMP388 高精度气压计</text>
-  <text x="447" y="648" text-anchor="middle" fill="#94a3b8" font-size="9">相对高度精度 typ. ±8Pa (约 ±0.66m)</text>
-  <text x="447" y="662" text-anchor="middle" fill="#38bdf8" font-size="8.5">固件卡尔曼滤波实现室内楼层与爬坡识别</text>
+  <rect x="335" y="618" width="255" height="95" rx="4" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+  <text x="462" y="636" text-anchor="middle" fill="#e2e8f0" font-size="10.5" font-weight="600">BMP388 高精度气压高度计 (LGA-10)</text>
+  <text x="462" y="652" text-anchor="middle" fill="#94a3b8" font-size="8.5">挂载 AUX I2C 从机 | 相对精度 typ. ±8Pa (约 ±0.66m)</text>
+  <text x="462" y="667" text-anchor="middle" fill="#38bdf8" font-size="8.5">固件卡尔曼滤波消除宏观气压漂移，实现楼层识别</text>
+  <text x="462" y="682" text-anchor="middle" fill="#cbd5e1" font-size="8">走楼梯步频冲击与气压斜率联合判断</text>
+  <text x="462" y="697" text-anchor="middle" fill="#fbbf24" font-size="8">电梯垂直冲击脉冲检测与高程跃迁快速更新</text>
 
 
-  <!-- RIGHT: Switched GNSS High-Power Domain -->
-  <rect x="630" y="190" width="410" height="515" rx="10" fill="url(#swGrad)" stroke="#3b82f6" stroke-width="1.8" filter="url(#cardShadow)"/>
-  <rect x="645" y="202" width="330" height="24" rx="4" fill="#1e3a8a"/>
-  <text x="810" y="218" text-anchor="middle" fill="#93c5fd" font-size="11" font-weight="700">🔵 【受控突发高能域】 瞬态满载电流 ~48.5 mA</text>
+  <!-- ================= 3. RIGHT: Switched GNSS High-Power Domain ================= -->
+  <rect x="645" y="180" width="440" height="555" rx="10" fill="url(#swGrad)" stroke="#3b82f6" stroke-width="1.8" filter="url(#cardShadow)"/>
+  <rect x="660" y="192" width="370" height="22" rx="4" fill="#1e3a8a"/>
+  <text x="845" y="207" text-anchor="middle" fill="#93c5fd" font-size="10.5" font-weight="700">🔵 【受控突发高能域】 1.8V 独立洁净射频电 | 瞬态 8.5~15.2 mA</text>
 
   <!-- LDO SGM2045-1.8 -->
-  <rect x="650" y="235" width="370" height="80" rx="8" fill="#1e293b" stroke="#38bdf8" stroke-width="1.5"/>
-  <text x="835" y="258" text-anchor="middle" fill="#38bdf8" font-size="13" font-weight="700">圣邦微 SGM2045-1.8 专用受控 LDO</text>
-  <text x="835" y="276" text-anchor="middle" fill="#e2e8f0" font-size="10">微型 XTDFN-1×1-4L | 92dB PSRR | 9.5µVrms 超低噪 | 压差仅100mV</text>
-  <text x="835" y="293" text-anchor="middle" fill="#34d399" font-size="9.5">输出 GNSS_1V8 (300mA) 供给模组 Pin 8 VCC 与板载双频 LNA</text>
-  <text x="835" y="306" text-anchor="middle" fill="#f87171" font-size="8.5">下电防倒灌: 下电前注销 UART，MCU TXD/PPS 设为 High-Z</text>
+  <rect x="660" y="222" width="410" height="74" rx="8" fill="#1e293b" stroke="#38bdf8" stroke-width="1.5"/>
+  <text x="865" y="242" text-anchor="middle" fill="#38bdf8" font-size="12.5" font-weight="700">圣邦微 SGM2045-1.8 专用受控 LDO</text>
+  <text x="865" y="258" text-anchor="middle" fill="#e2e8f0" font-size="9.5">微型 XTDFN-1×1-4L | 92dB PSRR | 9.5µVrms 超低噪 | 额定压差仅100mV</text>
+  <text x="865" y="272" text-anchor="middle" fill="#34d399" font-size="9">输出 VDD_GPS (1.8V, 300mA) 供给模组 Pin 8 VCC 与板载双频 LNA</text>
+  <text x="865" y="285" text-anchor="middle" fill="#f87171" font-size="8">受控通断: MCU P0.13 (GPS_EN) 控制使能 | 关断漏电仅 30nA</text>
 
-  <!-- ATGM336H-F8N76 GNSS Module Card -->
-  <rect x="650" y="325" width="370" height="235" rx="8" fill="#0f172a" stroke="#60a5fa" stroke-width="1.5"/>
-  <text x="670" y="348" fill="#93c5fd" font-size="14" font-weight="700">中科微 ATGM336H-F8N76 双频旗舰 GNSS</text>
-  <text x="670" y="367" fill="#f8fafc" font-size="10" font-weight="600">基于旗舰 AT9880 SoC | Pin 8 VCC 主电 | Pin 1 GND</text>
+  <!-- GNSS Module Card (MAX-M10S + LC97H Compatible) -->
+  <rect x="660" y="306" width="410" height="268" rx="8" fill="#0f172a" stroke="#60a5fa" stroke-width="1.5"/>
+  <text x="680" y="328" fill="#93c5fd" font-size="13.5" font-weight="700">u-blox MAX-M10S (主选) / 移远 LC97H (兼容)</text>
+  <text x="680" y="345" fill="#f8fafc" font-size="9.5" font-weight="600">标准 SMD-18 (10.1×9.7mm) 封装 | Pin 8 VCC (1.8V) | Pin 1/10/12 GND</text>
   
-  <rect x="670" y="378" width="330" height="22" rx="3" fill="#1e293b"/>
-  <text x="680" y="393" fill="#34d399" font-size="9.5">跟踪灵敏度: -167 dBm | 水平精度 &lt; 1.0m (CEP50)</text>
+  <!-- Jumper Box -->
+  <rect x="675" y="354" width="380" height="46" rx="4" fill="#1e293b" stroke="#f59e0b" stroke-width="1"/>
+  <text x="685" y="371" fill="#fde047" font-size="9" font-weight="700">【一板双模组唤醒 BOM 跳线网络】 (MCU P0.03 GPS_WAKE 驱动):</text>
+  <text x="685" y="385" fill="#a7f3d0" font-size="8.5">• MAX-M10S (默认): 贴片 R28 (100Ω) 连 Pin 5 (EXTINT)；R27 为 NC</text>
+  <text x="685" y="396" fill="#38bdf8" font-size="8.5">• LC97H (兼容选型): 贴片 R27 (100Ω For LC97H) 连 Pin 18 (WAKEUP)；R28 为 NC</text>
 
-  <rect x="670" y="405" width="330" height="22" rx="3" fill="#1e293b"/>
-  <text x="680" y="420" fill="#38bdf8" font-size="9.5">默认波特率: 115200 bps (CASIC仅使能RMC/GGA压缩耗时)</text>
+  <!-- Module Specs -->
+  <rect x="675" y="406" width="380" height="38" rx="3" fill="#1e293b"/>
+  <text x="685" y="420" fill="#34d399" font-size="9">跟踪灵敏度: -167 dBm | 多星并发: GPS+BDS(B1I/B1C)+GAL+GLO</text>
+  <text x="685" y="435" fill="#38bdf8" font-size="9">通信串口: P0.14 TX ──▶ Pin 3 RXD, P0.17 RX ◀── Pin 2 TXD (100Ω串阻)</text>
 
-  <rect x="670" y="432" width="330" height="52" rx="3" fill="#1e293b"/>
-  <text x="680" y="449" fill="#fde047" font-size="9.5" font-weight="600">后备电源 VBAT (Pin 6) 直连常通 1.9V (15µA):</text>
-  <text x="680" y="464" fill="#cbd5e1" font-size="8.5">由 SGM6040A 常通供电，维持内部 RTC 与 SRAM 热启动状态</text>
-  <text x="680" y="477" fill="#94a3b8" font-size="8">待机功耗 0.36 mAh/天，计入整机常通待机预算</text>
+  <!-- Backup & Power Model -->
+  <rect x="675" y="449" width="380" height="42" rx="3" fill="#1e293b"/>
+  <text x="685" y="465" fill="#fde047" font-size="9" font-weight="600">后备电源 Pin 6 V_BCKP 直连 1.9V 常通主轨 (15µA 保持 RTC/SRAM):</text>
+  <text x="685" y="480" fill="#cbd5e1" font-size="8.5">连续跟踪: 15.2mA @ 1.8V (折算电池侧仅 8.26mA) | 省电PSM: 8.5mA (折算4.62mA)</text>
 
-  <rect x="670" y="490" width="330" height="60" rx="3" fill="#1e293b"/>
-  <text x="680" y="506" fill="#f472b6" font-size="9.5" font-weight="600">分层上电时序与状态机保护:</text>
-  <text x="680" y="520" fill="#cbd5e1" font-size="8.5">• 冷启动: 持续供电 60s 超时；取得 Fix 后保持 35s 刷写星历</text>
-  <text x="680" y="533" fill="#cbd5e1" font-size="8.5">• 热启动脉冲: 3.5s 基础窗口 ──▶ 自适应延长至 8s ──▶ 15s 硬超时</text>
-  <text x="680" y="545" fill="#f87171" font-size="8">连续 2 次超时触发指数退避与 PDR 惯导接管，杜绝死循环</text>
+  <!-- FSM -->
+  <rect x="675" y="496" width="380" height="70" rx="3" fill="#1e293b"/>
+  <text x="685" y="512" fill="#f472b6" font-size="9" font-weight="600">分层上电时序与防死循环保护状态机 (FSM):</text>
+  <text x="685" y="527" fill="#cbd5e1" font-size="8.5">• 冷启动: 持续供电 60s 独立超时；取得 3D Fix 后保持 30s 接收完整广播星历</text>
+  <text x="685" y="541" fill="#cbd5e1" font-size="8.5">• 热启动脉冲: 3.5s 基础快照窗口 ──▶ 自适应延至 6s ──▶ 15s 硬超时切断</text>
+  <text x="685" y="555" fill="#f87171" font-size="8">• 连续 2 次超时判定进入室内，触发指数退避 (120s/300s) 并完全移交 PDR 惯导</text>
 
   <!-- RF Front-End Architecture -->
-  <rect x="650" y="570" width="370" height="120" rx="8" fill="#1e293b" stroke="#e2e8f0" stroke-width="1"/>
-  <text x="835" y="592" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="700">双频 L1+L5 射频前端 (无源 Chip 天线 + LNA/SAW)</text>
-  <text x="835" y="610" text-anchor="middle" fill="#34d399" font-size="9.5" font-weight="600">【天线】Unictron H2UJ4U1H2Q0100 (5×3×0.5mm, 备选AVX M830120)</text>
-  <text x="835" y="625" text-anchor="middle" fill="#cbd5e1" font-size="8.5">前置双频 LNA: 中科微 ATR2652 (增益 22dB, NF 0.75dB, 4.5mA)</text>
-  <text x="835" y="642" text-anchor="middle" fill="#38bdf8" font-size="9.5" font-weight="600">前置双通带 SAW: 高通 B39162B2651P810 (2.4GHz BLE 抑制 &gt; 38dB)</text>
-  <text x="835" y="657" text-anchor="middle" fill="#cbd5e1" font-size="8.5">前置净增益 ~20dB (切入模组 15~30dB 窗口) | 板角独立全层净空</text>
-  <text x="835" y="675" text-anchor="middle" fill="#fbbf24" font-size="8.5">链路: Chip天线 ──▶ π型匹配 ──▶ ATR2652 ──▶ B39162 SAW ──▶ RF_IN</text>
+  <rect x="660" y="584" width="410" height="139" rx="8" fill="#1e293b" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="865" y="604" text-anchor="middle" fill="#f8fafc" font-size="11.5" font-weight="700">双频 L1+L5 射频前端 (无源 Chip 天线 + 双 BOM 架构)</text>
+  <text x="865" y="621" text-anchor="middle" fill="#34d399" font-size="9" font-weight="600">【天线】Unictron H2UJ4U1H2Q0100 (5×3×0.5mm, 备选 AVX M830120)</text>
+  
+  <rect x="675" y="630" width="380" height="42" rx="3" fill="#0f172a"/>
+  <text x="685" y="646" fill="#a7f3d0" font-size="8.5">• BOM Option A (默认标准直通): 贴片 C46/C47 (22pF)，NC: LNA 与 SAW (零额外功耗)</text>
+  <text x="685" y="661" fill="#38bdf8" font-size="8.5">• BOM Option B (射频高增益增强): 贴 ATR2652 LNA (+22dB) + B39162 SAW (BLE抑制&gt;38dB)</text>
+  
+  <text x="865" y="688" text-anchor="middle" fill="#cbd5e1" font-size="8">板角独立全层净空 | 超低结容 ESD 静电防护 (&lt;0.15pF)</text>
+  <text x="865" y="703" text-anchor="middle" fill="#fbbf24" font-size="8">链路: Chip天线 ──▶ 0402 π型匹配 ──▶ (直通 C46/47 或 LNA+SAW) ──▶ Pin 11 RF_IN</text>
+  <text x="865" y="716" text-anchor="middle" fill="#f87171" font-size="7.5">⚠️ 严禁同时焊接 (C46+C47) 与 (U5+Q1) 以免产生射频正反馈自激振荡</text>
 
-  <!-- Control & Data Links between domains with 1k Resistors -->
-  <!-- Power Enable line -->
-  <path d="M 580 270 L 650 270" fill="none" stroke="#ef4444" stroke-width="2" stroke-dasharray="4" marker-end="url(#arrow)"/>
-  <text x="615" y="262" text-anchor="middle" fill="#f87171" font-size="8.5" font-weight="600">LDO_EN</text>
+  <!-- ================= Cross-domain Control & Signal Arrows ================= -->
+  <!-- Power Enable line (P0.13 GPS_EN) -->
+  <path d="M 610 258 L 660 258" fill="none" stroke="#ef4444" stroke-width="2" stroke-dasharray="4" marker-end="url(#arrowRed)"/>
+  <text x="635" y="250" text-anchor="middle" fill="#f87171" font-size="8" font-weight="700">P0.13 GPS_EN</text>
 
-  <!-- UART Data line with 1k resistor tag -->
-  <path d="M 650 375 L 580 375" fill="none" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrowBlue)"/>
-  <text x="615" y="367" text-anchor="middle" fill="#38bdf8" font-size="8.5" font-weight="600">UART(1kΩ)</text>
+  <!-- GPS_WAKE line (P0.03) -->
+  <path d="M 610 375 L 675 375" fill="none" stroke="#f59e0b" stroke-width="2" stroke-dasharray="3" marker-end="url(#arrowAmber)"/>
+  <text x="640" y="367" text-anchor="middle" fill="#fbbf24" font-size="8" font-weight="700">P0.03 WAKE</text>
 
-  <!-- 1PPS Sync line with 1k resistor tag -->
-  <path d="M 650 425 L 580 425" fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="3" marker-end="url(#arrowAmber)"/>
-  <text x="615" y="417" text-anchor="middle" fill="#fbbf24" font-size="8.5" font-weight="600">1PPS(1kΩ)</text>
+  <!-- UART Data line (P0.14 TX, P0.17 RX) -->
+  <path d="M 660 425 L 610 425" fill="none" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrowBlue)"/>
+  <text x="635" y="417" text-anchor="middle" fill="#38bdf8" font-size="8" font-weight="700">UART(100Ω)</text>
 
 </svg>
