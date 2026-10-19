@@ -80,13 +80,13 @@
 | **GNSS 射频天线** | **H2UJ4U1H2Q0100**<br>*(备选 M830120)* | Unictron (咏业)<br>/ Kyocera AVX | **超微型 Chip 天线**<br>*(5.0×3.0×0.5mm / 8.0×3.0mm)* | 无源器件 | 50Ω 共面波导 + π型调谐匹配<br>板角端全层独立净空区 | 纯无源超薄片状天线，零直流偏置功耗<br>**双 BOM 选项**：直通模式 vs 外置 LNA+SAW 模式 | 原厂数据手册 |
 | **板载双频 LNA** | **ATR2652** | 杭州中科微 | DFN-6 / SOT23-6 | 1.8V 受控<br>*(支持 1.5~3.6V)* | L1 增益 22.4dB / NF 0.85dB<br>L5 增益 22.0dB / NF 0.75dB | **BOM Option B 贴片**（与 C46/C47 互斥）<br>工作电流 4.5mA，随模组受控电轨同步断电 | 原厂选型手册 |
 | **板载双通带 SAW** | **B39162B2651P810** | Qualcomm / RF360 | 1511<br>*(1.5×1.1mm)* | 无源器件 | 单进单出双通带 (L1+L5)<br>2.4GHz BLE 抑制 > 38dB | **BOM Option B 贴片**（强力消除板载蓝牙发射自干扰）<br>BOM Option A 直通版不贴片 | 原厂选型手册 |
-| **SPI NOR Flash** | **W25Q512NWEIQ**<br>*(1.8V 宽压旗舰)* | Winbond (华邦) | WSON-8<br>*(6×8mm)* | 1.9V 常通<br>*(1.65~1.95V)* | 标准 4 线 SPI (模式 0)<br>**目标时钟: 8MHz (低噪声)** | CS (P1.09), CLK (P0.19), MOSI (P0.23), MISO (P0.22)<br>/WP(Pin 3)与/HOLD(Pin 7) 直连 1.9V 主电轨 | 原厂规格书 (1.8V 系列) |
+| **SPI NOR Flash** | **W25Q512NWEIQ**<br>*(1.8V 宽压旗舰)* | Winbond (华邦) | WSON-8<br>*(6×8mm)* | 1.9V 常通<br>*(1.65~1.95V)* | 标准 4 线 SPI (模式 0)<br>**目标时钟: 8MHz (低噪声)** | CS (P1.09), CLK (P0.19), MOSI (P0.22), MISO (P0.23)<br>/WP(Pin 3)与/HOLD(Pin 7) 直连 1.9V 主电轨 | 原厂规格书 (1.8V 系列) |
 | **6轴 IMU** | **LSM6DSVTR** | STMicroelectronics | LGA-14<br>*(2.5×3.0mm)* | 1.9V 常通<br>*(磁珠+电容π型滤波)* | SPI 8MHz (直连主控 P0.11/12/04/05)<br>SFLP 输出: 60Hz 姿态四元数 | 静止待机: 低功耗加速度计 (~7.5µA)<br>INT1 (P0.07) 运动唤醒与数据就绪中断 | `Doc/LSM6DSV16X_Datasheet.pdf` |
 | **三轴磁力计** | **LIS2MDL** | STMicroelectronics | LGA-12<br>*(2.0×2.0mm)* | 1.9V 常通<br>*(磁珠+电容π型滤波)* | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSVTR Sensor Hub AUX I2C<br>数据进 IMU FIFO，MCU 固件执行磁校准与姿态融合 | `Doc/LIS2MDL_Datasheet.pdf` |
 | **气压高度计** | **BMP388** | Bosch Sensortec | LGA-10<br>*(2.0×2.0mm)* | 1.9V 常通<br>*(磁珠+电容π型滤波)* | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSVTR Sensor Hub AUX I2C<br>相对精度 typ. ±8Pa (±0.08hPa, 等效约 ±0.66m) | `Doc/BMP388_Datasheet.pdf` |
 | **常通降压 DCDC** | **SGM6040AXTHL8G/TR** | 圣邦微 (SGMICRO) | **TDFN-2×1.5-8L**<br>*(RSET设定 1.9V)* | 输入 1.8~5.5V<br>**设定输出 1.9V** | 750mA 输出能力，效率 > 90%<br>Pin 5 VSET 接 909Ω；Pin 6 STOP 内部下拉悬空 | 全板常通核心（为MCU/Flash/传感器/GNSS后备供电）<br>静态电流仅 60nA (关断 25nA) | `Doc/SGM6040A_Datasheet.pdf` |
 | **受控低噪 LDO** | **SGM2045-1.8XXDH4G/TR** | 圣邦微 (SGMICRO) | **XTDFN-1×1-4L**<br>*(超微型封装)* | 输入 1.1~5.5V (接1.9V主轨)<br>**固定输出 1.8V** | 300mA 输出能力，**92dB 超高 PSRR**<br>**9.5µVrms 超低噪声，额定压差仅 100mV** | 专供 MAX-M10S Pin 8 VCC 及备选 LNA 射频轨<br>由 P0.13 (GPS_EN) 硬件使能，关断漏电仅 30nA | `Doc/SGM2045_Datasheet.pdf` |
-| **锂电充电 IC** | **SGM4056** | 圣邦微 (SGMICRO) | TDFN-3×3-8L<br>*(带底部散热EP)* | 输入 4.5~6.8V<br>OVP 6.8V | $R_{IREF}=34.0\text{k}\Omega$ 限制 350mA 恒流<br>$R_{IMIN}=243\text{k}\Omega$ 设定 40mA 截止电流 | Pin 3 /CHG 接 P0.20 (内部弱上拉)；Pin 4 EN 接 P0.21<br>高电平关断充电，低电平正常使能 | `Doc/SGM4056_Datasheet.pdf` |
+| **锂电充电 IC** | **SGM4056** | 圣邦微 (SGMICRO) | TDFN-3×3-8L<br>*(带底部散热EP)* | 输入 4.5~6.8V<br>OVP 6.8V | $R_{IREF}=34.0\text{k}\Omega$ 限制 350mA 恒流<br>$R_{IMIN}=340\text{k}\Omega$ 设定 35mA 截止电流 | Pin 3 /CHG 接 P0.20 (内部弱上拉)；Pin 4 EN 接 P0.21<br>高电平关断充电，低电平正常使能 | `Doc/SGM4056_Datasheet.pdf` |
 | **电池电压采样分压** | **1MΩ + 330kΩ** | 华新科 / 国巨 | 0603 / 0402 (1% 精度) | 电池端常通分压 | 直连 SAADC AIN0 (P0.02) | 分压比约 0.2481，4.2V 时采样端为 1.042V<br>全天候静态漏电约 3.16µA (可接受极简设计) | 标称电阻规范 |
 | **锂电保护板 (PCM)** | **DW01A + 8205A** 或<br>**AP9101C 系列** | 行业标准方案 | 电芯内置 PCM | 电池端保护 | 硬件级过放/过充/过流切断 | 3.0V 硬件切断过放保护 (漏电<0.1µA)<br>4.28V 过充保护，2.5A 短路锁死 | 保护板设计规范 |
 
@@ -124,8 +124,8 @@
    * **系统功能分配严格闭环（经专家评审重构优化）**：
      * 1 个引脚配置为系统硬件复位（`Pin 16 / P0.18 / SYS_RESET`）；
      * 1 个引脚配置为系统测试焊盘/高阻预留（`Pin 38 / P1.15 / SYSTEM_TEST_IO`，原 DCDC STOP 引脚释放）；
-     * 1 个引脚配置为预留外部模拟测试焊盘（`Pin 44 / P0.31 / RESERVED_TP`）；
-     * 2 个引脚重新赋予充电管理（原 Flash WP/HOLD 释放）：`P0.22` 接 SGM4056 `/CHG`（充电状态检测），`P0.23` 接 SGM4056 `EN`（JEITA 硬件断充）；
+     * 4 个引脚保持悬空预留测试焊盘（`P0.09 (Pin 29)``P0.10 (Pin 30)``P1.15 (Pin 38)``P0.28 (Pin 41)`）；
+     * 2 个引脚分配给充电管理：`P0.20` 接 SGM4056 `CHG#`（充电状态检测），`P0.21` 接 SGM4056 `EN#`（JEITA 硬件断充）；`P0.22` (SPI_MOSI) 与 `P0.23` (SPI_MISO) 承担 Flash 读写；
      * **其余物理有效 GPIO 完整分配给核心外设与总线**（无任何虚构管脚），满足全部系统互联需求。
 4. **外部时钟晶振引脚规划与负载电容规范**：
    * 必须在专用管脚 `XC1 (Pin 35)` 和 `XC2 (Pin 36)` 外挂 **32MHz 高频石英晶体（HFXO）**，这是 2.4GHz BLE 射频与 64MHz 主频运行的必需时基。标称负载电容取 $C_L = 12\text{ pF}$，外挂对称匹配电容设计公式为 $C_1 = C_2 = 2 \times (C_L - C_{stray})$。考虑 PCB 走线与焊盘杂散容抗 $C_{stray} \approx 2\sim 4\text{ pF}$，外接电容设计取值范围为 **$16\text{ pF} \sim 20\text{ pF}$**（打样阶段通过频谱仪与频偏仪器微调）；
@@ -208,7 +208,7 @@
 * **芯片型号**：Winbond **`W25Q512NWEIQ`**（512M-bit / 64 Mega-bytes，WSON-8 6×8mm 紧凑封装，额定工作电压 **$1.65\text{V} \sim 1.95\text{V}$**，完美兼容 1.9V 主供电轨）；
 * **物理可靠性与标准 4 线 SPI 规范**：
   * 相比 SPI NAND Flash，NOR 架构**出厂零坏块无坏块管理（BBM）与 ECC 纠错负担**，支持标准 256 字节页编程与 4KB 扇区擦除；
-  * **标准 4 线 SPI 架构**：硬件上仅占用主控 `P1.09 (CS)``P0.19 (SCK)``P0.20 (MOSI)``P0.21 (MISO)` 4 个 GPIO；芯片 Pin 3 (`/WP`) 与 Pin 7 (`/HOLD`) 在 PCB 硬件上直接通过 $10\text{ k}\Omega$ 上拉电阻连至 `VDD_1V9`，**零占用主控 GPIO，彻底消除引脚定义冲突**；
+  * **标准 4 线 SPI 架构**：硬件上仅占用主控 `P1.09 (CS)``P0.19 (CLK)``P0.22 (MOSI)``P0.23 (MISO)` 4 个 GPIO；芯片 Pin 3 (`/WP`) 与 Pin 7 (`/HOLD`) 在 PCB 硬件原理图上直接连接至 `BT_1V9` 主电轨，**零占用主控 GPIO，彻底消除引脚定义冲突**；
   * 深度休眠漏电极低（典型值仅 **$1\text{ }\mu\text{A}$**，不拖累系统待机底噪）；
   * 具备 **100,000 次（十万次）擦写寿命** 与 **20 年数据保持期**；
 * **低噪声总线规划**：SPI 通信速率配置为 **4MHz ~ 8MHz**，既满足微秒级日志写入，又彻底消除高次谐波对卫星天线 L1/L5 的高频射频干扰；
@@ -313,7 +313,7 @@ flowchart TB
         end
 
         subgraph STORAGE_IMU ["存储器与运动传感"]
-            FLASH["<b>W25Q512NW</b><br/>64MB 1.8V SPI NOR<br/>DI(P0.23), DO(P0.22)"]:::dev
+            FLASH["<b>W25Q512NW</b><br/>64MB 1.8V SPI NOR<br/>DI(P0.22), DO(P0.23)"]:::dev
             IMU["<b>LSM6DSVTR 6轴</b><br/>低功耗加速度计 (~7.5µA)<br/>INT1 (P0.07) 唤醒"]:::aon
             
             subgraph SENSOR_HUB ["IMU Sensor Hub AUX I2C"]
@@ -497,8 +497,8 @@ flowchart TD
 | **Pin 18**| `P0.19` | `SPI_CLK` | OUT | High Drive (8MHz) | 接 W25Q512NW Pin 6 (CLK)，高速 SPI 时钟 |
 | **Pin 19**| `P0.20` | `CHG_STAT` | IN (PU)| **固件配置内部弱上拉** | 接 SGM4056 Pin 3 (/CHG)，精准检测充电状态 |
 | **Pin 20**| `P0.21` | `CHG_EN` | OUT | Standard Drive | 接 SGM4056 Pin 4 (EN)，高电平禁止充电（JEITA保护）|
-| **Pin 21**| `P0.22` | `SPI_MISO` | IN | Standard Drive | 接 W25Q512NW Pin 2 (DO/IO1)，Flash 数据输入 |
-| **Pin 22**| `P0.23` | `SPI_MOSI` | OUT | High Drive (8MHz) | 接 W25Q512NW Pin 5 (DI/IO0)，Flash 数据输出 |
+| **Pin 21**| `P0.22` | `SPI_MOSI` | OUT | High Drive (8MHz) | 接 W25Q512NW Pin 5 (DI/IO0)，Flash 数据输出 (MOSI) |
+| **Pin 22**| `P0.23` | `SPI_MISO` | IN | Standard Drive | 接 W25Q512NW Pin 2 (DO/IO1)，Flash 数据输入 (MISO) |
 | **Pin 23**| `P0.24` | `DEBUG_TX` | OUT | Standard Drive | 调试串口 TX（115200bps，输出实时系统 Log） |
 | **Pin 24**| `P1.00 / TRACEDATA0`| `DEBUG_RX` | IN | Standard Drive | 调试串口 RX（接收外部配置调试指令） |
 | **Pin 25**| `VDD` | `BT_1V9` | PWR | 主供电输入 | 连 1.9V 主电轨 (并联 100nF 去耦) |
@@ -515,7 +515,7 @@ flowchart TD
 | **Pin 36**| `XC2` | `XC2` | 模拟时钟 | 32MHz 晶体输出 | 接 32MHz 外部石英晶体 X2 Pin 1 (12pF 匹配) |
 | **Pin 37**| `VDD` | `BT_1V9` | PWR | 主供电输入 | 连 1.9V 主电轨 |
 | **Pin 38**| `P1.15` | `NC / TP` | - | **Low Frequency Only** | 悬空预留测试焊盘 |
-| **Pin 39**| `P0.03 / AIN1`| `NC / TP` | - | **Low Frequency Only** | 悬空预留测试焊盘（原高边控制取消） |
+| **Pin 39**| `P0.03 / AIN1`| `GPS_WAKE` | OUT | **Low Frequency Only** | GNSS 唤醒引脚控制（经 R28 接 M10S Pin 5 / 经 R27 接 LC97H Pin 18） |
 | **Pin 40**| `P0.02 / AIN0`| `BAT_ADC` | IN (ADC)| **Low Frequency Only** | 电池 1M/330k 分压采样输入 (接 SAADC AIN0) |
 | **Pin 41**| `P0.28 / AIN4`| `NC / TP` | - | **Low Frequency Only** | 悬空预留测试焊盘 |
 | **Pin 42**| `P0.29 / AIN5`| `LED_RED` | OUT | **Low Frequency Only** | 驱动 Q3 点亮红色指示灯（限流 1.5k~2.2kΩ） |
@@ -725,7 +725,7 @@ stateDiagram-v2
     note left of STATE_POWER_DOWN
         • 注销 UART 外设驱动
         • TXD/PPS 设为浮空输入
-        • 拉低 P0.04 关闭 LDO
+        • 拉低 P0.13 关闭 LDO (GPS_EN=0)
     end note
 ```
 
@@ -1132,7 +1132,7 @@ Life_GPS/
 > 🔒 **架构基线达成**：经多轮深度工程技术评审，本阶段架构基线已全部收敛闭环，正式确立为全项目单一真相源（SSOT），进入 Phase 2 原理图与版图设计阶段：
 
 - [x] **建立全项目唯一硬件配置基线表**：主 READMEDoc/README架构图与引脚分配表全部对齐同一套元器件料号（主控 nRF52840-QFAA QFN48MAX-M10S-00B 1.8VW25Q512NW 1.8VSGM6040A TDFN-8L 1.9VSGM2045-1.8 XTDFN）封装时钟接口与供电。
-- [x] **nRF52840 QFN48 官方引脚最终交叉核对**：依据官方手册 Table 62 锁定 48 Pin 物理映射，释放并重配 3 个 GPIO（P0.22 接 /CHG，P0.23 接 EN 充电控制，P1.15 预留测试），确立 Flash 标准 4 线 SPI 与 /WP/HOLD 硬件上拉。
+- [x] **nRF52840 QFN48 官方引脚最终交叉核对**：依据官方手册 Table 62 锁定 48 Pin 物理映射，P0.20 接 CHG_STAT，P0.21 接 CHG_EN，P0.22 接 SPI_MOSI，P0.23 接 SPI_MISO，P0.03 接 GPS_WAKE，确立 Flash 标准 4 线 SPI 与 /WP/HOLD 硬件直连。
 - [x] **GNSS 分层状态机与上电时序设计闭环**：确立冷启动 60s 独立超时窗口冷启动首次 Fix 后保持通电 35s 广播星历接收机制，以及热启动 3.5s -> 8s -> 15s 自适应延展与阶梯指数退避（120s/300s/深度休眠）接管时序。
 - [x] **GNSS 模组真实引脚与备用供电明确**：依据原厂手册确立 Pin 1 为 GNDPin 6 为 VBATPin 8 为 VCC；Pin 6 直连常通 1.9V 主电源，将 15µA 漏电流全额纳入整机常通待机底噪（电池端约 15µA 之中）。
 - [x] **射频前端内置无源天线与 DFT 双通路决策**：确立选型 Unictron H2UJ4U1H2Q0100 微型 Chip 天线 + 中科微 ATR2652 双频 LNA (4.5mA @ 1.8V) + 高通 B39162B2651P810 双通带 SAW；固化 R_INT 0Ω 贴片R_EXT NCJ_EXT IPEX 默认装配 BOM 与 Golden Sample 4dB 窗口对标规范。
@@ -1154,7 +1154,7 @@ Life_GPS/
 5. **铁磁异常检测与 PDR 航向自适应降权实测验收**：
    - 在强磁场靠近（矢量模长偏离本地基准超过 $\pm 30\%$）或进入电梯轿厢时，验证固件能否毫秒级将地磁权重归零，防止航向突变发散。
 - [x] **完成 V0.1 投板硬件原理图（Life_GPS_SCH_V0.1.SVG）**：
-  - [x] 完成 SGM4056 充电电路（$R_{IREF}=34.0\text{k}\Omega$ 设 350mA 恒流，$R_{IMIN}=243\text{k}\Omega$ 设 40mA 截止，芯片自带 115℃ 热调节）、MCU P0.20 状态检测与 P0.21 EN 充电控制；
+  - [x] 完成 SGM4056 充电电路（$R_{IREF}=34.0\text{k}\Omega$ 设 350mA 恒流，$R_{IMIN}=340\text{k}\Omega$ 设 35mA 截止，芯片自带 115℃ 热调节）、MCU P0.20 状态检测与 P0.21 EN 充电控制；
   - [x] 完成 SGM6040A 60nA 纳安级降压 DCDC 电路（$R_{SET}=909\Omega$ 设定 1.9V 供电轨，Pin 6 STOP 硬件接地消除掉电隐患）；
   - [x] 完成传感器（LSM6DSVTR、LIS2MDL、BMP388）1.9V 磁珠+电容 π 型低噪滤波供电网络设计；
   - [x] 完成 SGM2045-1.8 独立受控 LDO 供电与 MAX-M10S 双频射频前端电路（92dB 高 PSRR，专供模组 Pin 8 VCC 与 ATR2652；1.8V/1.9V 电平自适应）；

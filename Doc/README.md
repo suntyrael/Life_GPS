@@ -27,13 +27,13 @@
 | **GNSS 射频天线** | **H2UJ4U1H2Q0100**<br>*(备选 M830120)* | Unictron (咏业)<br>/ Kyocera AVX | **超微型 Chip 天线**<br>*(5.0×3.0×0.5mm / 8.0×3.0mm)* | 无源器件 | 50Ω 共面波导 + π型调谐匹配<br>板角端全层独立净空区 | 纯无源超薄片状天线，零直流偏置功耗<br>**双 BOM 选项**：直通模式 vs 外置 LNA+SAW 模式 | 原厂数据手册 |
 | **板载双频 LNA** | **ATR2652** | 杭州中科微 | DFN-6 / SOT23-6 | 1.8V 受控<br>*(支持 1.5~3.6V)* | L1 增益 22.4dB / NF 0.85dB<br>L5 增益 22.0dB / NF 0.75dB | **BOM Option B 贴片**（与 C46/C47 互斥）<br>工作电流 4.5mA，随模组受控电轨同步断电 | 原厂选型手册 |
 | **板载双通带 SAW** | **B39162B2651P810** | Qualcomm / RF360 | 1511<br>*(1.5×1.1mm)* | 无源器件 | 单进单出双通带 (L1+L5)<br>2.4GHz BLE 抑制 > 38dB | **BOM Option B 贴片**（强力消除板载蓝牙发射自干扰）<br>BOM Option A 直通版不贴片 | 原厂选型手册 |
-| **SPI NOR Flash** | **W25Q512NWEIQ**<br>*(1.8V 宽压旗舰)* | Winbond (华邦) | WSON-8<br>*(6×8mm)* | 1.9V 常通<br>*(1.65~1.95V)* | 标准 4 线 SPI (模式 0)<br>**目标时钟: 8MHz (低噪声)** | CS (P1.09), CLK (P0.19), MOSI (P0.23), MISO (P0.22)<br>/WP(Pin 3)与/HOLD(Pin 7) 直连 1.9V 主电轨 | 原厂规格书 (1.8V 系列) |
+| **SPI NOR Flash** | **W25Q512NWEIQ**<br>*(1.8V 宽压旗舰)* | Winbond (华邦) | WSON-8<br>*(6×8mm)* | 1.9V 常通<br>*(1.65~1.95V)* | 标准 4 线 SPI (模式 0)<br>**目标时钟: 8MHz (低噪声)** | CS (P1.09), CLK (P0.19), MOSI (P0.22), MISO (P0.23)<br>/WP(Pin 3)与/HOLD(Pin 7) 直连 1.9V 主电轨 | 原厂规格书 (1.8V 系列) |
 | **6轴 IMU** | **LSM6DSVTR** | STMicroelectronics | LGA-14<br>*(2.5×3.0mm)* | 1.9V 常通<br>*(磁珠+电容π型滤波)* | SPI 8MHz (直连主控 P0.11/12/04/05)<br>SFLP 输出: 60Hz 姿态四元数 | 静止待机: 低功耗加速度计 (~7.5µA)<br>INT1 (P0.07) 运动唤醒与数据就绪中断 | `LSM6DSV16X_Datasheet.pdf` |
 | **三轴磁力计** | **LIS2MDL** | STMicroelectronics | LGA-12<br>*(2.0×2.0mm)* | 1.9V 常通<br>*(磁珠+电容π型滤波)* | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSVTR Sensor Hub AUX I2C<br>数据进 IMU FIFO，MCU 固件执行磁校准与姿态融合 | `LIS2MDL_Datasheet.pdf` |
 | **气压高度计** | **BMP388** | Bosch Sensortec | LGA-10<br>*(2.0×2.0mm)* | 1.9V 常通<br>*(磁珠+电容π型滤波)* | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSVTR Sensor Hub AUX I2C<br>相对精度 typ. ±8Pa (±0.08hPa, 等效约 ±0.66m) | `BMP388_Datasheet.pdf` |
 | **常通降压 DCDC** | **SGM6040AXTHL8G/TR** | 圣邦微 (SGMICRO) | **TDFN-2×1.5-8L**<br>*(RSET设定 1.9V)* | 输入 1.8~5.5V<br>**设定输出 1.9V** | 750mA 输出能力，效率 > 90%<br>Pin 5 VSET 接 909Ω；Pin 6 STOP 内部下拉悬空 | 全板常通核心（为MCU/Flash/传感器/GNSS后备供电）<br>静态电流仅 60nA (关断 25nA) | `SGM6040A_Datasheet.pdf` |
 | **受控低噪 LDO** | **SGM2045-1.8XXDH4G/TR** | 圣邦微 (SGMICRO) | **XTDFN-1×1-4L**<br>*(超微型封装)* | 输入 1.1~5.5V (接1.9V主轨)<br>**固定输出 1.8V** | 300mA 输出能力，**92dB 超高 PSRR**<br>**9.5µVrms 超低噪声，额定压差仅 100mV** | 专供 MAX-M10S Pin 8 VCC 及备选 LNA 射频轨<br>由 P0.13 (GPS_EN) 硬件使能，关断漏电仅 30nA | `SGM2045_Datasheet.pdf` |
-| **锂电充电 IC** | **SGM4056** | 圣邦微 (SGMICRO) | TDFN-3×3-8L<br>*(带底部散热EP)* | 输入 4.5~6.8V<br>OVP 6.8V | $R_{IREF}=34.0\text{k}\Omega$ 限制 350mA 恒流<br>$R_{IMIN}=243\text{k}\Omega$ 设定 40mA 截止电流 | Pin 3 /CHG 接 P0.20 (内部弱上拉)；Pin 4 EN 接 P0.21<br>高电平关断充电，低电平正常使能 | `SGM4056_Datasheet.pdf` |
+| **锂电充电 IC** | **SGM4056** | 圣邦微 (SGMICRO) | TDFN-3×3-8L<br>*(带底部散热EP)* | 输入 4.5~6.8V<br>OVP 6.8V | $R_{IREF}=34.0\text{k}\Omega$ 限制 350mA 恒流<br>$R_{IMIN}=340\text{k}\Omega$ 设定 35mA 截止电流 | Pin 3 /CHG 接 P0.20 (内部弱上拉)；Pin 4 EN 接 P0.21<br>高电平关断充电，低电平正常使能 | `SGM4056_Datasheet.pdf` |
 | **电池电压采样分压** | **1MΩ + 330kΩ** | 华新科 / 国巨 | 0603 / 0402 (1% 精度) | 电池端常通分压 | 直连 SAADC AIN0 (P0.02) | 分压比约 0.2481，4.2V 时采样端为 1.042V<br>全天候静态漏电约 3.16µA (可接受极简设计) | 标称电阻规范 |
 | **锂电保护板 (PCM)** | **DW01A + 8205A** 或<br>**AP9101C 系列** | 行业标准方案 | 电芯内置 PCM | 电池端保护 | 硬件级过放/过充/过流切断 | 3.0V 硬件切断过放保护 (漏电<0.1µA)<br>4.28V 过充保护，2.5A 短路锁死 | 保护板设计规范 |
 
@@ -71,7 +71,7 @@
    * **天线端 0402 $\pi$ 型调谐匹配网络（必留）**：在天线馈电焊盘与 ATR2652 输入端之间，必须预留一组 0402 $\pi$ 型匹配电路（并联电容 $C_{A1}$ - 串联元件 $L_{A1}$ - 并联电容 $C_{A2}$）。打样后装入外壳并贴紧电池，使用矢量网络分析仪（VNA）微调元器件值，精准校准外壳介质加载导致的谐振频偏；
    * **射频超低结容 ESD 防护**：在天线馈电端就近并联超低结容（$C_J < 0.15\text{ pF}$）双向射频 ESD 保护二极管（如 ESD9R3.3ST5G），杜绝人体触摸静电击穿前级高灵敏度 LNA；
    * **PCB 布局净空法则**：天线贴装于 PCB 顶层板角端（Corner-mount），天线投影区域及边缘**1至4层铜皮完全掏空（Clearance Area, No Metal/No Ground）**；天线与锂电池、金属屏蔽罩及 2.4GHz 蓝牙天线保持 $\ge 5\text{ mm}$ 物理间距；
-   * **LNA 受控供电与去耦**：ATR2652 VDD 供电端挂载在受控的 **`SGM2045-1.8` 电源轨** 上，供电支路串入高阻射频磁珠（村田 BLM15HG102SN1D）并就近配置 10pF + 100nF 去耦；当 MCU 拉低 `P0.04 (GNSS_LDO_EN)` 时，LNA 与 GNSS 模组 Pin 8 VCC 同步硬切断，休眠漏电归零。模组 Pin 14 `VCC_RF` 悬空预留测试。
+   * **LNA 受控供电与去耦**：ATR2652 VDD 供电端挂载在受控的 **`SGM2045-1.8` 电源轨** 上，供电支路串入高阻射频磁珠（村田 BLM15HG102SN1D）并就近配置 10pF + 100nF 去耦；当 MCU 拉低 `P0.13 (GPS_EN)` 时，LNA 与 GNSS 模组 Pin 8 VCC 同步硬切断，休眠漏电归零。模组 Pin 14 `VCC_RF` 悬空预留测试。
 
 ---
 
@@ -93,7 +93,7 @@
    * **输入取电与压差发热极小化**：
      * SGM2045-1.8 输入直接接自 SGM6040A 的 **1.9V 稳定电源轨**；
      * 压差仅有 $1.9\text{V} - 1.8\text{V} = \mathbf{0.1\text{ V}}$，满载 48.5mA 时的压差线性发热功率仅为 $0.1\text{V} \times 48.5\text{mA} = \mathbf{4.85\text{ mW}}$，彻底根除局部温升；
-     * 关断漏电仅 **30 nA**，通过 MCU GPIO `P0.04` 控制其 EN 使能端，实现硬件级零漏电断电。
+     * 关断漏电仅 **30 nA**，通过 MCU GPIO `P0.13 (GPS_EN)` 控制其 EN 使能端，实现硬件级零漏电断电。
 3. **逻辑电平完美自适应无倒灌**：
    * 主控 nRF52840 在 1.9V 供电下，GPIO 高电平为 1.9V；GNSS 模组在 1.8V 供电下，UART TXD/RXD 电平为 1.8V；两电平高度自洽（偏差仅 0.1V），串联 100Ω 限流保护电阻后直接对接，彻底杜绝高压跨域倒灌隐患！
 
@@ -121,7 +121,7 @@
   * **Pin 6 为 `V_BCKP`**（后备供电，1.5~3.6V），挂载在 SGM6040A 1.9V 常通轨，维持 RTC 与 SRAM（约 15µA）；
   * **Pin 7 为 `V_IO`**：经 R13 (0Ω) 连接 VDD_GPS（1.8V 域），确保内部 IO 缓冲器电平匹配；
   * **Pin 8 为 `VCC`**（主供电，1.76~1.98V），由受控 LDO SGM2045-1.8 供给洁净 1.8V；
-  * **Pin 9 为 `RESET_N`**：外挂 R12 (10kΩ) 上拉至 VDD_GPS 与 C23 (100nF) 接地组成上电复位网络；
+  * **Pin 9 为 `RESET_N`**：外挂 R12 (2.2kΩ) 上拉至 VDD_GPS 与 C23 (100nF) 接地组成上电复位网络；
   * **Pin 11 为 `RF_IN`**（50Ω 射频输入），接收来自射频前端直通或滤波放大后的信号；
   * **Pin 15 为 `VIO_SEL`**：硬件悬空，自适应 1.8V 电平模式；
   * **Pin 5 (`EXTINT`) 与 Pin 18 (`SAFEBOOT_N` / `WAKEUP`) 外部唤醒跳线**：
@@ -228,8 +228,8 @@
 | **Pin 18**| `P0.19` | `SPI_CLK` | OUT | High Drive (8MHz) | 接 W25Q512NW Pin 6 (CLK)，Flash SPI 时钟 |
 | **Pin 19**| `P0.20` | `CHG_STAT` | IN | **强制配置内部弱上拉** | 接 SGM4056 Pin 3 (CHG#)，低电平表示充电中 |
 | **Pin 20**| `P0.21` | `CHG_EN` | OUT | Standard Drive | 接 SGM4056 Pin 4 (EN#)，高电平禁止充电 |
-| **Pin 21**| `P0.22` | `SPI_MISO` | IN | Standard Drive | 接 W25Q512NW Pin 2 (DO/IO1)，数据输入 |
-| **Pin 22**| `P0.23` | `SPI_MOSI` | OUT | High Drive (8MHz) | 接 W25Q512NW Pin 5 (DI/IO0)，数据输出 |
+| **Pin 21**| `P0.22` | `SPI_MOSI` | OUT | High Drive (8MHz) | 接 W25Q512NW Pin 5 (DI/IO0)，数据输出 (MOSI) |
+| **Pin 22**| `P0.23` | `SPI_MISO` | IN | Standard Drive | 接 W25Q512NW Pin 2 (DO/IO1)，数据输入 (MISO) |
 | **Pin 23**| `P0.24` | `DEBUG_TX` | OUT | Standard Drive | 调试串口 TX（115200bps，输出系统 Log，接 H1.2）|
 | **Pin 24**| `P1.00 / TRACEDATA0`| `DEBUG_RX` | IN | Standard Drive | 调试串口 RX（接收调试指令，接 H1.3） |
 | **Pin 25**| `VDD` | `BT_1V9` | PWR | - | 主供电输入（并联 100nF） |
