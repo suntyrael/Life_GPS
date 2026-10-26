@@ -1,4 +1,4 @@
-# Life_GPS BLE 协议基线（草案）
+# LIFE GPS BLE 协议基线（草案）
 
 > 状态：v0.1 草案。最终正文由 [`protocol/lifegps_protocol.yaml`](../../protocol/lifegps_protocol.yaml) 生成；本文件暂作为人读入口，详细设计见 [Android_App_Plan.md](Android_App_Plan.md) §5。
 

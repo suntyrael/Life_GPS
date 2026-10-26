@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.lifegps.app.debug.CheckState
@@ -140,10 +141,11 @@ fun MetricRow(label: String, value: String, valueColor: Color = TextMain) {
     ) {
         Text(label, color = TextDim, fontSize = 13.sp, modifier = Modifier.weight(1f))
         Text(
-            value,
+            text = value,
             color = valueColor,
             fontSize = 13.sp,
             fontFamily = FontFamily.Monospace,
+            textAlign = TextAlign.End,
         )
     }
 }
@@ -161,10 +163,11 @@ fun ValueBar(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(label, color = TextDim, fontSize = 12.sp, modifier = Modifier.weight(1f))
             Text(
-                valueText.ifEmpty { value.toString() },
+                text = valueText.ifEmpty { value.toString() },
                 color = TextMain,
                 fontSize = 12.sp,
                 fontFamily = FontFamily.Monospace,
+                textAlign = TextAlign.End,
             )
         }
         Spacer(Modifier.height(3.dp))
@@ -209,6 +212,7 @@ fun ToolCard(
 @Composable
 fun CardBlock(
     title: String? = null,
+    hint: String? = null,
     content: @Composable () -> Unit,
 ) {
     Card(
@@ -219,6 +223,10 @@ fun CardBlock(
         Column(Modifier.padding(14.dp)) {
             if (title != null) {
                 Text(title, color = TextMain, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                if (hint != null) {
+                    Spacer(Modifier.height(3.dp))
+                    Text(hint, color = TextDim, fontSize = 11.sp, lineHeight = 15.sp)
+                }
                 Spacer(Modifier.height(8.dp))
             }
             content()

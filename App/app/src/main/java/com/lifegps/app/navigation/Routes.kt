@@ -8,5 +8,7 @@ object Routes {
     const val GNSS = "gnss"
     const val CHECK = "hardware_check"
     const val FLASH = "flash"
+    const val SPATIAL = "spatial_trail"
+    const val MAP = "map_live"
     const val CONSOLE = "console"
 }

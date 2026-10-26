@@ -1106,7 +1106,7 @@ flowchart TD
 ```
 Life_GPS/                                        # 单仓 Monorepo：硬件 + 固件 + Android + 协议
 ├── .github/workflows/                           # protocol.yml / docs.yml / app.yml
-├── App/                                         # Android 调试工具与产品终端（Kotlin + Compose）
+├── App/                                         # LIFE GPS Android 调试工具与产品终端（Kotlin + Compose）
 │   ├── app/src/main/java/com/lifegps/app/       # 单模块骨架：debug 页面 + Fake 数据
 │   ├── app/src/test/                            # JVM 单测
 │   ├── core/ + feature/                         # M2 拆分目标（文档）

@@ -36,6 +36,7 @@ import kotlin.math.sqrt
 fun SensorStatusScreen(
     repo: FakeDebugRepository,
     onBack: () -> Unit,
+    onOpenTrail: () -> Unit,
 ) {
     val imu by repo.imu.collectAsStateWithLifecycle()
     val mag by repo.mag.collectAsStateWithLifecycle()
@@ -106,6 +107,21 @@ fun SensorStatusScreen(
                     MetricRow("累计步数", "${imu.steps}")
                     MetricRow("ZUPT", if (imu.zupt) "LOCKED" else "MOVING", if (imu.zupt) Amber else Green)
                     MetricRow("数据源", "SFLP + 固件计步（模拟）")
+                }
+            }
+
+            item {
+                CardBlock("空间轨迹") {
+                    Text(
+                        "用 IMU/PDR 局部坐标实时绘制 3D 轨迹，检查航向漂移、ZUPT 与步长。",
+                        color = TextDim,
+                        fontSize = 12.sp,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = onOpenTrail,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("打开 3D 空间轨迹") }
                 }
             }
 

@@ -63,7 +63,7 @@ fun DebugHomeScreen(
     }
 
     DebugScaffold(
-        title = "Life_GPS 硬件调试",
+        title = "LIFE GPS 硬件调试",
         actions = {
             StatusPill(
                 text = if (device.connected) "已连接" else "未连接",
@@ -193,6 +193,23 @@ fun DebugHomeScreen(
                         "命令终端",
                         "opcode + hex\n响应与历史",
                         { onNavigate(Routes.CONSOLE) },
+                        Modifier.weight(1f),
+                        Cyan,
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ToolCard(
+                        "空间轨迹",
+                        "IMU / PDR 局部坐标\n3D 实时轨迹",
+                        { onNavigate(Routes.SPATIAL) },
+                        Modifier.weight(1f),
+                        Green,
+                    )
+                    ToolCard(
+                        "地图实时轨迹",
+                        "GNSS 实时画线\n点击地图打点",
+                        { onNavigate(Routes.MAP) },
                         Modifier.weight(1f),
                         Cyan,
                     )

@@ -44,7 +44,16 @@ data class GnssStatus(
     val headingDeg: Double,
     val utcTime: String,
     val ttff: String,
-    val cno: List<Int>,
+    val satellites: List<SatelliteInfo>,
+)
+
+data class SatelliteInfo(
+    val svid: Int,
+    val system: String,
+    val cno: Int,
+    val elevation: Int,
+    val azimuth: Int,
+    val used: Boolean,
 )
 
 data class ImuStatus(
@@ -111,4 +120,26 @@ data class FakeDevice(
     val name: String,
     val rssi: Int,
     val firmware: String,
+)
+
+data class GeoPoint(
+    val latitude: Double,
+    val longitude: Double,
+    val tick: Long,
+)
+
+data class TrailPoint(
+    val x: Float,
+    val y: Float,
+    val z: Float,
+    val tick: Long,
+)
+
+data class PoiMarker(
+    val id: Int,
+    val latitude: Double,
+    val longitude: Double,
+    val label: String,
+    val note: String,
+    val time: String,
 )

@@ -1,4 +1,4 @@
-# Life_GPS Android 应用规划（调试工具 → 产品终端）
+# LIFE GPS Android 应用规划（调试工具 → 产品终端）
 
 > 文档状态：v0.1 规划草案  
 > 适用范围：Android App、固件 BLE 接口联调、硬件 bring-up、产线测试  
@@ -501,6 +501,8 @@ Room（SQLCipher）只存**元数据与索引**：
 | Bring-up 清单 | 扫描→连接→读 DIS→状态→设时→Flash ID→传感器 ID→GNSS 版本→首定位→记录→同步→解析，逐项 PASS/FAIL | P0 | 一键生成报告（JSON/Markdown） |
 | Flash 检查器 | 16 扇区图、erase_count、Journal 状态、日包索引、CRC 校验、扇区 dump | P1 | 可定位掉电/归档异常 |
 | 实时遥测 | GNSS 星空图/CN0、IMU 四元数 3D 立方、加速度/角速度曲线、磁模长、气压/楼层、PDR 步态/ZUPT、系统堆栈/循环耗时 | P1 | 10–60Hz 可配；CSV 导出 |
+| 空间轨迹 | IMU/PDR 局部坐标 3D 轨迹、距离/采样点/ZUPT 可视化 | P1 | 用于检查航向漂移与步长 |
+| 地图实时轨迹 | GNSS 实时画线、当前位置、点击打点、POI 列表 | P1 | 先 Canvas 占位，后接 MapLibre |
 | 校准向导 | 磁硬铁/软铁椭球拟合（球面覆盖进度）、加速度水平、气压基准 | P1 | 校准前后航向对比 |
 | DFU | SMP 镜像上传、test/confirm、回滚、版本校验 | P1 | 断电/断线可恢复 |
 | 压力测试 | 定时连接/同步/读状态、断线统计、错误注入、7×24 报告 | P2 | 生成成功率/吞吐报表 |

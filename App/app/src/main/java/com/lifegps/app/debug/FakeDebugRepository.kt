@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
+import java.util.Locale
+import kotlin.math.cos
 import kotlin.math.sin
 
 /**
@@ -52,7 +54,20 @@ class FakeDebugRepository {
             headingDeg = 87.3,
             utcTime = "2026-10-26 09:58:12",
             ttff = "3.2 s",
-            cno = listOf(42, 40, 38, 36, 35, 33, 31, 30, 28, 26, 24, 22),
+            satellites = listOf(
+                SatelliteInfo(3, "GPS", 42, 61, 214, true),
+                SatelliteInfo(8, "GPS", 40, 48, 132, true),
+                SatelliteInfo(14, "GPS", 38, 35, 301, true),
+                SatelliteInfo(22, "GPS", 36, 28, 77, true),
+                SatelliteInfo(27, "GPS", 31, 19, 156, true),
+                SatelliteInfo(11, "GAL", 39, 55, 188, true),
+                SatelliteInfo(19, "GAL", 34, 32, 245, true),
+                SatelliteInfo(24, "GAL", 28, 14, 118, false),
+                SatelliteInfo(16, "BDS", 37, 44, 201, true),
+                SatelliteInfo(27, "BDS", 33, 26, 96, true),
+                SatelliteInfo(9, "GLO", 30, 22, 311, false),
+                SatelliteInfo(18, "GLO", 26, 12, 64, false),
+            ),
         )
     )
     val gnss: StateFlow<GnssStatus> = _gnss.asStateFlow()
@@ -115,10 +130,29 @@ class FakeDebugRepository {
     private val _scanning = MutableStateFlow(false)
     val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
 
+    /** 地图实时轨迹：GNSS 经纬度点。 */
+    private val _geoTrail = MutableStateFlow<List<GeoPoint>>(emptyList())
+    val geoTrail: StateFlow<List<GeoPoint>> = _geoTrail.asStateFlow()
+
+    private val _liveTracking = MutableStateFlow(true)
+    val liveTracking: StateFlow<Boolean> = _liveTracking.asStateFlow()
+
+    /** 传感器空间轨迹：IMU/PDR 局部坐标（米）。 */
+    private val _trail = MutableStateFlow<List<TrailPoint>>(emptyList())
+    val trail: StateFlow<List<TrailPoint>> = _trail.asStateFlow()
+
+    private val _trailRunning = MutableStateFlow(true)
+    val trailRunning: StateFlow<Boolean> = _trailRunning.asStateFlow()
+
+    private val _pois = MutableStateFlow<List<PoiMarker>>(emptyList())
+    val pois: StateFlow<List<PoiMarker>> = _pois.asStateFlow()
+
+    private var nextPoiId = 1
     private var tick = 0
 
     init {
         seedLogs()
+        seedPois()
         scope.launch {
             while (true) {
                 delay(1_000)
@@ -138,13 +172,26 @@ class FakeDebugRepository {
 
     private fun seedLogs() {
         _logs.value = listOf(
-            LogEntry(now(), LogLevel.INFO, LogSource.USB, "BOOT", "Life_GPS mock device boot"),
+            LogEntry(now(), LogLevel.INFO, LogSource.USB, "BOOT", "LIFE GPS mock device boot"),
             LogEntry(now(), LogLevel.INFO, LogSource.USB, "FLASH", "JEDEC EF 40 20, 64MB"),
             LogEntry(now(), LogLevel.INFO, LogSource.BLE, "BLE", "advertising as LGPS-3F2A"),
             LogEntry(now(), LogLevel.INFO, LogSource.BLE, "GATT", "Status/Control/Data/Log ready"),
             LogEntry(now(), LogLevel.DEBUG, LogSource.USB, "IMU", "LSM6DSVTR WHO_AM_I=0x70"),
             LogEntry(now(), LogLevel.WARN, LogSource.BLE, "GNSS", "cold start: waiting for ephemeris"),
             LogEntry(now(), LogLevel.INFO, LogSource.BLE, "GNSS", "fix acquired, sats=18 hdop=0.8"),
+        )
+    }
+
+    private fun seedPois() {
+        _pois.value = listOf(
+            PoiMarker(
+                id = nextPoiId++,
+                latitude = 31.23050,
+                longitude = 121.47390,
+                label = "P1",
+                note = "示例营地",
+                time = now(),
+            )
         )
     }
 
@@ -160,11 +207,29 @@ class FakeDebugRepository {
                 headingDeg = (87.0 + sin(phase) * 6.0) % 360.0,
                 sats = 17 + (tick % 3),
                 hdop = 0.7 + (tick % 4) * 0.1,
-                cno = it.cno.mapIndexed { index, value ->
-                    (value + ((tick + index) % 3) - 1).coerceIn(12, 48)
+                satellites = it.satellites.mapIndexed { index, satellite ->
+                    satellite.copy(
+                        cno = (satellite.cno + ((tick + index) % 3) - 1).coerceIn(12, 48),
+                    )
                 },
             )
         }
+
+        if (_liveTracking.value) {
+            _geoTrail.update { points ->
+                (points + GeoPoint(lat, lon, tick.toLong())).takeLast(2_000)
+            }
+        }
+
+        if (_trailRunning.value) {
+            val x = (sin(phase * 0.6) * 2.0 + phase * 0.04).toFloat()
+            val y = (cos(phase * 0.45) * 1.5).toFloat()
+            val z = (sin(phase * 0.9) * 0.7).toFloat()
+            _trail.update { points ->
+                (points + TrailPoint(x, y, z, tick.toLong())).takeLast(600)
+            }
+        }
+
         _imu.update {
             it.copy(
                 ax = (sin(phase) * 0.04).toFloat(),
@@ -249,7 +314,62 @@ class FakeDebugRepository {
     }
 
     fun markPoi() {
-        addLog(LogLevel.INFO, LogSource.BLE, "POI", "POI marked at 31.230416, 121.473701")
+        val current = _gnss.value
+        addPoi(current.latitude, current.longitude, "快捷打点")
+    }
+
+    fun addPoi(latitude: Double, longitude: Double, note: String = "") {
+        val id = nextPoiId++
+        val marker = PoiMarker(
+            id = id,
+            latitude = latitude,
+            longitude = longitude,
+            label = "P$id",
+            note = note,
+            time = now(),
+        )
+        _pois.update { it + marker }
+        addLog(
+            LogLevel.INFO,
+            LogSource.BLE,
+            "POI",
+            "%s @ %.6f, %.6f".format(Locale.US, marker.label, latitude, longitude),
+        )
+    }
+
+    fun removePoi(id: Int) {
+        _pois.update { list -> list.filterNot { it.id == id } }
+        addLog(LogLevel.INFO, LogSource.BLE, "POI", "removed P$id")
+    }
+
+    fun setLiveTracking(enabled: Boolean) {
+        _liveTracking.value = enabled
+        addLog(
+            LogLevel.INFO,
+            LogSource.BLE,
+            "MAP",
+            if (enabled) "real-time trajectory resumed" else "real-time trajectory paused",
+        )
+    }
+
+    fun clearGeoTrail() {
+        _geoTrail.value = emptyList()
+        addLog(LogLevel.INFO, LogSource.BLE, "MAP", "geo trail cleared")
+    }
+
+    fun setTrailRunning(enabled: Boolean) {
+        _trailRunning.value = enabled
+        addLog(
+            LogLevel.INFO,
+            LogSource.BLE,
+            "PDR",
+            if (enabled) "spatial trail resumed" else "spatial trail paused",
+        )
+    }
+
+    fun clearTrail() {
+        _trail.value = emptyList()
+        addLog(LogLevel.INFO, LogSource.BLE, "PDR", "spatial trail cleared")
     }
 
     fun sendCommand(opcode: String, payload: String): ConsoleEntry {
@@ -257,7 +377,7 @@ class FakeDebugRepository {
             "GET_STATUS" -> "00 OK | mode=ADAPTIVE batt=86% sats=18 flash=128.4/63MB"
             "GET_CAPS" -> "00 OK | proto=0.1 fw=0.1.0 mtu=247 streams=5"
             "SET_TIME" -> "00 OK | clock_offset=+12ms"
-            "POI_MARK" -> "00 OK | poi_id=129"
+            "POI_MARK" -> "00 OK | poi_id=${nextPoiId - 1}"
             "SELFTEST" -> "00 OK | 11 pass / 1 pending"
             "GET_DAY_INDEX" -> "00 OK | days=127 last_day=2026-10-26"
             else -> "02 UNKNOWN_OP"
@@ -282,7 +402,7 @@ class FakeDebugRepository {
     }
 
     fun exportLogs() {
-        addLog(LogLevel.INFO, LogSource.USB, "EXPORT", "日志已导出（模拟）：/sdcard/Download/lifegps-log.txt")
+        addLog(LogLevel.INFO, LogSource.USB, "EXPORT", "日志已导出（模拟）：/sdcard/Download/life-gps-log.txt")
     }
 
     fun addLog(level: LogLevel, source: LogSource, tag: String, message: String) {

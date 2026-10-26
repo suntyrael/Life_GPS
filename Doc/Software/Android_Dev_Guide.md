@@ -1,6 +1,6 @@
-# Android 零基础开发指南（Life_GPS App）
+# LIFE GPS Android 零基础开发指南
 
-> 目标读者：没有 Android 开发经验、但要独立完成 Life_GPS 手机端的人。  
+> 目标读者：没有 Android 开发经验、但要独立完成 LIFE GPS 手机端的人。  
 > 结论先说：**不需要先学完 Kotlin 再动手**。按“环境 → 最小 Compose 页面 → 协程 → BLE → 本项目调试工具”的顺序，2～4 周可以进入有效开发。
 
 ---
@@ -83,6 +83,8 @@ Android Studio 最新稳定版 + Android SDK 35 + JDK 17。
 - **硬件自检**：MCU / Flash / IMU / 磁力计 / 气压计 / GNSS / 天线 / ADC / 充电 / 按键 / LED / BLE。
 - **Flash 检查**：63MB 轨迹区 + 1MB OTA slot1、16 扇区图、Journal 状态。
 - **命令终端**：opcode 选择、hex payload、响应历史。
+- **空间轨迹**：IMU/PDR 局部坐标 3D 轨迹、距离/采样点/ZUPT。
+- **地图实时轨迹**：GNSS 实时画线、当前位置、点击地图打点、POI 列表。
 
 真实 BLE / USB 串口接入后，只要替换 `FakeDebugRepository` 的数据源，界面不用重写。
 

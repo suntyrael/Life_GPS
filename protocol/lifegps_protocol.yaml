@@ -7,7 +7,7 @@
 # - 修改后运行：python3 tools/protocol-gen/validate.py
 
 meta:
-  name: "Life_GPS BLE Protocol"
+  name: "LIFE GPS BLE Protocol"
   version: "0.1.0"
   status: "draft"
   endianness: "little"

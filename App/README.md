@@ -1,4 +1,4 @@
-# App（Android 硬件调试工具 + 产品终端）
+# LIFE GPS App（Android 硬件调试工具 + 产品终端）
 
 > 状态：**Android 骨架已生成**。首版是单模块 Compose App，硬件调试界面使用假数据跑通；所有编译在 GitHub Actions 完成。
 
@@ -20,6 +20,8 @@
 | 硬件自检 | MCU/Flash/IMU/磁/气压/GNSS/天线/ADC/充电/按键/LED/BLE |
 | Flash 检查 | 63MB 轨迹区 + 1MB OTA slot1、16 扇区图、Journal |
 | 命令终端 | opcode 选择、hex payload、响应历史 |
+| 空间轨迹 | IMU/PDR 局部坐标 3D 轨迹、距离/采样点/ZUPT |
+| 地图实时轨迹 | GNSS 实时画线、当前位置、点击打点、POI 列表 |
 
 当前数据来自 `FakeDebugRepository`。真实 BLE / USB 串口接入后，替换数据源即可，页面不用重写。
 

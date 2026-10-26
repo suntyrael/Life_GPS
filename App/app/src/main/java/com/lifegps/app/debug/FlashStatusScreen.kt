@@ -62,7 +62,7 @@ fun FlashStatusScreen(
                 CardBlock("外部 Flash · W25Q512NW") {
                     MetricRow("JEDEC ID", flash.jedec, Green)
                     MetricRow("容量", "${flash.totalMb.toInt()} MB（轨迹区 63MB + OTA slot1 1MB）")
-                    MetricRow("已用", "${one(flash.usedMb)} MB")
+                    MetricRow("已用", "${fmtOne(flash.usedMb)} MB")
                     Spacer(Modifier.height(4.dp))
                     LinearProgressIndicator(
                         progress = { usage },
@@ -188,4 +188,4 @@ private fun Legend(label: String, color: Color) {
     }
 }
 
-private fun one(value: Float): String = String.format(Locale.US, "%.1f", value)
+private fun fmtOne(value: Float): String = String.format(Locale.US, "%.1f", value)

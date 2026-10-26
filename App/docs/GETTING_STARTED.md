@@ -1,4 +1,4 @@
-# App 入门 / 第一次运行
+# LIFE GPS App 入门 / 第一次运行
 
 > 详细学习路线见 [Android 零基础开发指南](../../Doc/Software/Android_Dev_Guide.md)。  
 > 本项目所有编译在 GitHub Actions 完成，本地不要求 Android SDK/Gradle。
@@ -18,7 +18,7 @@
 ## 2. 第一次打开 App
 
 - 首页是“Life_GPS 硬件调试”。
-- 点“串口日志 / 传感器状态 / GPS 状态 / 硬件自检 / Flash 检查 / 命令终端”。
+- 点“串口日志 / 传感器状态 / GPS 状态 / 硬件自检 / Flash 检查 / 命令终端 / 空间轨迹 / 地图实时轨迹”。
 - 当前是假数据；点“运行自检”会走一遍 PASS/PENDING 流程。
 - 点“扫描 / 连接”可以看到假设备列表。
 
