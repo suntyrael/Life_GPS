@@ -45,6 +45,9 @@ App/
 
 ## 编译（只在 GitHub）
 
+[![app](https://github.com/suntyrael/Life_GPS/actions/workflows/app.yml/badge.svg)](https://github.com/suntyrael/Life_GPS/actions/workflows/app.yml)
+
+
 ```text
 push → GitHub Actions → app.yml
   → ./gradlew :app:assembleDevDebug :app:testDevDebugUnitTest :app:lintDevDebug

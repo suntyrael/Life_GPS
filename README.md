@@ -7,6 +7,9 @@
 [![Flash: Winbond 64MB NOR](https://img.shields.io/badge/Flash-Winbond%2064MB%20(W25Q512NW)-yellow.svg)](Doc/Hardware/README.md)
 [![PMIC: SGMICRO](https://img.shields.io/badge/Power-SGMICRO%20(SGM6040A%2BSGM2045--1.8%2BSGM4056)-purple.svg)](Doc/Hardware/README.md)
 [![Status: Architecture Baseline Frozen](https://img.shields.io/badge/Status-Architecture%20Baseline%20Frozen%20(v1.0--RC)-green.svg)](#11-开发路线图-roadmap)
+[![app](https://github.com/suntyrael/Life_GPS/actions/workflows/app.yml/badge.svg)](https://github.com/suntyrael/Life_GPS/actions/workflows/app.yml)
+[![protocol](https://github.com/suntyrael/Life_GPS/actions/workflows/protocol.yml/badge.svg)](https://github.com/suntyrael/Life_GPS/actions/workflows/protocol.yml)
+[![docs](https://github.com/suntyrael/Life_GPS/actions/workflows/docs.yml/badge.svg)](https://github.com/suntyrael/Life_GPS/actions/workflows/docs.yml)
 
 > 🔒 **【重要基线提示 · 原理图与网表全面闭环 · SSOT 权威真相源 (Architecture Baseline Frozen - SSOT)】**  
 > 经与最新硬件原理图（SCH_Main_2026-10-16）及网表（Netlist_Main_2026-10-16）深度工程评审与闭环整改，硬件配置基线正式锁定：全系统升级为 **常通主电 1.9V (SGM6040A) + GNSS 受控洁净电 1.8V (SGM2045-1.8)** 极低功耗分层拓扑；GNSS 选型正式确立为 **u-blox MAX-M10S (MAX-M10S-00B)** 原生超低功耗定位芯片；射频前端确立**双 BOM 兼容架构**（默认直通版 vs 增强 LNA+SAW 版，互斥焊接防自激）；6 轴 IMU 选用 **LSM6DSVTR**（INT1 唤醒）；电池分压采用 **1MΩ + 330kΩ 极简恒定分压**（接受 3.2µA 漏电）；主控 nRF52840 QFN48 物理引脚已 100% 对齐最新原理图网表，调试串口稳定运行于高速 GPIO，按键与充电状态由固件默认配置内部弱上拉。本项目正式进入**第二阶段（Phase 2）PCB Layout 与固件驱动闭环阶段**。打样后将通过 Nordic PPK2 进行全工况仪器实测闭环。
