@@ -1,0 +1,183 @@
+# Life_GPS BLE 协议 SSOT（v0.1 草案）
+#
+# 规则：
+# - 只改本文件，C/Kotlin/Markdown 生成物由 tools/protocol-gen 产出。
+# - 字段只追加；破坏性变更升主版本。
+# - 所有多字节字段小端。
+# - 修改后运行：python3 tools/protocol-gen/validate.py
+
+meta:
+  name: "Life_GPS BLE Protocol"
+  version: "0.1.0"
+  status: "draft"
+  endianness: "little"
+  mtu: 247
+  max_command_payload: 235
+  max_data_payload: 228
+
+crc:
+  record:
+    algorithm: "crc8"
+    poly: 0x07
+    init: 0x00
+    refin: false
+    refout: false
+    xorout: 0x00
+  frame:
+    algorithm: "crc16-ccitt-false"
+    poly: 0x1021
+    init: 0xFFFF
+    refin: false
+    refout: false
+    xorout: 0x0000
+  package:
+    algorithm: "crc32-iso-hdlc"
+    poly: 0x04C11DB7
+    init: 0xFFFFFFFF
+    refin: true
+    refout: true
+    xorout: 0xFFFFFFFF
+
+uuids:
+  service: "4C475053-0001-4C47-5053-000000000001"
+  status: "4C475053-0002-4C47-5053-000000000001"
+  control: "4C475053-0003-4C47-5053-000000000001"
+  data: "4C475053-0004-4C47-5053-000000000001"
+  telemetry: "4C475053-0005-4C47-5053-000000000001"
+  log: "4C475053-0006-4C47-5053-000000000001"
+  config: "4C475053-0007-4C47-5053-000000000001"
+  smp_service: "8D53DC1D-1DB7-4CD3-868B-8A527460AA84"
+  smp_characteristic: "DA2E7828-FBCE-4E01-AE9E-261174997C48"
+
+frames:
+  command:
+    magic: 0xA5
+    header_size: 8
+    trailer_size: 2
+    fields:
+      - {name: magic, type: u8, offset: 0}
+      - {name: ver, type: u8, offset: 1}
+      - {name: opcode, type: u8, offset: 2}
+      - {name: flags, type: u8, offset: 3}
+      - {name: seq, type: u16, offset: 4}
+      - {name: payload_len, type: u16, offset: 6}
+  data:
+    magic: 0x5A
+    header_size: 14
+    trailer_size: 2
+    fields:
+      - {name: magic, type: u8, offset: 0}
+      - {name: ver, type: u8, offset: 1}
+      - {name: stream, type: u8, offset: 2}
+      - {name: flags, type: u8, offset: 3}
+      - {name: transfer_id, type: u32, offset: 4}
+      - {name: cursor, type: u32, offset: 8}
+      - {name: payload_len, type: u16, offset: 12}
+
+records:
+  trajectory:
+    size: 32
+    crc: record
+    fields:
+      - {name: seq_id, type: u32, offset: 0}
+      - {name: timestamp, type: u32, offset: 4}
+      - {name: subsecond_ms, type: u16, offset: 8}
+      - {name: latitude, type: i32, offset: 10}
+      - {name: longitude, type: i32, offset: 14}
+      - {name: altitude, type: i16, offset: 18}
+      - {name: speed_cms, type: u16, offset: 20}
+      - {name: heading, type: u16, offset: 22}
+      - {name: step_count, type: u16, offset: 24}
+      - {name: hdop, type: u8, offset: 26}
+      - {name: satellites, type: u8, offset: 27}
+      - {name: status_flags, type: u8, offset: 28}
+      - {name: battery_level, type: u8, offset: 29}
+      - {name: floor_level, type: i8, offset: 30}
+      - {name: checksum, type: u8, offset: 31}
+  beacon:
+    size: 16
+    crc: record
+    fields:
+      - {name: timestamp, type: u32, offset: 0}
+      - {name: subsecond_ms, type: u16, offset: 4}
+      - {name: beacon_id_hash, type: u16, offset: 6}
+      - {name: major_id, type: u16, offset: 8}
+      - {name: minor_id, type: u16, offset: 10}
+      - {name: rssi, type: i8, offset: 12}
+      - {name: tx_power, type: i8, offset: 13}
+      - {name: event_flags, type: u8, offset: 14}
+      - {name: crc8, type: u8, offset: 15}
+  raw:
+    size: 0
+    fields: []
+
+packages:
+  day:
+    magic_ascii: "LGD1"
+    header_size: 48
+    footer_size: 8
+    codec: "byte_delta_heatshrink"
+    header_fields:
+      - {name: magic, type: u32, offset: 0}
+      - {name: header_ver, type: u16, offset: 4}
+      - {name: codec, type: u16, offset: 6}
+      - {name: day_id, type: u32, offset: 8}
+      - {name: record_count, type: u32, offset: 12}
+      - {name: beacon_count, type: u32, offset: 16}
+      - {name: traj_raw_len, type: u32, offset: 20}
+      - {name: traj_packed_len, type: u32, offset: 24}
+      - {name: beacon_raw_len, type: u32, offset: 28}
+      - {name: beacon_packed_len, type: u32, offset: 32}
+      - {name: prev_day_id, type: u32, offset: 36}
+      - {name: reserved, type: u32, offset: 40}
+      - {name: flags, type: u16, offset: 44}
+      - {name: header_crc16, type: u16, offset: 46}
+    footer_fields:
+      - {name: traj_crc32, type: u32, offset: 0}
+      - {name: beacon_crc32, type: u32, offset: 4}
+
+streams:
+  - {id: 0, name: trajectory, record: trajectory}
+  - {id: 1, name: beacon, record: beacon}
+  - {id: 2, name: archive_day, record: raw}
+  - {id: 3, name: flash_raw, record: raw}
+  - {id: 4, name: log_replay, record: raw}
+
+commands:
+  - {opcode: 0x01, name: GET_CAPS, direction: app_to_dev}
+  - {opcode: 0x02, name: GET_STATUS, direction: app_to_dev}
+  - {opcode: 0x10, name: SET_MODE, direction: app_to_dev}
+  - {opcode: 0x11, name: SET_TIME, direction: app_to_dev}
+  - {opcode: 0x12, name: POI_MARK, direction: app_to_dev}
+  - {opcode: 0x13, name: SET_CONFIG, direction: app_to_dev}
+  - {opcode: 0x14, name: GET_CONFIG, direction: app_to_dev}
+  - {opcode: 0x20, name: SYNC_BEGIN, direction: app_to_dev}
+  - {opcode: 0x21, name: SYNC_READ, direction: app_to_dev}
+  - {opcode: 0x22, name: SYNC_END, direction: app_to_dev}
+  - {opcode: 0x23, name: GET_DAY_INDEX, direction: app_to_dev}
+  - {opcode: 0x24, name: GET_ARCHIVE, direction: app_to_dev}
+  - {opcode: 0x30, name: LOG_SUBSCRIBE, direction: app_to_dev}
+  - {opcode: 0x31, name: GNSS_SNAPSHOT, direction: app_to_dev}
+  - {opcode: 0x32, name: IMU_SNAPSHOT, direction: app_to_dev}
+  - {opcode: 0x33, name: BUTTON_EVENT, direction: dev_to_app}
+  - {opcode: 0x40, name: SELFTEST, direction: app_to_dev}
+  - {opcode: 0x41, name: MAG_CAL, direction: app_to_dev}
+  - {opcode: 0x42, name: BARO_BASELINE, direction: app_to_dev}
+  - {opcode: 0x50, name: ERASE_DAY, direction: app_to_dev}
+  - {opcode: 0x51, name: FACTORY_RESET, direction: app_to_dev}
+  - {opcode: 0x52, name: REBOOT, direction: app_to_dev}
+  - {opcode: 0x60, name: FLASH_INFO, direction: app_to_dev}
+  - {opcode: 0x61, name: FLASH_READ, direction: app_to_dev}
+  - {opcode: 0x62, name: FLASH_ERASE, direction: app_to_dev}
+  - {opcode: 0x70, name: GET_FAULT_LOG, direction: app_to_dev}
+  - {opcode: 0x71, name: POWER_TEST_MARK, direction: app_to_dev}
+  - {opcode: 0x7F, name: DEBUG_UNLOCK, direction: app_to_dev}
+
+telemetry:
+  - {id: 0x01, name: GNSS}
+  - {id: 0x02, name: IMU}
+  - {id: 0x03, name: MAG}
+  - {id: 0x04, name: BARO}
+  - {id: 0x05, name: PDR}
+  - {id: 0x06, name: POWER}
+  - {id: 0x07, name: SYSTEM}

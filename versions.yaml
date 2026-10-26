@@ -1,0 +1,22 @@
+# 单仓版本锁定（M1 时把 TBD 换成实际版本）
+#
+# 规则：升级任何一项都要跑一次 firmware/app CI；release tag 记录本文件快照。
+
+protocol: "0.1.0"
+firmware: "0.1.0"
+app: "0.1.0"
+
+zephyr:
+  distribution: "nrf-connect-sdk" # 或 upstream zephyr
+  revision: "TBD"                 # west manifest / NCS tag
+  sdk: "TBD"                      # Zephyr SDK / NCS toolchain
+
+android:
+  jdk: 17
+  agp: "8.7.3"
+  kotlin: "2.0.21"
+  composeBom: "2024.12.01"
+  # 首版骨架用 35，CI 绿后升级 36
+  compileSdk: 35
+  targetSdk: 35
+  minSdk: 26

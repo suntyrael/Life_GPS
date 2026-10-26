@@ -1,21 +1,33 @@
-# Build and temporary files
-build/
-bin/
-obj/
-*.tmp
-*.log
+# Android
+App/.gradle/
+App/**/build/
+App/local.properties
+*.apk
+*.aab
+*.jks
+*.keystore
 
-# IDE and editors
-.vscode/
+# IDE / OS
 .idea/
-*.swp
-*.swo
-*~
-
-# OS generated files
+.vscode/
+*.iml
 .DS_Store
-Thumbs.db
-ehthumbs.db
 
-# Node / JS
-node_modules/
+# Zephyr / west
+Firmware/build/
+Firmware/.west/
+Firmware/zephyr/
+Firmware/modules/
+Firmware/bootloader/
+Firmware/twister-out/
+twister-out/
+build/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Secrets (never commit)
+*.pem
+*.key
