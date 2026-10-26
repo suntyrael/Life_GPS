@@ -18,11 +18,19 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
-    buildTypes {
-        debug {
+    flavorDimensions += "env"
+    productFlavors {
+        create("dev") {
+            dimension = "env"
             applicationIdSuffix = ".dev"
             versionNameSuffix = "-dev"
         }
+        create("prod") {
+            dimension = "env"
+        }
+    }
+
+    buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(
