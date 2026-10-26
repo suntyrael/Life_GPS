@@ -3,13 +3,23 @@ name: app
 on:
   push:
     paths:
-      - "App/**"
+      - "App/app/**"
+      - "App/gradle/**"
+      - "App/*.kts"
+      - "App/gradle.properties"
+      - "App/gradlew"
+      - "App/gradlew.bat"
       - "protocol/**"
       - "versions.yaml"
       - ".github/workflows/app.yml"
   pull_request:
     paths:
-      - "App/**"
+      - "App/app/**"
+      - "App/gradle/**"
+      - "App/*.kts"
+      - "App/gradle.properties"
+      - "App/gradlew"
+      - "App/gradlew.bat"
       - "protocol/**"
       - "versions.yaml"
       - ".github/workflows/app.yml"
