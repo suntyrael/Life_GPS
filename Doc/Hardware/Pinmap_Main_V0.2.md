@@ -58,6 +58,30 @@
 2. **推荐改版（省电）**：把 IMU 的 4 根 SPI 挪到 **P1（PERI 域）**，`SPIM21` 同域运行即可全程留在 Low-power；`SCK` 必须选 P1 的 clock 脚（如 P1.03/P1.04/P1.09/P1.11/P1.12），`CS` 可用 P1.06/P1.14 等空闲脚（需同步让出 KEY1 或另择脚）。
 3. 另一条路是把两路 SPI 合并到 `SPIM00`（MCU 域，专用脚 P2.01/02/04/05），但 `SPIM00` 已被 Flash 占用，无法同时服务 IMU。
 
+#### 1.1.2 SPI 资源清单与分配建议
+
+规格书 Key features（**p.1**）：**“One HS-SPI up to 32 MHz, four SPI up to 8 MHz (SPIM, SPIS)”** —— 即 **5 路 SPI 主机 + 4 路 SPI 从机**。
+
+| 实例 | 域 | 最高 SCK | 引脚规则（§10.1.1 Table 76 + Table 79） | 本板占用 |
+| :--- | :--- | :---: | :--- | :--- |
+| **SPIM00**（HS-SPI） | MCU（P2） | **32 MHz**（需 `DRIVE0/1 = E0/E1` 超高驱动） | 专用脚 **`P2.01` SCK / `P2.02` SDO / `P2.04` SDI / `P2.05` CSN**；`P2.00` 可作 DCX（标 `SPIM00/20`）；`P2.06/08/09/10` 亦标 `SPIM00/21` | **Flash（实跑 8 MHz）** |
+| **SPIM20** | PERI（P1） | 8 MHz | 任意 P1 脚，SCK 必须是 P1 clock 脚；**可跨域**到 P2.01–05 组（需 Constant Latency） | 空闲 |
+| **SPIM21** | PERI（P1） | 8 MHz | 任意 P1 脚，SCK 须 clock 脚；**可跨域**到 P2.06–10 组（需 Constant Latency） | **IMU（当前跨域用法）** |
+| **SPIM22** | PERI（P1） | 8 MHz | 任意 P1 脚，SCK 须 clock 脚；QFN48 引脚表未给跨域组 | 空闲 |
+| **SPIM30** | LP（P0） | 8 MHz | P0 脚（`P0.00–P0.04`；Table 79 未给 SPI 功能标注） | **不可用**（P0 五脚已被 DEBUG_TX/RX、IMU_INT、CHG_EN、CHG_STAT 占满） |
+| SPIS20/21/22/30 | PERI/LP | 从机 | 与同名 SPIM 同地址配对（`0x500C6/7/8000`、`0x50104000`） | 不需要 |
+
+* **QFN48 可作为 SCK 的 clock 脚**（Table 79 标 “Yes”）：`P1.03`(pin4)、`P1.04`(pin5)、`P1.08`(pin9)、`P1.11`(pin39)、`P1.12`(pin40)、`P2.01`(pin12)、`P2.06`(pin17)（`P0.03/P0.04` 亦标 Yes，但属 GRTC 专用）。
+* **四条硬规则**：① 同一实例的 4 根线必须**同端口**；② `SCK` 必须落在上表 clock 脚；③ PSEL 必须按功能一一对应（`SCK→PSEL.SCK`、`SDO→PSEL.MOSI`…）；④ **32 MHz 仅 `SPIM00`**，且需 E0/E1 驱动 + 短/等长走线。
+
+**三种用法（按改动代价排序）**
+
+| 方案 | 做法 | 代价 / 收益 |
+| :--- | :--- | :--- |
+| **A. 保持现状（0 改动）** | Flash = `SPIM00`；IMU = `SPIM21` 跨域（P2.06/08/09/10），固件 `CONSTLAT`↔`LOWPWR` 分时切换 | 改板 0；**访问 IMU 期间睡眠电流上升**（需 PPK2 实测增量） |
+| **B. 推荐（改 4 根线）** | IMU 改用 **`SPIM22` 同域 P1**：`SCK=P1.03`、`SDO=P1.02`、`SDI=P1.12`、`CSN=P1.14`；把 `LED_BLUE` 从 `P1.12` 挪到空闲的 `P2.07`（纯输出，P2 无需中断） | 全程 Low-power，**无需 CONSTLAT**；`P1.02/P1.03` 是 NFC 脚，固件须先 `NFCT.PADCONFIG` 关闭 NFC |
+| **C. 预留扩展** | 保留 `SPIM20`（P1 同域，8 MHz）给未来第二路传感器/备份 Flash | 不改当前布线，仅固件预留实例号 |
+
 ---
 
 ## 2. U14 主控引脚全表（nRF54L15-QFAA，QFN48）
