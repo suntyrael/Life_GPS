@@ -14,7 +14,7 @@
 | 仓库根 | `/root/projects/Life_GPS`（pi-web 会话目录 `--root-projects-Life_GPS--`） |
 | 远端 | `https://github.com/suntyrael/Life_GPS.git`，分支 `main` |
 | 版本锁定 | `versions.yaml` **已锁定**：`distribution: nrf-connect-sdk`、`revision: v3.4.2`（LTS）、`sdk: ncs-toolchain-v3.4.2`、`kernel: 4.4.2` |
-| 硬件 | **Main_V0.2**（2026-11-11 原理图 `Hardware/Schematic/Life_GPS_V0.2_SCH.pdf` + 网表 `Netlist_Main_V0.2_2026-11-11.tel`）；引脚 SSOT = `Doc/Hardware/Pinmap_Main_V0.2.md` |
+| 硬件 | **Main_V0.2**（2026-11-11 原理图 `Hardware/Schematic/Life_GPS_V0.2_SCH.pdf` + 网表 `Hardware/Schematic/Netlist_Main_V0.2_2026-11-11.tel`）；引脚 SSOT = `Doc/Hardware/Pinmap_Main_V0.2.md` |
 | 固件状态 | `Firmware/` **只有 README/docs/tests 的骨架**，无 `CMakeLists.txt`、无 `west.yml`、无 `prj.conf`、无源码 |
 | 芯片 | ✅ **已确认：Nordic `NRF54L15-QFAA-R`（nRF54L15-QFAA，QFN48，49 脚含 EP）**。规格书 `Doc/Hardware/Datasheets/nRF54L15_nRF54L10_nRF54L05_Datasheet_v1.0.pdf`。nRF52840 仅出现在 V0.1 历史文档中，**不得用于新代码/新配置** |
 | 现有 CI | `.github/workflows/`：`protocol.yml`、`docs.yml`、`app.yml`。**没有 `firmware.yml`** |

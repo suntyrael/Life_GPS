@@ -1,7 +1,7 @@
 # Life_GPS 硬件设计资料与器件规格书索引 (Doc/Hardware/)
 
 > 🔒 **【架构基线已冻结 · 硬件配置基线 v2.0 · Main_V0.2 原理图（2026-11-10）闭环】**
-> 经与最新原理图 `Main_V0.2`（嘉立创 EDA，更新 2026-11-10）及网表 `Netlist_Main_V0.2_2026-11-11.tel`（已同步）深度评审与闭环整改，硬件配置基线正式锁定：
+> 经与最新原理图 `Main_V0.2`（嘉立创 EDA，更新 2026-11-10）及网表 `Hardware/Schematic/Netlist_Main_V0.2_2026-11-11.tel`（已同步）深度评审与闭环整改，硬件配置基线正式锁定：
 > 1. **主控升级为 Nordic nRF54L15-QFAA（QFN48）**：Cortex-M33 @128MHz + RISC-V FLPR，1.9V 单轨供电；三段 GPIO 域（P0/LP、P1/PERI、P2/MCU）能力不同，引脚表见 [`Pinmap_Main_V0.2.md`](Pinmap_Main_V0.2.md)（**SSOT**）。
 > 2. **GNSS 模组：默认 u-blox MAX-M10S-00B（唯一默认装配料）**。**Quectel LC79H 系列仅作"可选兼容位"**（同尺寸 10.1×9.7mm，VCC 1.75~1.98V），**默认不装配、默认不贴任何兼容跳线**；切换 LC79H 需改 R13/R28/R27 并**增补 Pin15 对地跳线**（详见 §2.4）。固件默认按 u-blox **UBX** 协议工作，NMEA/PAIR 仅作降级兼容。
 > 3. **电源拓扑规范**：**常通主电 1.9V (SGM6040A) + GNSS 受控洁净电 1.8V (SGM2045-1.8)** 极低功耗分层架构；系统"关机"为 nRF54L15 进入 System OFF 深度休眠（整机待机漏电 $<1\mu\text{A}$）。
@@ -9,6 +9,9 @@
 > 5. **长按 8 秒开/关机 + LED 双向慢闪 + 硬件看门狗 (30s)** 策略不变；背面贴装 IMU/磁力计旋转变换矩阵 $\mathbf{R}$ 不变（§2.9）。
 > 6. **固件必须落实的 5 项内部上拉/极性**：`KEY1_POI`(P1.06)、`KEY2_MODE`(P1.08)、`CHG_STAT`(P0.04)、`SPI_CS`(P2.05)、`LSM6_SPI_CS`(P2.10) 均无外部上拉电阻，须由固件配置片内上拉（12~16kΩ）；`CHG_EN`(P0.03) 为**低有效**。详见 [`Pinmap_Main_V0.2.md`](Pinmap_Main_V0.2.md) §3。
 > 7. **本文件与根 `README.md`、[`Pinmap_Main_V0.2.md`](Pinmap_Main_V0.2.md) 共同构成 EDA 投板与固件开发的唯一权威真相源（SSOT）**；引脚以 Pinmap 文件为准，选型以本文件 §1 基线表为准。
+
+> **与 `Hardware/` 的分工（两个 hardware 目录，不合并）**：`Hardware/` 放**工程/生产产物**（原理图导出 PDF、网表 `.tel`、PCB、BOM、Gerber）；
+> 本目录 `Doc/Hardware/` 放**设计文档与参考**（选型避坑、引脚 SSOT、原厂规格书、架构图、叠层示意）。同一版本只存一份，两边用链接互指。
 
 本目录（及 `Datasheets/` 子目录）归档了 **Life_GPS** 超低功耗轨迹与惯导记录仪项目核心硬件元器件的原厂官方数据手册（Datasheet）及规格书。在进行原理图绘制、PCB 布局（特别是射频天线与阻抗控制）和固件驱动开发时，请务必以本目录下的原厂规范为准。
 

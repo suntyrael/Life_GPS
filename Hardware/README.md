@@ -12,6 +12,16 @@
 | `BOM/` | 物料清单、双 BOM 选项、替代料 |
 | `Production/` | Gerber、钻孔、坐标文件、装配图、产测文件 |
 
+## 与 `Doc/Hardware/` 的分工（两个 hardware 目录，不合并）
+
+| 目录 | 性质 | 放什么 | 谁用 |
+| :--- | :--- | :--- | :--- |
+| **`Hardware/`** | **工程/生产产物** | 原理图导出 PDF、**网表 .tel**、PCB、BOM、Gerber/坐标/装配图 | 板厂、贴片厂、DFM/DFT |
+| **`Doc/Hardware/`** | **设计文档与参考** | 选型与避坑说明、**引脚 SSOT**（`Pinmap_Main_V0.2.md`）、原厂规格书 PDF、架构图、叠层示意 | 工程师、评审、AI 上下文 |
+
+**约定**：同一版本号的「产物」只放 `Hardware/`，「文档」只放 `Doc/Hardware/`；两边用相对链接互指，**不复制文件**（避免两份真相源漂移）。
+故网表与原理图同目录（`Hardware/Schematic/`），保证「同版本」可追溯。
+
 ## 相关文档
 
 - [硬件设计资料索引](../Doc/Hardware/README.md)（器件规格书、选型、避坑）
@@ -20,7 +30,7 @@
 - [V0.1 原理图（历史，nRF52840）](Schematic/Life_GPS_SCH_V0.1.SVG)
 - **V0.2 原理图**（嘉立创 EDA 工程，导出件待归档）
 - **V0.2 原理图（现行）**：[`Schematic/Life_GPS_V0.2_SCH.pdf`](Schematic/Life_GPS_V0.2_SCH.pdf)
-- **V0.2 网表（已同步）**：`../Netlist_Main_V0.2_2026-11-11.tel`
+- **V0.2 网表（已同步）**：[`Schematic/Netlist_Main_V0.2_2026-11-11.tel`](Schematic/Netlist_Main_V0.2_2026-11-11.tel)
 
 ## 规则
 
