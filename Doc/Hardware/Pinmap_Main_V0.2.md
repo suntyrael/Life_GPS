@@ -82,6 +82,30 @@
 | **B. 推荐（改 4 根线）** | IMU 改用 **`SPIM22` 同域 P1**：`SCK=P1.03`、`SDO=P1.02`、`SDI=P1.12`、`CSN=P1.14`；把 `LED_BLUE` 从 `P1.12` 挪到空闲的 `P2.07`（纯输出，P2 无需中断） | 全程 Low-power，**无需 CONSTLAT**；`P1.02/P1.03` 是 NFC 脚，固件须先 `NFCT.PADCONFIG` 关闭 NFC |
 | **C. 预留扩展** | 保留 `SPIM20`（P1 同域，8 MHz）给未来第二路传感器/备份 Flash | 不改当前布线，仅固件预留实例号 |
 
+#### 1.1.3 方案 B 可行性核对：与 GPS UART 共存 + NCS 落地
+
+**硬件共存性（无冲突）**
+
+| 资源 | GPS | IMU（方案 B：`SPIM22`） | 冲突 |
+| :--- | :--- | :--- | :--- |
+| 外设实例 | `UARTE20` 或 `UARTE21`（PERI 域） | `SPIM22`（PERI 域，id 200） | ❌ 无（实例独立） |
+| 引脚 | `P1.04` TXD / `P1.05` RXD | `P1.03` SCK / `P1.02` SDO / `P1.12` SDI / `P1.14` CSN | ❌ 无重叠 |
+| 子功耗模式 | 脉冲定位需 **Low-power** | 同域 P1，**不需要 Constant Latency** | ✅ 可共存 |
+| 时钟脚约束 | UART 无 clock 脚要求 | `SCK=P1.03` 是 clock 脚 ✔ | ✅ |
+| 引脚余量 | — | 方案 B 后 **P1 15/15 全占用** | ⚠️ 未来扩展只能用 P2（无中断）或 P0（已满） |
+
+**NCS v3.4.2 落地要点**
+
+1. **释放 NFC 脚（`P1.02/P1.03`）**：规格书 `NFCT.PADCONFIG`（offset `0x6D4`，**复位值 `0x1` = ENABLE**，「NFC pads are configured as NFC antenna pins」）；写 `ENABLE=0` 后为「NFC pads are used as GPIO pins」（**同时关闭 NFC 场强保护**，本产品不用 NFC 可接受）。NCS 侧两条路：
+   - 设备树：`&uicr { nfct-pins-as-gpios; };`（NCS ≥ 2.6 起支持，本项目 v3.4.2 可用）；
+   - 或运行时寄存器：`NRF_NFCT->PADCONFIG = 0`（nrfx 提供 `NFCT_PADCONFIG_ENABLE_Disabled`）。
+2. **SPI**：`&spi22 { status = "okay"; pinctrl-0 = <&spi22_default>; pinctrl-names = "default"; cs-gpios = <&gpio1 14 GPIO_ACTIVE_LOW>; }`；Kconfig 需 `CONFIG_SPI=y`、`CONFIG_SPI_NRFX_SPIM=y`（实例 `CONFIG_NRFX_SPIM22` 一般由 DT 自动 select，**须在 v3.4.2 源码树确认**）。
+3. **UART**：`&uart20`（或 `uart21`）`current-speed = <115200>`，pinctrl 指 `P1.04/P1.05`；与 SPI22 无共享资源。
+4. **不再需要** `CONSTLAT`/`LOWPWR` 手动切换；IMU 中断仍走 `P0.02`（GPIOTE30）。
+5. **待核实（仓库内无 NCS 源码树，不得凭记忆断言）**：`&spi22` 的 DT 标签与 `spi@c8000` 地址、`CONFIG_NRFX_SPIM22` 是否 auto-select、`nfct-pins-as-gpios` 在 nRF54L 上是否经 UICR 层处理（对 TF-M/secure 分区的影响）、`pinctrl` 状态名（`spi22_default`/`spi22_sleep`）。
+
+> ⚠️ **若坚持方案 A（不改板）**：Zephyr 的 system PM 会在空闲时自动切 `LOWPWR`，固件手动置 `CONSTLAT` 可能与 PM 策略互相覆盖，需要在应用层加 hook（或在 SPI 传输期间禁止进入低功耗），属于更容易出坑的路径——这也是推荐方案 B 的主要原因之一。
+
 ---
 
 ## 2. U14 主控引脚全表（nRF54L15-QFAA，QFN48）
