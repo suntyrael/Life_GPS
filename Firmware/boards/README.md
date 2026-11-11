@@ -20,7 +20,7 @@
 - 按键：SW7 `P1.06`（KEY1_POI，**内部上拉**）/ SW1 `P1.08`（KEY2_MODE，**内部上拉**）
 - 充电：`CHG_EN`=`P0.03`（**低有效**）、`CHG_STAT`=`P0.04`（**内部上拉**）
 - Flash SPI（`SPIM00`）：SCK `P2.01`、MOSI `P2.02`、MISO `P2.04`、CS `P2.05`（**内部上拉**）
-- IMU SPI（`SPIM21` 跨域，需 Constant Latency）：SCK `P2.06`、MOSI `P2.08`、MISO `P2.09`、CS `P2.10`；INT1 `P0.02`
+- IMU SPI（`SPIM22` 同域 P1，无需 Constant Latency）：SCK `P1.03`、MOSI `P1.02`、MISO `P1.13`、CS `P1.14`（P1.02/P1.03 为 NFC 脚，须先 `&uicr { nfct-pins-as-gpios; }`）；INT1 `P0.02`
 - LED：`P1.10` 红 / `P1.12` 蓝 / `P1.13` 绿（DTC143ZETL 带阻三极管直驱）
 - 电池采样：`P1.11` = SAADC **AIN4**（非 AIN0），须做 735kΩ 输入阻抗修正
 - 调试串口：`P0.00` / `P0.01`（`UARTE30`），115200

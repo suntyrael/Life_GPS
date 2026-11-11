@@ -29,7 +29,7 @@
 | **板载双频 LNA** | **ATR2652（U5）** | 杭州中科微 | DFN-6 / SOT23-6 | 1.8V 受控<br>*(支持 1.5~3.6V)* | L1 增益 22.4dB / NF 0.85dB<br>L5 增益 22.0dB / NF 0.75dB | **本版 DNP（不贴）**：V0.2 量产装配为直通版，仅保留焊盘/BOM 位；贴装时必须同时 NC 掉 C46/C47<br>工作电流 4.5mA，随 GNSS 受控轨同步断电 | 原厂选型手册 |
 | **板载双通带 SAW** | **B39162B2651P810（Q1）** | Qualcomm / RF360 | 1511<br>*(1.5×1.1mm)* | 无源器件 | 单进单出双通带 (L1+L5)<br>2.4GHz 抑制 > 38dB | **本版 DNP（不贴）**；GNSS 模组内部已含 SAW，带外抑制由模组承担<br>若启用增强版必须与 C46/C47 互斥 | 原厂选型手册 |
 | **SPI NOR Flash** | **W25Q512NWEIQ**<br>*(1.8V 宽压旗舰)* | Winbond (华邦) | WSON-8<br>*(6×8mm)* | 1.9V 常通<br>*(VCC 1.7~1.95V)* | 标准 4 线 SPI (模式 0)<br>**目标时钟: 8MHz (低噪声)** | `/CS`=**P2.05**（固件内部上拉）、`CLK`=**P2.01**、`MOSI`=**P2.02**、`MISO`=**P2.04**（SPIM00 专用脚）<br>/WP(Pin3)与/HOLD(Pin7) 直连 1.9V 主电轨（改版建议改 10kΩ 上拉） | 原厂规格书 (1.8V 系列) |
-| **6轴 IMU** | **LSM6DSVTR** | STMicroelectronics | LGA-14<br>*(2.5×3.0mm)* | 1.9V 常通<br>*(磁珠+电容π型滤波)* | SPI 8MHz：`SCL/SPC`=**P2.06**、`SDA/SDI`=**P2.08**、`SDO/SA0`=**P2.09**、`CS`=**P2.10**（SPIM21 跨域，需 Constant Latency）<br>SFLP 输出: 60Hz 姿态四元数 | 静止待机: 低功耗加速度计 (~7.5µA)<br>INT1 = **P0.02**（GPIOTE30）运动唤醒与数据就绪中断 | `Datasheets/LSM6DSV16X_Datasheet.pdf` |
+| **6轴 IMU** | **LSM6DSVTR** | STMicroelectronics | LGA-14<br>*(2.5×3.0mm)* | 1.9V 常通<br>*(磁珠+电容π型滤波)* | SPI 8MHz：`SCL/SPC`=**P1.03**、`SDA/SDI`=**P1.02**、`SDO/SA0`=**P1.13**、`CS`=**P1.14**（`SPIM22` 同域 P1，无需 Constant Latency）<br>SFLP 输出: 60Hz 姿态四元数 | 静止待机: 低功耗加速度计 (~7.5µA)<br>INT1 = **P0.02**（GPIOTE30）运动唤醒与数据就绪中断 | `Datasheets/LSM6DSV16X_Datasheet.pdf` |
 | **三轴磁力计** | **LIS2MDL** | STMicroelectronics | LGA-12<br>*(2.0×2.0mm)* | 1.9V 常通<br>*(磁珠+电容π型滤波)* | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSVTR Sensor Hub AUX I2C<br>数据进 IMU FIFO，MCU 固件执行磁校准与姿态融合 | `Datasheets/LIS2MDL_Datasheet.pdf` |
 | **气压高度计** | **BMP388** | Bosch Sensortec | LGA-10<br>*(2.0×2.0mm)* | 1.9V 常通<br>*(磁珠+电容π型滤波)* | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSVTR Sensor Hub AUX I2C<br>相对精度 typ. ±8Pa (±0.08hPa, 等效约 ±0.66m) | `Datasheets/BMP388_Datasheet.pdf` |
 | **常通降压 DCDC** | **SGM6040AXTHL8G/TR** | 圣邦微 (SGMICRO) | **TDFN-2×1.5-8L**<br>*(RSET设定 1.9V)* | 输入 1.8~5.5V<br>**设定输出 1.9V** | 750mA 输出能力，效率 > 90%<br>Pin 5 VSET 接 909Ω；Pin 6 STOP 内部下拉悬空 | 全板常通核心（为MCU/Flash/传感器/GNSS后备供电）<br>静态电流仅 60nA (关断 25nA) | `Datasheets/SGM6040A_Datasheet.pdf` |
@@ -253,7 +253,7 @@ V0.2 射频部分由两条**互相独立**的链路构成，GNSS 侧**只保留�
 > **⚠️ 关键电气特性与固件驱动配置说明 (Firmware Implementation Notes)**：
 > 1. **5 处强制片内上拉（硬件无外部上拉电阻）**：
 >    `KEY1_POI`（**P1.06 / Pin 7**）、`KEY2_MODE`（**P1.08 / Pin 9**）、`CHG_STAT`（**P0.04 / Pin 29**，SGM4056 开漏）
->    必须 `nrf_gpio_cfg_input(pin, NRF_GPIO_PIN_PULLUP)`；`SPI_CS`（**P2.05 / Pin 16**）与 `LSM6_SPI_CS`（**P2.10 / Pin 21**）
+>    必须 `nrf_gpio_cfg_input(pin, NRF_GPIO_PIN_PULLUP)`；`SPI_CS`（**P2.05 / Pin 16**）与 `LSM6_SPI_CS`（**P1.14 / Pin 42**）
 >    也建议配置内部上拉（12~16kΩ），防止 GPIO 高阻期间外设被误选通。
 > 2. **`SPI_CS` 的上拉窗口限制**：片内上拉只有在固件初始化 GPIO 之后才生效，从"上电"到"初始化"之间
 >    Flash `/CS` 处于浮空状态（W25Q512NW 要求 `/CS` 跟随 VCC）。若实测 Flash 待机电流偏高或误进入命令态，
@@ -261,11 +261,11 @@ V0.2 射频部分由两条**互相独立**的链路构成，GNSS 侧**只保留�
 > 3. **按键唤醒必须用 P0/P1**：`nRF54L15` 的 **P2 域无 GPIOTE、无 SENSE/DETECT、不能唤醒**（Datasheet Table 40），
 >    因此 `KEY1_POI` 已从原 `P2.03` 迁至 `P1.06`；**后续任何唤醒源都禁止落在 P2.00~P2.10**。
 > 4. **同一外设不得跨端口**，且 `SCK/SCL` 必须落在 clock pin（跨域用法的官方依据与改脚方案见 [`Pinmap_Main_V0.2.md`](Pinmap_Main_V0.2.md) §1.1.1）：
->    Flash 用 `SPIM00`（P2.01/02/04/05 为专用脚）；IMU 用 `SPIM21` 但物理脚在 P2（P2.06/08/09/10），
->    属**跨电源域**用法，仅在 `Constant Latency` 子功耗模式下可用，固件需显式开启并在功耗预算中体现。
+>    Flash 用 `SPIM00`（P2.01/02/04/05 为专用脚）；IMU 用 **`SPIM22`**（P1 同域：`SCK=P1.03`、`MOSI=P1.02`、
+>    `MISO=P1.13`、`CS=P1.14`）→ **同域，无需 Constant Latency**（V0.2 已从 P2 跨域方案迁出）。
 > 5. **调试串口**：`DEBUG_TX`=**P0.00**、`DEBUG_RX`=**P0.01**，两者同属 P0(LP) 域 → 必须用 **`UARTE30`**（115200 8N1）；
 >    不要误用 `UARTE00/20`（跨域，需 Constant Latency）。
-> 6. **NFC 脚（Pin 3/4 = P1.02/P1.03）**本版悬空；若未来复用为 GPIO，必须先经 `NFCT.PADCONFIG` 关闭 NFC，
+> 6. **NFC 脚（Pin 3/4 = P1.02/P1.03）本版已用于 IMU SPI**（MOSI/SCK）→ 固件**必须**先释放 NFC（`&uicr { nfct-pins-as-gpios; }` 或 `NRF_NFCT->PADCONFIG=0`），否则这两根脚无法当 GPIO 用；
 >    且其 pad 电容为 5pF（普通脚 1pF）。
 > 7. **SAADC 通道 = AIN4（P1.11 / Pin 39）**，不是 nRF52840 时代的 AIN0(P0.02)；分压网络 1MΩ+330kΩ 与
 >    735kΩ 输入电阻并联后实际比值 ≈0.186，固件必须按实测标定（详见 Pinmap §3）。

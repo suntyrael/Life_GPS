@@ -6,7 +6,12 @@
 > `Netlist_Main_V0.2_2026-11-11.tel`（2026-11-11 从 V0.2 原理图重新导出，**已与原理图同步**）；③ Nordic 官方 `nRF54L15 / nRF54L10 / nRF54L05 Datasheet v1.0`
 > Section 10.1.4（Table 79，引脚分配）与 Section 10.3（Figure 180 / Table 87，参考电路）。
 >
-> ✅ **网表已同步**：`Netlist_Main_V0.2_2026-11-11.tel` 与当前原理图一致，以下均已在网表中确认：
+> ✅ **已按 V0.2 定案原理图（`Life-GPS_SCH_V0.2.pdf`，IMU SPI 已迁至 P1 同域）核对**：
+> ① `KEY1_POI` = **`U14.7 (P1.06)`**；② `FB1` = **120Ω@100MHz**；③ ANT 匹配 **3 串 3 并**
+> （`L4 2.7nH → C13 1.5pF → L5 3.5nH → C12 2pF → L6 3.5nH → C1 0.3pF`）；
+> ④ GNSS 直通 = `C47 22pF` 隔直 + `R29 0Ω`/`C46` 跳线；⑤ **IMU SPI 已全部迁到 P1**（`SPIM22` 同域，见 §1.1.2）；
+> ⑥ `LED_GREEN` 让位至 **`P2.07`**；`P2.06/08/09/10`、`P2.00`、`P2.03` 均为 NC。
+> （旧网表 `Netlist_Main_V0.2_2026-11-11.tel` 为 SPI 迁移**之前**的版本，以本 PDF 为准）
 > ① `KEY1_POI` = **`U14.7 (P1.06)`**；② `FB1` = **120Ω@100MHz**；③ ANT 匹配 **3 串 3 并**
 > （`L4 2.7nH → C13 1.5pF → L5 3.5nH → C12 2pF → L6 3.5nH → C1 0.3pF`）；
 > ④ GNSS 直通 = `C47 22pF` 隔直 + **`C46 = 0Ω` 跳线**，`C24/C25/C26/C27/C28/C30/C31` 全 **NC**。
@@ -39,9 +44,10 @@
 5. **NFC 脚（pin 3/4 = P1.02/P1.03）复位后默认是 NFC 天线模式**，当 GPIO 用必须先经
    `NFCT.PADCONFIG` 关闭 NFC；其 pad 电容为 5pF（普通脚 1pF）。
 
-#### 1.1.1 为什么「P2 跑 PERI 域外设」必须 Constant Latency（官方依据）
+#### 1.1.1 历史：为什么「P2 跑 PERI 域外设」必须 Constant Latency（官方依据，**V0.2 已不再使用**）
 
-本设计里 IMU 的 SPI 用 `SPIM21`（PERI 域）却接在 `P2.06/08/09/10`（MCU 域），属**跨电源域**用法。规格书原文：
+**V0.2 早期草案**曾把 IMU 的 SPI（`SPIM21`，PERI 域）接在 `P2.06/08/09/10`（MCU 域），属**跨电源域**用法；
+**2026-11 定案已改为 P1 同域（`SPIM22`），本节的规则此后不再适用**，仅作为「为什么当初不行」的依据留档。规格书原文：
 
 | 出处 | 原文（关键句） |
 | :--- | :--- |
@@ -53,10 +59,9 @@
 
 **机理（工程解读，非规格书原句）**：`P2` 的引脚缓冲挂在 MCU 域，`SPIM21` 在 PERI 域，两者之间要经 PPIB（peripheral-to-peripheral bridge）跨域传递 SCK/SDO/SDI/CSN。Low-power 子模式会自动关闭/降频这类“基础资源”，跨域通路的延迟会变得不确定（甚至不可用）；Nordic 因此要求该组合只能工作在 Constant Latency —— 代价是睡眠期间**强制保持一批基础资源开启**，静态电流上升（具体增量需 PPK2 实测，规格书未给该组合的电流值）。
 
-**结论与改法**：
-1. **当前设计（KEEP）**：固件在访问 IMU 期间置 `CONSTLAT`，用完切 `LOWPWR`；代价是这段时间的待机电流变差。
-2. **推荐改版（省电）**：把 IMU 的 4 根 SPI 挪到 **P1（PERI 域）**，`SPIM21` 同域运行即可全程留在 Low-power；`SCK` 必须选 P1 的 clock 脚（如 P1.03/P1.04/P1.09/P1.11/P1.12），`CS` 可用 P1.06/P1.14 等空闲脚（需同步让出 KEY1 或另择脚）。
-3. 另一条路是把两路 SPI 合并到 `SPIM00`（MCU 域，专用脚 P2.01/02/04/05），但 `SPIM00` 已被 Flash 占用，无法同时服务 IMU。
+**结论（已执行）**：V0.2 定案把 IMU 的 4 根 SPI 迁到 **P1（PERI 域）**，用 `SPIM22` 同域运行，
+全程可留在 Low-power，**固件不再需要 `CONSTLAT`/`LOWPWR` 手动切换**。
+另一条路（两路 SPI 合并到 `SPIM00`）不可行：`SPIM00` 已被 Flash 占用，且只有一套 PSEL。
 
 #### 1.1.2 SPI 资源清单与分配建议
 
@@ -66,8 +71,8 @@
 | :--- | :--- | :---: | :--- | :--- |
 | **SPIM00**（HS-SPI） | MCU（P2） | **32 MHz**（需 `DRIVE0/1 = E0/E1` 超高驱动） | 专用脚 **`P2.01` SCK / `P2.02` SDO / `P2.04` SDI / `P2.05` CSN**；`P2.00` 可作 DCX（标 `SPIM00/20`）；`P2.06/08/09/10` 亦标 `SPIM00/21` | **Flash（实跑 8 MHz）** |
 | **SPIM20** | PERI（P1） | 8 MHz | 任意 P1 脚，SCK 必须是 P1 clock 脚；**可跨域**到 P2.01–05 组（需 Constant Latency） | 空闲 |
-| **SPIM21** | PERI（P1） | 8 MHz | 任意 P1 脚，SCK 须 clock 脚；**可跨域**到 P2.06–10 组（需 Constant Latency） | **IMU（当前跨域用法）** |
-| **SPIM22** | PERI（P1） | 8 MHz | 任意 P1 脚，SCK 须 clock 脚；QFN48 引脚表未给跨域组 | 空闲 |
+| **SPIM21** | PERI（P1） | 8 MHz | 任意 P1 脚，SCK 须 clock 脚；**可跨域**到 P2.06–10 组（需 Constant Latency） | 空闲（保留扩展） |
+| **SPIM22** | PERI（P1） | 8 MHz | 任意 P1 脚，SCK 须 clock 脚；QFN48 引脚表未给跨域组 | **IMU（V0.2 定案，同域）** |
 | **SPIM30** | LP（P0） | 8 MHz | P0 脚（`P0.00–P0.04`；Table 79 未给 SPI 功能标注） | **不可用**（P0 五脚已被 DEBUG_TX/RX、IMU_INT、CHG_EN、CHG_STAT 占满） |
 | SPIS20/21/22/30 | PERI/LP | 从机 | 与同名 SPIM 同地址配对（`0x500C6/7/8000`、`0x50104000`） | 不需要 |
 
@@ -78,8 +83,8 @@
 
 | 方案 | 做法 | 代价 / 收益 |
 | :--- | :--- | :--- |
-| **A. 保持现状（0 改动）** | Flash = `SPIM00`；IMU = `SPIM21` 跨域（P2.06/08/09/10），固件 `CONSTLAT`↔`LOWPWR` 分时切换 | 改板 0；**访问 IMU 期间睡眠电流上升**（需 PPK2 实测增量） |
-| **B. 推荐（改 4 根线）** | IMU 改用 **`SPIM22` 同域 P1**：`SCK=P1.03`、`SDO=P1.02`、`SDI=P1.12`、`CSN=P1.14`；把 `LED_BLUE` 从 `P1.12` 挪到空闲的 `P2.07`（纯输出，P2 无需中断） | 全程 Low-power，**无需 CONSTLAT**；`P1.02/P1.03` 是 NFC 脚，固件须先 `NFCT.PADCONFIG` 关闭 NFC |
+| ~~A. 旧草案（跨域）~~ | Flash = `SPIM00`；IMU = `SPIM21` 跨域（P2.06/08/09/10），需 `CONSTLAT`↔`LOWPWR` 切换 | 已废弃（睡眠电流变差） |
+| **B. 已采用（V0.2 定案）** | IMU 用 **`SPIM22` 同域 P1**：`SCK=P1.03`、`MOSI=P1.02`、`MISO=P1.13`、`CSN=P1.14`；`LED_GREEN` 让位到 `P2.07` | 全程 Low-power，**无需 CONSTLAT**；`P1.02/P1.03` 是 NFC 脚，固件须先关 NFC（见 §1.1.3） |
 | **C. 预留扩展** | 保留 `SPIM20`（P1 同域，8 MHz）给未来第二路传感器/备份 Flash | 不改当前布线，仅固件预留实例号 |
 
 #### 1.1.3 方案 B 可行性核对：与 GPS UART 共存 + NCS 落地
@@ -89,7 +94,7 @@
 | 资源 | GPS | IMU（方案 B：`SPIM22`） | 冲突 |
 | :--- | :--- | :--- | :--- |
 | 外设实例 | `UARTE20` 或 `UARTE21`（PERI 域） | `SPIM22`（PERI 域，id 200） | ❌ 无（实例独立） |
-| 引脚 | `P1.04` TXD / `P1.05` RXD | `P1.03` SCK / `P1.02` SDO / `P1.12` SDI / `P1.14` CSN | ❌ 无重叠 |
+| 引脚 | `P1.04` TXD / `P1.05` RXD | `P1.03` SCK / `P1.02` MOSI / `P1.13` MISO / `P1.14` CSN | ❌ 无重叠 |
 | 子功耗模式 | 脉冲定位需 **Low-power** | 同域 P1，**不需要 Constant Latency** | ✅ 可共存 |
 | 时钟脚约束 | UART 无 clock 脚要求 | `SCK=P1.03` 是 clock 脚 ✔ | ✅ |
 | 引脚余量 | — | 方案 B 后 **P1 15/15 全占用** | ⚠️ 未来扩展只能用 P2（无中断）或 P0（已满） |
@@ -114,8 +119,8 @@
 | :---: | :--- | :--- | :---: | :---: | :--- | :--- |
 | 1 | `P1.00 / XL1` | `LFXO_IN` | P1 / 模拟 | — | 32.768kHz 晶体 X1.1（FC-135R，**CL=9pF**） | 晶振模式；片内负载电容（`XOSC32KI.INTCAP`），无外挂电容 |
 | 2 | `P1.01 / XL2` | `LFXO_OUT` | P1 / 模拟 | — | 32.768kHz 晶体 X1.2 | 同上 |
-| 3 | `P1.02 / NFC1` | `NC` | P1 | — | 悬空 | 保持默认（NFC 关断后当 GPIO 亦须断开输入缓冲） |
-| 4 | `P1.03 / NFC2` | `NC` | P1 / clock | — | 悬空 | 同上 |
+| 3 | `P1.02 / NFC1` | `LSM6_SPI_MOSI` | P1 | OUT | U12.14 `SDA/SDI/SDO` | `SPIM22` 的 SDO；**须先关 NFC**（`NFCT.PADCONFIG`）；8 MHz |
+| 4 | `P1.03 / NFC2` | `LSM6_SPI_CLK` | P1 / **clock** | OUT | U12.13 `SCL/SPC` | `SPIM22` 的 SCK（clock 脚）；**须先关 NFC**；8 MHz |
 | 5 | `P1.04 / AIN0` | `GPS_TX` | P1 / clock | OUT | `UARTE20/21 TXD` → R10 100Ω → U1.3 `RXD` | 115200 8N1；GPS 断电前先置高阻/低电平 |
 | 6 | `P1.05 / AIN1`（RADIO[6]） | `GPS_RX` | P1 | IN | `UARTE20/21 RXD` ← R11 100Ω ← U1.2 `TXD` | 同域 UART，固件用 `UARTE2x` |
 | 7 | `P1.06 / AIN2` | `KEY1_POI` | P1 | IN | R20 100Ω → SW7（按下接地） | **内部上拉**；SENSE 低电平唤醒（System OFF） |
@@ -128,11 +133,11 @@
 | 14 | `P2.03` | `NC`（原 KEY1，已迁出） | P2 | — | 悬空 | 断开输入缓冲；**不可再用于按键/中断** |
 | 15 | `P2.04 / SPIM00.SDI` | `SPI_MISO` | P2 | IN | U8.2 `DO(IO1)` | — |
 | 16 | `P2.05 / SPIM00.CSN` | `SPI_CS` | P2 | OUT | U8.1 `/CS` | **内部上拉**（见 §3 注）；复位到 GPIO 初始化之间无上拉 |
-| 17 | `P2.06 / SPIM00-21.SCK` | `LSM6_SPI_CLK` | P2 / clock | OUT | U12.13 `SCL/SPC` | `SPIM21` 跨域 → 需 Constant Latency 子模式；PSEL 必须用本脚 |
-| 18 | `P2.07 / SWO` | `NC` | P2 | — | 悬空（可留 SWO 测试点） | 断开输入缓冲 |
-| 19 | `P2.08 / SPIM00-21.SDO` | `LSM6_SPI_MOSI` | P2 | OUT | U12.14 `SDA/SDI/SDO` | 同上（跨域 PSEL 固定） |
-| 20 | `P2.09 / SPIM00-21.SDI` | `LSM6_SPI_MISO` | P2 | IN | U12.1 `SDO/SA0` | 同上 |
-| 21 | `P2.10 / SPIM00-21.CSN` | `LSM6_SPI_CS` | P2 | OUT | U12.12 `CS` | **建议内部上拉**；跨域 PSEL 固定 |
+| 17 | `P2.06 / SPIM00-21.SCK` | `NC` | P2 / clock | — | 悬空 | 断开输入缓冲（IMU SPI 已迁 P1，不再跨域） |
+| 18 | `P2.07 / SWO` | `LED_GREEN` | P2 | OUT | Q2 基极（DTC143ZETL） | 高电平点亮；P2 无中断能力但 LED 仅输出，无影响 |
+| 19 | `P2.08 / SPIM00-21.SDO` | `NC` | P2 | — | 悬空 | 断开输入缓冲 |
+| 20 | `P2.09 / SPIM00-21.SDI` | `NC` | P2 | — | 悬空 | 断开输入缓冲 |
+| 21 | `P2.10 / SPIM00-21.CSN` | `NC` | P2 | — | 悬空 | 断开输入缓冲 |
 | 22 | `VDD` | `BT_1V9` | PWR | — | 就近 100nF | — |
 | 23 | `P0.00` | `DEBUG_TX` | P0 | OUT | `UARTE30 TXD` → R19 100Ω → H1.6 | 115200 8N1 |
 | 24 | `P0.01` | `DEBUG_RX` | P0 | IN | `UARTE30 RXD` ← R18 100Ω ← H1.5 | 同域 UART（P0 只有 UARTE30） |
@@ -152,8 +157,8 @@
 | 38 | `P1.10` | `LED_RED` | P1 | OUT | Q3 基极（DTC143ZETL 带阻数字 NPN，内置 R1/R2） | 高电平点亮；无需外部基极电阻 |
 | 39 | `P1.11 / AIN4` | `BAT_ADC` | P1 / clock | IN (SAADC) | R25 1MΩ + R26 330kΩ + C14 100nF | **AIN4（不是 AIN0）**；见 §3 注 3 |
 | 40 | `P1.12 / AIN5` | `LED_BLUE` | P1 / clock | OUT | Q13 基极（DTC143ZETL） | 高电平点亮 |
-| 41 | `P1.13 / AIN6` | `LED_GREEN` | P1 | OUT | Q2 基极（DTC143ZETL） | 高电平点亮 |
-| 42 | `P1.14 / AIN7` | `NC` | P1 | — | 悬空 | 建议留作第二唤醒键/扩展；断开输入缓冲 |
+| 41 | `P1.13 / AIN6` | `LSM6_SPI_MISO` | P1 | IN | U12.1 `SDO/SA0` | `SPIM22` 的 SDI；8 MHz |
+| 42 | `P1.14 / AIN7` | `LSM6_SPI_CS` | P1 | OUT | U12.12 `CS` | `SPIM22` 的 CSN；**建议内部上拉** |
 | 43 | `DECA` | `DECA/RF` | PWR | — | 与 pin33 短接 | 必须与 DECRF 相连（Table 79 强制） |
 | 44 | `VSS` | `GND` | PWR | — | 核心地 | — |
 | 45 | `DECD` | `DECD` | PWR | — | C11 2.2µF→GND；L1 至 pin46；FB1 至 DECA | 与 Figure 180 一致 |
@@ -174,7 +179,8 @@
 | `KEY2_MODE` | P1.08 | 按键直连 GND（串 100Ω） | **内部上拉** |
 | `CHG_STAT` | P0.04 | SGM4056 `/CHG` 开漏 | **内部上拉**（无外部上拉电阻） |
 | `SPI_CS` | P2.05 | Flash `/CS`，无外部上拉 | **内部上拉**：上电后**第一优先级**配置，避免 `/CS` 悬空误选通；⚠️ 从"上电"到"固件配置 GPIO"之间存在**无上拉窗口**，若实测 Flash 待机电流偏高，改版加 10kΩ 外部上拉（W25Q512NW 要求 `/CS` 跟随 VCC） |
-| `LSM6_SPI_CS` | P2.10 | IMU `CS`，无外部上拉 | 建议同样配置内部上拉 |
+| `LSM6_SPI_CS` | **P1.14** | IMU `CS`，无外部上拉 | 建议同样配置内部上拉 |
+| NFC 脚释放 | P1.02 / P1.03 | 现作 IMU SPI | 必须 `&uicr { nfct-pins-as-gpios; }` 或 `NRF_NFCT->PADCONFIG=0`，否则 SPI 无法工作 |
 | `CHG_EN` | P0.03 | SGM4056 `EN`（**低有效**，内部 200kΩ 下拉） | 低 = 允许充电；网名"EN"不代表高有效，禁止写反 |
 | `GPS_EN` | P1.07 | SGM2045 `EN`（高有效） | 高 = 供电。**断电时序（必须按此顺序）**：① 先发 `UBX-RXM-PMREQ`（MAX-M10S）或 `PAIR650`（LC79H）让模组进入软件待机 → ② 把 `GPS_TX/GPS_RX/GPS_WAKE` 置为高阻输入（或低电平）→ ③ 再拉低 `GPS_EN`。原因：`V_IO`(Pin7) 与 `VCC`(Pin8) 同挂在 `VDD_GPS`，无法满足 u-blox 要求的「`V_IO` 比 `VCC` 提前 100 ms 断电」，只能走软件待机路径；同时避免 1.9V 高电平对已断电模组的 `RXD` 倒灌 |
 | `BAT_ADC` | P1.11 / AIN4 | 1MΩ+330kΩ 常通分压 + 100nF | ① 通道必须选 **AIN4**；② 采集时间取长（≥10–40µs），单次触发后关闭 SAADC；③ **必须做负载修正**：SAADC 输入电阻典型 735kΩ（Datasheet §11.17.1）会与 R26 并联，使分压比由 0.248 降到 ≈0.186（**读数偏低约 25%**），固件按实测标定或使用 `R26∥R_IN` 修正公式 |

@@ -13,7 +13,7 @@
 
 > 🔒 **【重要基线提示 · 原理图 v0.2 与网表闭环 · SSOT 权威真相源 (Architecture Baseline Frozen - SSOT)】**  
 > 经与最新硬件原理图 **`Main_V0.2`（2026-11-10 更新）** 及网表 `Netlist_Main_V0.2_2026-11-11.tel`（已与原理图同步）深度工程评审与闭环整改，硬件配置基线正式锁定：主控升级为 **Nordic nRF54L15-QFAA（QFN48）**，全系统沿用 **常通主电 1.9V (SGM6040A) + GNSS 受控洁净电 1.8V (SGM2045-1.8)** 极低功耗分层拓扑；**GNSS 默认选型为 u-blox MAX-M10S-00B（唯一默认装配料，固件默认 UBX 协议）**，`Quectel LC79H` 仅作**可选兼容位、默认不装配**（同尺寸 18-LCC、VCC 1.75~1.98V，切换需改 R13/R28 并增补 Pin15 跳线）；GNSS 射频前端**量产只贴直通版**（`C47=22pF` 隔直 + `C46=0Ω` 跳线；`U5/Q1/C24/C27/C31` 全 NC），LNA+SAW 增强路径仅保留焊盘且与直通版**互斥**；6 轴 IMU 选用 **LSM6DSVTR**（INT1 唤醒）；电池分压沿用 **1MΩ + 330kΩ**（接受 3.2µA 漏电，固件须做输入阻抗修正）。
-> **⚠️ 本次变更的 4 处引脚级要点**：① `KEY1_POI` 由 `P2.03` 迁至 **`P1.06`**（P2 域无 GPIOTE/SENSE，不能做唤醒源）；② `GPS_EN` = **`P1.07`**、`GPS_WAKE` = **`P1.09`**；③ Flash/IMU 全部 SPI 落在 **P2 域**（Flash=`SPIM00`，IMU=`SPIM21` 跨域需 Constant Latency）；④ **`KEY1/KEY2/CHG_STAT/SPI_CS/LSM6_CS` 五处无外部上拉电阻，必须由固件配置片内上拉**（12~16kΩ），`CHG_EN` 为**低有效**。  
+> **⚠️ 本次变更的 4 处引脚级要点**：① `KEY1_POI` 由 `P2.03` 迁至 **`P1.06`**（P2 域无 GPIOTE/SENSE，不能做唤醒源）；② `GPS_EN` = **`P1.07`**、`GPS_WAKE` = **`P1.09`**；③ Flash=`SPIM00`（P2 专用脚）；**IMU=`SPIM22`（P1 同域，`P1.03/02/13/14`），已无跨域、无需 Constant Latency**；④ **`KEY1/KEY2/CHG_STAT/SPI_CS/LSM6_CS` 五处无外部上拉电阻，必须由固件配置片内上拉**（12~16kΩ），`CHG_EN` 为**低有效**。  
 > **引脚唯一真相源**：[`Doc/Hardware/Pinmap_Main_V0.2.md`](Doc/Hardware/Pinmap_Main_V0.2.md)（本文档所有引脚表以其为准）。本项目正式进入**第二阶段（Phase 2）PCB Layout 与固件驱动闭环阶段**，打样后用 Nordic PPK2 做全工况实测闭环。
 
 - [1. 核心设计亮点与相比手机的优势](#1-核心设计亮点与相比手机的优势)
@@ -79,7 +79,7 @@
 | **板载双频 LNA** | **ATR2652（U5）** | 杭州中科微 | DFN-6 / SOT23-6 | 1.8V 受控<br>*(支持 1.5~3.6V)* | L1 增益 22.4dB / NF 0.85dB<br>L5 增益 22.0dB / NF 0.75dB | **本版 DNP（不贴）**：V0.2 量产只贴直通，仅保留焊盘/BOM 位；贴装时必须同时 NC 掉 C46/C47<br>工作电流 4.5mA | 原厂选型手册 |
 | **板载双通带 SAW** | **B39162B2651P810（Q1）** | Qualcomm / RF360 | 1511<br>*(1.5×1.1mm)* | 无源器件 | 单进单出双通带 (L1+L5)<br>2.4GHz 抑制 > 38dB | **本版 DNP（不贴）**；GNSS 模组内部已含 SAW，带外抑制由模组承担<br>启用增强版必须与 C46/C47 互斥 | 原厂选型手册 |
 | **SPI NOR Flash** | **W25Q512NWEIQ**<br>*(1.8V 宽压旗舰)* | Winbond (华邦) | WSON-8<br>*(6×8mm)* | 1.9V 常通<br>*(VCC 1.7~1.95V)* | 标准 4 线 SPI (模式 0)<br>**目标时钟: 8MHz (低噪声)** | `/CS`=**P2.05**（固件内部上拉）、`CLK`=**P2.01**、`MOSI`=**P2.02**、`MISO`=**P2.04**（SPIM00 专用脚）<br>/WP(Pin3)与/HOLD(Pin7) 直连 1.9V 主电轨（改版建议改 10kΩ 上拉） | `Doc/Hardware/Datasheets/Winbond_07022021_W25Q512NW-2451091.pdf` |
-| **6轴 IMU** | **LSM6DSVTR** | STMicroelectronics | LGA-14<br>*(2.5×3.0mm)* | 1.9V 常通<br>*(现为 0Ω 直连；磁珠 π 滤波为改版项)* | SPI 8MHz：`SCL/SPC`=**P2.06**、`SDA/SDI`=**P2.08**、`SDO/SA0`=**P2.09**、`CS`=**P2.10**（SPIM21 跨域，需 Constant Latency）<br>SFLP 输出: 60Hz 姿态四元数 | 静止待机: 低功耗加速度计 (~7.5µA)<br>INT1 = **P0.02**（GPIOTE30）运动唤醒与数据就绪中断 | `Doc/Hardware/Datasheets/LSM6DSV16X_Datasheet.pdf` |
+| **6轴 IMU** | **LSM6DSVTR** | STMicroelectronics | LGA-14<br>*(2.5×3.0mm)* | 1.9V 常通<br>*(现为 0Ω 直连；磁珠 π 滤波为改版项)* | SPI 8MHz：`SCL/SPC`=**P1.03**、`SDA/SDI`=**P1.02**、`SDO/SA0`=**P1.13**、`CS`=**P1.14**（`SPIM22` 同域 P1，**无需 Constant Latency**）<br>SFLP 输出: 60Hz 姿态四元数 | 静止待机: 低功耗加速度计 (~7.5µA)<br>INT1 = **P0.02**（GPIOTE30）运动唤醒与数据就绪中断 | `Doc/Hardware/Datasheets/LSM6DSV16X_Datasheet.pdf` |
 | **三轴磁力计** | **LIS2MDL** | STMicroelectronics | LGA-12<br>*(2.0×2.0mm)* | 1.9V 常通<br>*(现为 0Ω 直连；磁珠 π 滤波为改版项)* | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSVTR Sensor Hub AUX I2C<br>数据进 IMU FIFO，MCU 固件执行磁校准与姿态融合 | `Doc/Hardware/Datasheets/LIS2MDL_Datasheet.pdf` |
 | **气压高度计** | **BMP388** | Bosch Sensortec | LGA-10<br>*(2.0×2.0mm)* | 1.9V 常通<br>*(现为 0Ω 直连；磁珠 π 滤波为改版项)* | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSVTR Sensor Hub AUX I2C<br>相对精度 typ. ±8Pa (±0.08hPa, 等效约 ±0.66m) | `Doc/Hardware/Datasheets/BMP388_Datasheet.pdf` |
 | **常通降压 DCDC** | **SGM6040AXTHL8G/TR** | 圣邦微 (SGMICRO) | **TDFN-2×1.5-8L**<br>*(RSET设定 1.9V)* | 输入 1.8~5.5V<br>**设定输出 1.9V** | 750mA 输出能力，效率 > 90%<br>Pin 5 VSET 接 909Ω；Pin 6 STOP 内部下拉悬空 | 全板常通核心（为MCU/Flash/传感器/GNSS后备供电）<br>静态电流仅 60nA (关断 25nA) | `Doc/Hardware/Datasheets/SGM6040A_Datasheet.pdf` |
@@ -112,7 +112,7 @@
 | **P2** | MCU 高速 | 11（P2.00~P2.10） | **❌** | **❌** | **❌** | ✅ | 64 MHz |
 
 1. **P2 不能做按键/中断输入**：无 GPIOTE、无 SENSE/DETECT、不能从 System ON/OFF 唤醒。因此 `KEY1_POI` 从 nRF52840 时代的 `P0.08` 迁到 **`P1.06`（Pin 7）**（V0.2 曾误放在 `P2.03`，已否决）。
-2. **同一外设的引脚不得跨端口**；`SCK/SCL` 必须落在 clock pin。Flash 用 `SPIM00`（P2.01/02/04/05 专用脚），IMU 用 `SPIM21` 但物理脚在 P2（P2.06/08/09/10）→ 属**跨电源域**用法。规格书 §8.8.3(p.277)/§10.1.1(p.859) 明确：这类组合**只能在 `Constant Latency` 子模式下工作，且“is not the most power-efficient way”**；原因见 §10.1.4 Table 79 中 `P2.06/08/09/10` 的功能列写作 `SPIM00/21`（`/21` 即 PERI 域跨域映射）。§5.1.1(p.67) 说明 Constant Latency 靠**强制保持一批基础资源开启**换取固定延迟，代价是睡眠电流上升。→ **完整机理、官方原文与改脚方案见 [`Doc/Hardware/Pinmap_Main_V0.2.md`](Doc/Hardware/Pinmap_Main_V0.2.md) §1.1.1**。
+2. **同一外设的引脚不得跨端口**；`SCK/SCL` 必须落在 clock pin。Flash 用 `SPIM00`（P2.01/02/04/05 专用脚），IMU 用 **`SPIM22`（P1 同域）**：`SCK=P1.03`、`MOSI=P1.02`、`MISO=P1.13`、`CS=P1.14` —— **V0.2 已把 IMU SPI 从 P2 跨域方案迁到 P1 同域，不再需要 Constant Latency**（历史依据见 Pinmap §1.1.1）。规格书 §8.8.3(p.277)/§10.1.1(p.859) 明确：这类组合**只能在 `Constant Latency` 子模式下工作，且“is not the most power-efficient way”**；原因见 §10.1.4 Table 79 中 `P2.06/08/09/10` 的功能列写作 `SPIM00/21`（`/21` 即 PERI 域跨域映射）。§5.1.1(p.67) 说明 Constant Latency 靠**强制保持一批基础资源开启**换取固定延迟，代价是睡眠电流上升。→ **完整机理、官方原文与改脚方案见 [`Doc/Hardware/Pinmap_Main_V0.2.md`](Doc/Hardware/Pinmap_Main_V0.2.md) §1.1.1**。
 3. **严禁把电池/USB 直连 VDD**：SGM6040A 降压至 1.9V 后再进 VDD；且 1.9V 轨上电斜率必须保证越过 1.75V POR 阈值（SGM6040A 精度 ±1.7%，最差 1.868V，余量约 118mV）。
 4. **晶振改为"片内负载电容"方案**：XC1/XC2 与 XL1/XL2 均**不接外挂电容**，改用 `XOSC32M.CONFIG.INTCAP` / `XOSC32KI.INTCAP` 可编程电容；但晶体 `C_L` 必须落在 **6~9pF** 允许区间（参考 BOM：X2 32MHz `C_L=8pF`、X1 32.768kHz `C_L=9pF`），**禁止再采购 12/12.5pF 版本**。
 5. **NFC 脚（Pin 3/4 = P1.02/P1.03）复位后默认是 NFC 天线模式**，pad 电容 5pF；本版悬空不用，若复用为 GPIO 必须先经 `NFCT.PADCONFIG` 关闭 NFC。
@@ -326,7 +326,7 @@ flowchart TB
     MCU_CORE -->|"RXD 经 100Ω"| GNSS
     SGM6040A -->|"Pin 6 V_BCKP 常通 1.9V (手册 28µA@3.3V)"| GNSS
 
-    MCU_CORE -->|"SPI 8MHz (P2.06/08/09/10)"| IMU
+    MCU_CORE -->|"SPI 8MHz SPIM22 (P1.03/02/13/14)"| IMU
     IMU --> MAG & BARO
     MCU_CORE -->|"4线 SPI (P2.05/P2.01/P2.02/P2.04)"| FLASH
     KEY1 & KEY2 --> MCU_CORE
@@ -460,7 +460,7 @@ flowchart TD
 **[`Doc/Hardware/Pinmap_Main_V0.2.md`](Doc/Hardware/Pinmap_Main_V0.2.md) §2**，本文不再重复，避免两处表格漂移。
 
 > **⚠️ 固件必须落实的配置（摘自 Pinmap §3）**
-> 1. **5 处片内上拉**：`KEY1_POI`(P1.06)、`KEY2_MODE`(P1.08)、`CHG_STAT`(P0.04)、`SPI_CS`(P2.05)、`LSM6_SPI_CS`(P2.10) —— 硬件**无外部上拉电阻**，固件初始化时必须配置**片内上拉**（RPU 12/14/16kΩ；Zephyr 侧为 `GPIO_PULL_UP`，具体 devicetree/API 以 NCS v3.4.2 查证为准）。
+> 1. **5 处片内上拉**：`KEY1_POI`(P1.06)、`KEY2_MODE`(P1.08)、`CHG_STAT`(P0.04)、`SPI_CS`(P2.05)、`LSM6_SPI_CS`(P1.14) —— 硬件**无外部上拉电阻**，固件初始化时必须配置**片内上拉**（RPU 12/14/16kΩ；Zephyr 侧为 `GPIO_PULL_UP`，具体 devicetree/API 以 NCS v3.4.2 查证为准）。
 > 2. **`SPI_CS` 的上拉窗口**：片内上拉要等固件初始化 GPIO 才生效，上电到初始化之间 Flash `/CS` 浮空（W25Q512NW 要求 `/CS` 跟随 VCC）；固件须把 `SPI_CS` 初始化提到最早期，若实测漏电偏高则改版加 10kΩ 外部上拉。
 > 3. **`CHG_EN`(P0.03) 为低有效**（SGM4056 EN，内部 200kΩ 下拉）：高电平禁止充电，复位期间默认允许充电。
 > 4. **`GPS_EN`(P1.07) 高有效**：断电前先把 `GPS_TX/RX/WAKE` 置高阻，避免对已断电模组倒灌。
