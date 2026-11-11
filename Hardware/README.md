@@ -26,6 +26,6 @@
 
 - **不提交** Gerber zip、STEP、装配 PDF 等大二进制到普通 Git；放 `Production/` 或 Release 资产，必要时 Git LFS。
 - 原理图/PCB 变更必须同步：根 README 基线表、引脚表、`Firmware/boards/lifegps/`、`Doc/Hardware/README.md`。
-- 任何 BOM 变更（LNA/SAW、MAX-M10S / LC79H 兼容位 R13/R27/R28）必须在 `BOM/README.md` 记录装配选项与互斥关系。
+- 任何 BOM 变更（LNA/SAW 双 BOM、**GNSS 备份料 LC79H** 的 R13/R27/R28 + Pin15 跳线）必须在 `BOM/README.md` 记录装配选项与互斥关系；**默认装配只允许 MAX-M10S-00B**。
 - 原理图里所有器件 `Value` 不得留空（当前 `{Value}` 状态会导致 BOM/固件无法追溯）。
 - 生产文件命名：`lifegps-hw-v<版本>-<类型>-<日期>`，附 `SHA256SUMS`。

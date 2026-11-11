@@ -39,6 +39,25 @@
 5. **NFC 脚（pin 3/4 = P1.02/P1.03）复位后默认是 NFC 天线模式**，当 GPIO 用必须先经
    `NFCT.PADCONFIG` 关闭 NFC；其 pad 电容为 5pF（普通脚 1pF）。
 
+#### 1.1.1 为什么「P2 跑 PERI 域外设」必须 Constant Latency（官方依据）
+
+本设计里 IMU 的 SPI 用 `SPIM21`（PERI 域）却接在 `P2.06/08/09/10`（MCU 域），属**跨电源域**用法。规格书原文：
+
+| 出处 | 原文（关键句） |
+| :--- | :--- |
+| §8.8.3 Port capabilities（p.277） | “Peripherals must use pins in their own domain. However, **some P2 pins can be used for select serial interfaces in the peripheral domain when the device is in Constant Latency sub-power mode**. **This is not the most power-efficient way** of connecting these serial interfaces, but adds flexibility when designing a circuit board.” |
+| §10.1.1 Cross power-domain use（p.859–860） | “Select P2 pins can be used for some serial interfaces in the peripheral domain — **SPIM, SPIS, and UARTE** — when the device is in **Constant Latency sub-power mode**.” + “The pin assignments table shows which pins can be configured for cross power-domain connections.” |
+| §10.1.4 Table 79（p.869–872） | `P2.06/08/09/10` 的功能列写作 **“SPIM SCK/SDO/SDI/CSN — SPIM00/21”**；后缀 `/21` 即 PERI 域的 `SPIM21` 跨域映射 |
+| §5.1.1 Sub-power modes（p.67） | Constant Latency：“the CPU wakeup latency and the PPI task response are constant and kept at a minimum. **This is secured by forcing a set of basic resources to be turned on while in sleep mode. Constant and predictable latency increases power consumption.**” 触发任务：`TASKS_CONSTLAT`；Low-power 为**上电默认**子模式，触发任务 `TASKS_LOWPWR` |
+| §5.6 POWER（p.92） | “**the Constant Latency mode is prioritized over Low-power mode**” —— 一旦置位即全局生效，直到显式切回 |
+
+**机理（工程解读，非规格书原句）**：`P2` 的引脚缓冲挂在 MCU 域，`SPIM21` 在 PERI 域，两者之间要经 PPIB（peripheral-to-peripheral bridge）跨域传递 SCK/SDO/SDI/CSN。Low-power 子模式会自动关闭/降频这类“基础资源”，跨域通路的延迟会变得不确定（甚至不可用）；Nordic 因此要求该组合只能工作在 Constant Latency —— 代价是睡眠期间**强制保持一批基础资源开启**，静态电流上升（具体增量需 PPK2 实测，规格书未给该组合的电流值）。
+
+**结论与改法**：
+1. **当前设计（KEEP）**：固件在访问 IMU 期间置 `CONSTLAT`，用完切 `LOWPWR`；代价是这段时间的待机电流变差。
+2. **推荐改版（省电）**：把 IMU 的 4 根 SPI 挪到 **P1（PERI 域）**，`SPIM21` 同域运行即可全程留在 Low-power；`SCK` 必须选 P1 的 clock 脚（如 P1.03/P1.04/P1.09/P1.11/P1.12），`CS` 可用 P1.06/P1.14 等空闲脚（需同步让出 KEY1 或另择脚）。
+3. 另一条路是把两路 SPI 合并到 `SPIM00`（MCU 域，专用脚 P2.01/02/04/05），但 `SPIM00` 已被 Flash 占用，无法同时服务 IMU。
+
 ---
 
 ## 2. U14 主控引脚全表（nRF54L15-QFAA，QFN48）

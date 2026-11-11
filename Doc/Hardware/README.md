@@ -24,7 +24,7 @@
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **主控 SoC** | **`NRF54L15-QFAA-R`** | Nordic Semi | QFN48<br>*(6×6mm, 0.4mm pitch, 49 脚含 EP)* | 稳定 1.9V<br>*(VDD 1.7~3.6V, POR 阈值 1.75V)* | 128MHz Cortex-M33 + RISC-V FLPR<br>HFXO: 32MHz (CL=**8pF**) / LFXO: 32.768kHz (CL=**9pF**)<br>**⚠️ 现选 X2 12pF / X1 12.5pF 超 6~9pF 规格：X2 必须换 8pF；X1 可换 9pF 或实测豁免**<br>RRAM 1524KB / RAM 256KB | 全天候常通供电 (Always-On)<br>31 个 GPIO，分 P0(LP)/P1(PERI)/P2(MCU) 三域<br>**启用片上硬件看门狗 (WDT 30s)** | `nRF54L15_nRF54L10_nRF54L05_Datasheet_v1.0.pdf` |
 | **GNSS 模组（默认装配 · 唯一默认料）** | **MAX-M10S-00B** | u-blox | 18-LCC<br>*(10.1×9.7mm)* | 主电: 1.8V (Pin 8 VCC, 1.76~3.6V)<br>IO: 1.8V (Pin 7 V_IO, `VIO_SEL=GND`)<br>后备: 1.9V (Pin 6 V_BCKP, 1.65~3.6V) | UART 115200bps (UBX / NMEA)<br>多星并发 (GPS+BDS+GAL+GLO) | Pin 8 VCC 经 SGM2045-1.8 受控通断（`GPS_EN` = **P1.07**）<br>Pin 6 V_BCKP 由 SGM6040A 常通 1.9V 保持热启<br>**【MAX-M10S 装配】R13=0Ω(贴), R28=100Ω(贴), R27=NC**<br>Pin 15 VIO_SEL **必须接 GND**（1.8V IO 模式） | `Datasheets/UBLOX/MAX-M10S_DataSheet_UBX-20035208.pdf` |
-| **GNSS 模组（可选兼容位 · 默认不装配）** | **LC79H 系列**<br>*(LC79H AL / EL)* | Quectel (移远) | 18-LCC + 10-LGA<br>*(10.1×9.7×2.4mm，1~18 脚与 M10S 同构)* | 主电: 1.8V (Pin 8 VCC, **1.75~1.98V**)<br>IO: 跟随 VCC（1.8V）<br>后备: 1.9V (Pin 6 V_BCKP, 1.62~1.98V) | UART 115200bps (NMEA / PAIR)<br>L1+L5 双频 | **【LC79H 装配】R13=NC, R28=NC（Pin5/Pin7 为 RESERVED，禁止外接）**；若用 WAKEUP 唤醒则贴 R27=100Ω(接 Pin 18)<br>固件自适应协议识别 | `Datasheets/LC79H/quectel_lc79h_series_hardware_design_v1-6.pdf` |
+| **GNSS 备份料（兼容位 · 默认不采购/不装配）** | **LC79H 系列**<br>*(LC79H AL / EL)* | Quectel (移远) | 18-LCC + 10-LGA<br>*(10.1×9.7×2.4mm，1~18 脚与 M10S 同构)* | 主电: 1.8V (Pin 8 VCC, **1.75~1.98V**)<br>IO: 跟随 VCC（1.8V）<br>后备: 1.9V (Pin 6 V_BCKP, 1.62~1.98V) | UART 115200bps (NMEA / PAIR)<br>L1+L5 双频 | **【LC79H 装配】R13=NC, R28=NC（Pin5/Pin7 为 RESERVED，禁止外接）**；若用 WAKEUP 唤醒则贴 R27=100Ω(接 Pin 18)<br>固件自适应协议识别 | `Datasheets/LC79H/quectel_lc79h_series_hardware_design_v1-6.pdf` |
 | **GNSS 射频天线** | **`BWGNSCNX25-25W4`（U7）** | 待补原厂手册 | `ANT-TH_L250-W250`<br>*(25×25mm 插件/焊盘)* | 无源器件 | 50Ω 馈电 + 预留 π 型调谐位 | **纯无源，零直流偏置**；`Pin 14 VCC_RF` 保持悬空（若改有源天线必须由 VCC_RF 供电 ≤50mA）<br>馈电端缺超低结容 ESD（改版补齐） | BOM 定稿后归档原厂手册 |
 | **板载双频 LNA** | **ATR2652（U5）** | 杭州中科微 | DFN-6 / SOT23-6 | 1.8V 受控<br>*(支持 1.5~3.6V)* | L1 增益 22.4dB / NF 0.85dB<br>L5 增益 22.0dB / NF 0.75dB | **本版 DNP（不贴）**：V0.2 量产装配为直通版，仅保留焊盘/BOM 位；贴装时必须同时 NC 掉 C46/C47<br>工作电流 4.5mA，随 GNSS 受控轨同步断电 | 原厂选型手册 |
 | **板载双通带 SAW** | **B39162B2651P810（Q1）** | Qualcomm / RF360 | 1511<br>*(1.5×1.1mm)* | 无源器件 | 单进单出双通带 (L1+L5)<br>2.4GHz 抑制 > 38dB | **本版 DNP（不贴）**；GNSS 模组内部已含 SAW，带外抑制由模组承担<br>若启用增强版必须与 C46/C47 互斥 | 原厂选型手册 |
@@ -135,7 +135,7 @@ V0.2 射频部分由两条**互相独立**的链路构成，GNSS 侧**只保留�
 > 完整 49 脚矩阵与双模组对照见 **[`Pinmap_Main_V0.2.md`](Pinmap_Main_V0.2.md)**（SSOT）。本节只列与固件/评审强相关的结论。
 
 * **主控料号**：全量统一为 **`nRF54L15-QFAA`（QFN48, 6×6mm, 49 脚含中心焊盘）**；
-* **GNSS 模组（u-blox MAX-M10S-00B，兼容 Quectel LC79H）**，引脚依据 `UBX-20035208` Table 10 与
+* **GNSS 模组：`MAX-M10S-00B`（唯一默认/采购料；`Quectel LC79H` 仅为备份方案，默认不装配）**，引脚依据 `UBX-20035208` Table 10 与
   `quectel_lc79h_series_hardware_design_v1-6` §2：
   * **Pin 1 / 10 / 12 为 `GND`**（接地）；LC79H 同位置亦为 GND；
   * **Pin 2 为 `TXD`**（模组输出），经 R11 (100Ω) 连至 **主控 P1.05（Pin 6 / GPS_RX）**；
@@ -166,7 +166,7 @@ V0.2 射频部分由两条**互相独立**的链路构成，GNSS 侧**只保留�
   * 模组 → SoC：MAX-M10S `V_OH ≥ V_IO−0.4 ≈ 1.4V`；LC79H `V_OH ≥ 0.75×VCC = 1.35V`；SoC `V_IH = 0.7×1.9 = 1.33V`
     → **通过，但余量仅 20~70mV**（100Ω 串阻后负载极轻，仍需示波器确认）；
   * SoC → 模组：SoC `V_OH ≥ 1.5V`；模组 `V_IH ≈ 0.65~0.68×V_IO ≈ 1.17~1.22V` → **通过，余量 ≥280mV**；
-  * **两端均为 1.8/1.9V 低压域，无需电平转换器件**；**GNSS 断电必须按序**：① 发 `UBX-RXM-PMREQ`（MAX-M10S）/`PAIR650`（LC79H）进软件待机 → ② 把 `GPS_TX/GPS_RX/GPS_WAKE` 置高阻 → ③ 才拉低 `GPS_EN`。
+  * **默认 MAX-M10S 方案两端均为 1.8/1.9V 低压域，无需电平转换器件**（若启用备份 LC79H 的 `WAKEUP` 唤醒路径，其 `VIH(min)=1.62V` > SoC `VOH(min)=1.5V`，余量为负，见 Pinmap §5）；**GNSS 断电必须按序**：① 发 `UBX-RXM-PMREQ`（MAX-M10S）/`PAIR650`（LC79H）进软件待机 → ② 把 `GPS_TX/GPS_RX/GPS_WAKE` 置高阻 → ③ 才拉低 `GPS_EN`。
     原因：`V_IO`(Pin7) 与 `VCC`(Pin8) 同挂 `VDD_GPS`，无法实现 u-blox 要求的“`V_IO` 提前 100 ms 断电”；且 1.9V 高电平会对已断电模组的 `RXD` 倒灌。
 
 ---
@@ -260,7 +260,7 @@ V0.2 射频部分由两条**互相独立**的链路构成，GNSS 侧**只保留�
 >    改版应在 `/CS` 增加 10kΩ 外部上拉；当前版本靠固件把 `SPI_CS` 初始化提到最早期。
 > 3. **按键唤醒必须用 P0/P1**：`nRF54L15` 的 **P2 域无 GPIOTE、无 SENSE/DETECT、不能唤醒**（Datasheet Table 40），
 >    因此 `KEY1_POI` 已从原 `P2.03` 迁至 `P1.06`；**后续任何唤醒源都禁止落在 P2.00~P2.10**。
-> 4. **同一外设不得跨端口**，且 `SCK/SCL` 必须落在 clock pin：
+> 4. **同一外设不得跨端口**，且 `SCK/SCL` 必须落在 clock pin（跨域用法的官方依据与改脚方案见 [`Pinmap_Main_V0.2.md`](Pinmap_Main_V0.2.md) §1.1.1）：
 >    Flash 用 `SPIM00`（P2.01/02/04/05 为专用脚）；IMU 用 `SPIM21` 但物理脚在 P2（P2.06/08/09/10），
 >    属**跨电源域**用法，仅在 `Constant Latency` 子功耗模式下可用，固件需显式开启并在功耗预算中体现。
 > 5. **调试串口**：`DEBUG_TX`=**P0.00**、`DEBUG_RX`=**P0.01**，两者同属 P0(LP) 域 → 必须用 **`UARTE30`**（115200 8N1）；

@@ -18,7 +18,7 @@
   - **`Doc/Hardware/Pinmap_Main_V0.2.md`（引脚唯一真相源）**；
   - `Firmware/boards/lifegps/` 的 DTS/pinctrl；
   - `Doc/Hardware/README.md` 的选型说明。
-- 双模组兼容位（**MAX-M10S / LC79H**，涉及 R13/R27/R28）与双 BOM（直通 / LNA+SAW）必须在原理图注释和 BOM 中同时标注。
+- 兼容位标注：**GNSS 默认 `MAX-M10S-00B`（唯一采购料）**，`LC79H` 仅备份（涉及 R13/R27/R28 + 待增补的 Pin15 跳线）；射频为双 BOM（直通 / LNA+SAW）。两者都必须在原理图注释和 BOM 中同时标注，且默认装配不得包含备份料。
 - 射频网络接地约束（VSS_PA 只连中心焊盘、第二级并容只接底层地）无法用网表表达，必须在原理图注释 + PCB 规则中落实。
 
 ## 查看

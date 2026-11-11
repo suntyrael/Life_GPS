@@ -74,7 +74,7 @@
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **主控 SoC** | **nRF54L15-QFAA** | Nordic Semi | QFN48<br>*(6×6mm, 0.4mm pitch, 49 脚含 EP)* | 稳定 1.9V<br>*(VDD 1.7~3.6V, POR 1.75V)* | 128MHz Cortex-M33 + RISC-V FLPR<br>HFXO 32MHz (CL=8pF) / LFXO 32.768kHz (CL=9pF)<br>RRAM 1524KB / RAM 256KB | 全天候常通供电 (Always-On)<br>31 个 GPIO，分 **P0(LP)/P1(PERI)/P2(MCU)** 三域<br>**启用片上硬件看门狗 (WDT 30s)** | `Doc/Hardware/Datasheets/nRF54L15_nRF54L10_nRF54L05_Datasheet_v1.0.pdf` |
 | **GNSS 模组（默认装配 · 唯一默认料）** | **MAX-M10S-00B** | u-blox | 18-LCC<br>*(10.1×9.7mm)* | 主电 1.8V (Pin8 VCC, 1.76~3.6V)<br>IO 1.8V (Pin7 V_IO, VIO_SEL=GND)<br>后备 1.9V (Pin6 V_BCKP, 1.65~3.6V) | UART 115200bps (UBX / NMEA)<br>多星并发 (GPS+BDS+GAL+GLO) | Pin8 VCC 经 SGM2045-1.8 受控通断（`GPS_EN`=**P1.07**）<br>Pin15 `VIO_SEL` **必须接 GND**（1.8V IO 模式）<br>**【M10S 装配】R13=0Ω 贴 / R28=100Ω 贴 / R27=NC** | `Doc/Hardware/Datasheets/UBLOX/MAX-M10S_DataSheet_UBX-20035208.pdf` |
-| **GNSS 模组（可选兼容位 · 默认不装配）** | **LC79H 系列** | Quectel (移远) | 18-LCC + 10-LGA<br>*(10.1×9.7×2.4mm，1~18 脚同构)* | 主电 1.8V (Pin8 VCC, **1.75~1.98V**)<br>IO 跟随 VCC<br>后备 1.9V (Pin6 V_BCKP, 1.62~1.98V) | UART 115200bps (NMEA / PAIR)<br>L1+L5 双频 | **【LC79H 装配】R13=NC、R28=NC（Pin5/Pin7 为 RESERVED，禁止外接），且 Pin15 对地跳线必须 NC**；用 WAKEUP 唤醒时贴 R27=100Ω(Pin18)<br>固件自适应协议识别 | `Doc/Hardware/Datasheets/LC79H/quectel_lc79h_series_hardware_design_v1-6.pdf` |
+| **GNSS 备份料（兼容位 · 默认不采购/不装配）** | **LC79H 系列** | Quectel (移远) | 18-LCC + 10-LGA<br>*(10.1×9.7×2.4mm，1~18 脚同构)* | 主电 1.8V (Pin8 VCC, **1.75~1.98V**)<br>IO 跟随 VCC<br>后备 1.9V (Pin6 V_BCKP, 1.62~1.98V) | UART 115200bps (NMEA / PAIR)<br>L1+L5 双频 | **【LC79H 装配】R13=NC、R28=NC（Pin5/Pin7 为 RESERVED，禁止外接），且 Pin15 对地跳线必须 NC**；用 WAKEUP 唤醒时贴 R27=100Ω(Pin18)<br>固件自适应协议识别 | `Doc/Hardware/Datasheets/LC79H/quectel_lc79h_series_hardware_design_v1-6.pdf` |
 | **GNSS 射频天线** | **`BWGNSCNX25-25W4`（U7）** | 待补原厂手册 | `ANT-TH_L250-W250`<br>*(25×25mm)* | 无源器件 | 50Ω 馈电 + 预留 π 调谐位 | **纯无源、零直流偏置**；`Pin14 VCC_RF` 保持悬空（改有源天线必须由 VCC_RF 供电 ≤50mA）<br>馈电端缺低结容 ESD（改版补齐） | BOM 定稿后归档 |
 | **板载双频 LNA** | **ATR2652（U5）** | 杭州中科微 | DFN-6 / SOT23-6 | 1.8V 受控<br>*(支持 1.5~3.6V)* | L1 增益 22.4dB / NF 0.85dB<br>L5 增益 22.0dB / NF 0.75dB | **本版 DNP（不贴）**：V0.2 量产只贴直通，仅保留焊盘/BOM 位；贴装时必须同时 NC 掉 C46/C47<br>工作电流 4.5mA | 原厂选型手册 |
 | **板载双通带 SAW** | **B39162B2651P810（Q1）** | Qualcomm / RF360 | 1511<br>*(1.5×1.1mm)* | 无源器件 | 单进单出双通带 (L1+L5)<br>2.4GHz 抑制 > 38dB | **本版 DNP（不贴）**；GNSS 模组内部已含 SAW，带外抑制由模组承担<br>启用增强版必须与 C46/C47 互斥 | 原厂选型手册 |
@@ -112,7 +112,7 @@
 | **P2** | MCU 高速 | 11（P2.00~P2.10） | **❌** | **❌** | **❌** | ✅ | 64 MHz |
 
 1. **P2 不能做按键/中断输入**：无 GPIOTE、无 SENSE/DETECT、不能从 System ON/OFF 唤醒。因此 `KEY1_POI` 从 nRF52840 时代的 `P0.08` 迁到 **`P1.06`（Pin 7）**（V0.2 曾误放在 `P2.03`，已否决）。
-2. **同一外设的引脚不得跨端口**；`SCK/SCL` 必须落在 clock pin。Flash 用 `SPIM00`（P2.01/02/04/05 专用脚），IMU 用 `SPIM21` 但物理脚在 P2（P2.06/08/09/10）→ 属**跨电源域**用法，仅在 `Constant Latency` 子功耗模式下可用，固件须显式开启并在功耗预算中体现。
+2. **同一外设的引脚不得跨端口**；`SCK/SCL` 必须落在 clock pin。Flash 用 `SPIM00`（P2.01/02/04/05 专用脚），IMU 用 `SPIM21` 但物理脚在 P2（P2.06/08/09/10）→ 属**跨电源域**用法。规格书 §8.8.3(p.277)/§10.1.1(p.859) 明确：这类组合**只能在 `Constant Latency` 子模式下工作，且“is not the most power-efficient way”**；原因见 §10.1.4 Table 79 中 `P2.06/08/09/10` 的功能列写作 `SPIM00/21`（`/21` 即 PERI 域跨域映射）。§5.1.1(p.67) 说明 Constant Latency 靠**强制保持一批基础资源开启**换取固定延迟，代价是睡眠电流上升。→ **完整机理、官方原文与改脚方案见 [`Doc/Hardware/Pinmap_Main_V0.2.md`](Doc/Hardware/Pinmap_Main_V0.2.md) §1.1.1**。
 3. **严禁把电池/USB 直连 VDD**：SGM6040A 降压至 1.9V 后再进 VDD；且 1.9V 轨上电斜率必须保证越过 1.75V POR 阈值（SGM6040A 精度 ±1.7%，最差 1.868V，余量约 118mV）。
 4. **晶振改为"片内负载电容"方案**：XC1/XC2 与 XL1/XL2 均**不接外挂电容**，改用 `XOSC32M.CONFIG.INTCAP` / `XOSC32KI.INTCAP` 可编程电容；但晶体 `C_L` 必须落在 **6~9pF** 允许区间（参考 BOM：X2 32MHz `C_L=8pF`、X1 32.768kHz `C_L=9pF`），**禁止再采购 12/12.5pF 版本**。
 5. **NFC 脚（Pin 3/4 = P1.02/P1.03）复位后默认是 NFC 天线模式**，pad 电容 5pF；本版悬空不用，若复用为 GPIO 必须先经 `NFCT.PADCONFIG` 关闭 NFC。
@@ -126,7 +126,7 @@
 
 | 关键参数项目 | u-blox 官方规格书真实数据 (UBX-20035208) | 详细特性与工程说明 |
 | :--- | :--- | :--- |
-| **具体订货型号** | **MAX-M10S-00B**（兼容 Quectel LC79H） | 标准表面贴装 **18-LCC**，10.1×9.7mm（LC79H 为 18-LCC+10-LGA，同为 10.1×9.7×2.4mm） |
+| **具体订货型号** | **MAX-M10S-00B（唯一采购/装配料）** | 标准表面贴装 **18-LCC**，10.1×9.7mm；`Quectel LC79H` 仅为**备份方案**（Pin 兼容焊盘预留，默认不采购、不装配） |
 | **核心架构平台** | **u-blox M10 纳米低功耗芯片** | 原生低功耗多星定位芯片，集成片上低噪声前置放大器与低功耗基带 |
 | **支持卫星系统** | **GPS, BDS, GAL, GLO 并发** | **GPS L1C/A, BeiDou B1I/B1C, Galileo E1, GLONASS L1OF, SBAS, QZSS** |
 | **跟踪通道** | **多星并发跟踪引擎** | 可同时跟踪四星座数十颗有效卫星，具备极强复杂都市峡谷多径抑制能力 |
@@ -1116,7 +1116,7 @@ Life_GPS/                                        # 单仓 Monorepo：硬件 + �
 - [ ] **Zephyr RTOS 超低功耗电源调度框架与系统可靠性**：
   - [ ] **实现两个按键长按 8 秒开/关机状态机**：落地关机 System OFF 模式（整机待机 <1µA），实现关机反向慢闪（绿3次->蓝3次->红3次）与开机正向慢闪（红3次->蓝3次->绿3次）LED 提示灯语；
   - [ ] **启用 nRF54L15 硬件看门狗 (WDT 30s)**：配置 LFCLK 独立驱动、System ON 休眠持续计数、主循环分层任务喂狗，以及复位后 RESETREAS 异常日志自愈写入；
-  - [ ] 实现 GNSS 脉冲上电初始化与 UBX/NMEA 协议自适应（兼顾 MAX-M10S 与 LC79H），落地分层状态机（冷启动 60s 超时、热启动自适应延展与指数退避接管）；
+  - [ ] 实现 GNSS 脉冲上电初始化与 **UBX** 协议栈（MAX-M10S），落地分层状态机（冷启动 60s 超时、热启动自适应延展与指数退避接管）；NMEA/PAIR 降级兼容**仅在启用备份料 LC79H 时才需要**，默认不实现；
   - [ ] 实现待机计步（15Hz LPM1 加速度计 ~7.5µA 静止唤醒 / 60Hz LPM1 ~17µA 日常活动）与 PDR 接管（全开陀螺仪+加速度计 Combo 模式 0.65~0.9mA）两档自适应调度。
 - [ ] **PDR 惯导与三维环境解算固件**：
   - [ ] **落地背面贴装传感器旋转矩阵与机体坐标系对齐**：按照 GPS 天线为正面、USB 向下基准，实施 $\mathbf{R}_{\text{IMU}} = \mathbf{R}_{\text{MAG}} = \begin{bmatrix}0 & -1 & 0 \\ 1 & 0 & 0 \\ 0 & 0 & -1\end{bmatrix}$，利用硬件旋转 90° 达成 Sensor Hub 内部 1:1 同向免重映射；
