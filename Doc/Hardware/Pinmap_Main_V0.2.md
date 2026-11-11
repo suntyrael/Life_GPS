@@ -11,7 +11,8 @@
 > （`L4 2.7nH → C13 1.5pF → L5 3.5nH → C12 2pF → L6 3.5nH → C1 0.3pF`）；
 > ④ GNSS 直通 = `C47 22pF` 隔直 + `R29 0Ω`/`C46` 跳线；⑤ **IMU SPI 已全部迁到 P1**（`SPIM22` 同域，见 §1.1.2）；
 > ⑥ `LED_GREEN` 让位至 **`P2.07`**；`P2.06/08/09/10`、`P2.00`、`P2.03` 均为 NC。
-> （旧网表 `Netlist_Main_V0.2_2026-11-11.tel` 为 SPI 迁移**之前**的版本，以本 PDF 为准）
+> ⑦ **`U1.15 (VIO_SEL)` 已按建议改为经 `R29 (0Ω)` 接地**（`R29.1→U1.15`、`R29.2→GND`），LC79H 备份位因此具备装配条件。
+> ✅ **网表 `Netlist_Main_V0.2_2026-11-11.tel` 已更新为 SPI 迁移后的版本，与本 PDF 逐脚一致**（脚本核对：同脚多网 0、单脚网络 0）。
 > ① `KEY1_POI` = **`U14.7 (P1.06)`**；② `FB1` = **120Ω@100MHz**；③ ANT 匹配 **3 串 3 并**
 > （`L4 2.7nH → C13 1.5pF → L5 3.5nH → C12 2pF → L6 3.5nH → C1 0.3pF`）；
 > ④ GNSS 直通 = `C47 22pF` 隔直 + **`C46 = 0Ω` 跳线**，`C24/C25/C26/C27/C28/C30/C31` 全 **NC**。
@@ -180,6 +181,7 @@
 | `CHG_STAT` | P0.04 | SGM4056 `/CHG` 开漏 | **内部上拉**（无外部上拉电阻） |
 | `SPI_CS` | P2.05 | Flash `/CS`，无外部上拉 | **内部上拉**：上电后**第一优先级**配置，避免 `/CS` 悬空误选通；⚠️ 从"上电"到"固件配置 GPIO"之间存在**无上拉窗口**，若实测 Flash 待机电流偏高，改版加 10kΩ 外部上拉（W25Q512NW 要求 `/CS` 跟随 VCC） |
 | `LSM6_SPI_CS` | **P1.14** | IMU `CS`，无外部上拉 | 建议同样配置内部上拉 |
+| `R29`（GNSS `VIO_SEL` 跳线） | U1.15 | 0Ω 到 GND | **默认装配贴**；装 LC79H 时必须拆掉 |
 | NFC 脚释放 | P1.02 / P1.03 | 现作 IMU SPI | 必须 `&uicr { nfct-pins-as-gpios; }` 或 `NRF_NFCT->PADCONFIG=0`，否则 SPI 无法工作 |
 | `CHG_EN` | P0.03 | SGM4056 `EN`（**低有效**，内部 200kΩ 下拉） | 低 = 允许充电；网名"EN"不代表高有效，禁止写反 |
 | `GPS_EN` | P1.07 | SGM2045 `EN`（高有效） | 高 = 供电。**断电时序（必须按此顺序）**：① 先发 `UBX-RXM-PMREQ`（MAX-M10S）或 `PAIR650`（LC79H）让模组进入软件待机 → ② 把 `GPS_TX/GPS_RX/GPS_WAKE` 置为高阻输入（或低电平）→ ③ 再拉低 `GPS_EN`。原因：`V_IO`(Pin7) 与 `VCC`(Pin8) 同挂在 `VDD_GPS`，无法满足 u-blox 要求的「`V_IO` 比 `VCC` 提前 100 ms 断电」，只能走软件待机路径；同时避免 1.9V 高电平对已断电模组的 `RXD` 倒灌 |
@@ -217,7 +219,7 @@
 | 12 | `GND` | `GND` | `GND` | — |
 | 13 | `LNA_EN` | `ANT_ON` | `NC` | 无源天线方案不需要 |
 | 14 | `VCC_RF` | `VDD_RF` | `NC` | **无源天线：保持悬空**（若改有源天线必须供电，≤50mA） |
-| 15 | `VIO_SEL` | **`RESERVED`** | 当前直接接 `GND` | **MAX-M10S：必须接 GND 才是 1.8V I/O 模式**（悬空 = 3.3V 模式，`V_IO` 需 2.7–3.6V）。**⚠️ LC79H：Quectel 手册 Table 6 明确 Pin 5/7/15/19/20/24–27 为 RESERVED，`must be left floating and cannot be connected to power or GND`** → 当前硬接 GND 使 LC79H 无法直贴。**改版必须把该脚改为经 0Ω 跳线（或焊盘桥接）到 GND：MAX-M10S 贴、LC79H 不贴** |
+| 15 | `VIO_SEL` | **`RESERVED`** | 经 **`R29 (0Ω)`** 到 `GND` | **MAX-M10S：必须接 GND 才是 1.8V I/O 模式**（悬空 = 3.3V 模式，`V_IO` 需 2.7–3.6V）。**⚠️ LC79H：Quectel 手册 Table 6 明确 Pin 5/7/15/19/20/24–27 为 RESERVED，`must be left floating and cannot be connected to power or GND`** → 当前硬接 GND 使 LC79H 无法直贴。**改版必须把该脚改为经 0Ω 跳线（或焊盘桥接）到 GND：MAX-M10S 贴、LC79H 不贴** |
 | 16 | `SDA`（PIO2） | `I2C_SDA` | `NC` | 不用 I2C |
 | 17 | `SCL`（PIO3） | `I2C_SCL` | `NC` | 不用 I2C |
 | 18 | `SAFEBOOT_N` | `WAKEUP` | R27 **NC** → `GPS_WAKE` | 默认不贴；safeboot 悬空即可（内部 1kΩ 串阻） |
@@ -227,7 +229,7 @@
 | 装配 | R13（0Ω, Pin7） | R27（100Ω, Pin18） | R28（100Ω, Pin5） | Pin15 对地跳线（**待增补**） | 说明 |
 | :--- | :---: | :---: | :---: | :---: | :--- |
 | **MAX-M10S（默认）** | 贴 | NC | 贴 | **贴**（VIO_SEL=0 → 1.8V I/O） | Pin7 = V_IO 需 1.8V；Pin5 = EXTINT 唤醒；固件跑 UBX |
-| **LC79H（可选，需改板）** | **NC** | 需要 WAKEUP 唤醒时贴 | **NC** | **NC（必须悬空）** | Pin5/Pin7/Pin15 均为 RESERVED，Quectel 手册禁止接电源或地；**现有硬件 Pin15 硬接 GND，不增补跳线则此项无法执行** |
+| **LC79H（备份方案，需拆 R29）** | **NC** | 需要 WAKEUP 唤醒时贴 | **NC** | **NC（必须悬空）** | Pin5/Pin7/Pin15 均为 RESERVED，Quectel 手册禁止接电源或地；**现有硬件 Pin15 硬接 GND，不增补跳线则此项无法执行** |
 
 **电平校验（1.9V SoC ↔ 1.8V 模组）**
 
@@ -253,5 +255,5 @@
 | 11 | ⚠️ **晶振 CL 超规格** | `X2 = 32MHz / CL 12pF`、`X1 = FC-135R / CL 12.5pF`，规格书 `CL_HFXO/CL_LFXO = 6–9pF`（电气规格范围）。片内 trim 上限（HFXO 17pF / LFXO 18pF 每端）折算 CL≈9.5–10pF，**够不到 12pF**。实测估算：X2 偏 **+80~90ppm**（超 BLE ±40ppm，**必须换 8pF**）；X1 偏 **+30~35ppm**（可容忍，建议换 9pF）。替代路径：加外挂电容（`INTCAP=0`，C1=C2≈16pF@12pF CL） |
 | 12 | `C46 = 0Ω` 跳线（不是电容） | 直通路径 = `U7 → C47 22pF → C46 0Ω → RF_IN`；Option B 时 C46 必须 NC，否则会把 LNA 输出直接短到天线端 |
 | 8 | 天线 ESD / π 调谐位 | 无源天线馈电端缺超低结容 ESD 与并联调谐位 |
-| 9 | **`U1.15 (VIO_SEL)` 直接硬接 GND** | **对默认料 u-blox MAX-M10S 正确**（VIO_SEL=0 → 1.8V I/O）；LC79H 明令该脚必须悬空 → **已决定下版增补 0Ω 跳线**（补齐后兼容位成立；默认装配不受影响） |
+| 9 | ✅ **已闭环：`U1.15` 改经 `R29 (0Ω)` 接地** | 默认料 MAX-M10S 贴 R29（VIO_SEL=0 → 1.8V I/O）；启用 LC79H 时 R29 必须 NC（该脚为 RESERVED，禁止接地） |
 | 10 | LC79H 底部 10 个 LGA 焊盘（Pin 19–28） | 现有 18-LCC 焊盘无对应 pad；需确认顶部区域无裸露过孔/铜皮导致误短路，且 RESERVED 焊盘不得铺铜 |

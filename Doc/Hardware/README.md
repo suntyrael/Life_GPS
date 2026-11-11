@@ -152,7 +152,7 @@ V0.2 射频部分由两条**互相独立**的链路构成，GNSS 侧**只保留�
   * **Pin 13 `LNA_EN` / Pin 14 `VCC_RF`**：本版**悬空**（无源天线，不需要偏置供电）；若改有源天线，VCC_RF 必须供电（≤50mA）；
   * **Pin 15 为 `VIO_SEL`（MAX-M10S）/ `RESERVED`（LC79H）**：**MAX-M10S 必须接 GND 才是 1.8V I/O 模式**（悬空 = 3.3V 模式，`V_IO` 要求 2.7~3.6V，与本板 1.8V 冲突）；
     **⚠️ 但 Quectel `lc79h_series_hardware_design_v1-6` Table 6 明确规定 Pin 5/7/15/19/20/24–27 为 RESERVED，"must be left floating and cannot be connected to power or GND"** ——
-    当前 `U1.15` 直接硬接 GND，**LC79H 无法直贴**；**已决定下版增补该 0Ω 对地跳线**（MAX-M10S 贴 / LC79H 不贴），双模组跳线由 2 只增加到 3 只。
+    V0.2 定案已把该脚改为经 **`R29 (0Ω)` 接地**（默认 MAX-M10S 贴装、启用 LC79H 时拆掉 R29），双模组跳线因此为 **3 只**（R13 / R28 / R29）+ R27 可选。
   * **Pin 16 / 17 为 `SDA` / `SCL`**：悬空（不使用模组 I2C）；
   * **Pin 18 为 `SAFEBOOT_N`（M10S）/ `WAKEUP`（LC79H）**：**R27 = NC**（默认不贴）；
 * **跳线矩阵（默认 u-blox；LC79H 为可选兼容位）**：

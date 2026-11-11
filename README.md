@@ -1101,7 +1101,7 @@ Life_GPS/                                        # 单仓 Monorepo：硬件 + �
   - [x] 完成 SGM6040A 60nA 纳安级降压 DCDC 电路（$R_{SET}=909\Omega$ 设定 1.9V 供电轨；**Pin 6 STOP 悬空（片内 490kΩ 下拉）**，改版建议就近接地）；
   - [ ] 传感器（LSM6DSVTR、LIS2MDL、BMP388）1.9V 磁珠+电容 π 型低噪滤波供电网络——**V0.2 现为 `R5/R6/R7=0Ω` 直连，磁珠为改版项**；
   - [x] 完成 SGM2045-1.8 受控 LDO（专供 GNSS `VCC`+`V_IO`）与直通射频前端电路（`U5 ATR2652`/`Q1 SAW` 本版 **DNP**；⚠️ LDO 输入现接 1.9V，压差仅 100mV，92dB PSRR 需改接 VBAT 才能兑现；1.8V/1.9V 电平自适应）；
-  - [x] **GNSS 默认料 = u-blox MAX-M10S-00B**（固件默认 UBX）；同时预留 Quectel LC79H 可选兼容位（R13 0Ω / R28 100Ω / R27 100Ω-NC）。**Pin 15 现直接硬接 GND（MAX-M10S 必需）→ 若真要用 LC79H，需先增补第 4 只对地跳线**；
+  - [x] **GNSS 默认料 = u-blox MAX-M10S-00B**（固件默认 UBX）；同时预留 Quectel LC79H 可选兼容位（R13 0Ω / R28 100Ω / R27 100Ω-NC / **R29 0Ω 为 `VIO_SEL` 对地跳线，装 LC79H 时拆掉**）。**Pin 15 现直接硬接 GND（MAX-M10S 必需）→ 若真要用 LC79H，需先增补第 4 只对地跳线**；
   - [x] 完成 nRF54L15 QFN48 最小系统（DCC/DECD 4.7µH 电感、DECA/DECRF 经磁珠、片内负载电容晶振）与 7P 排针 H1 调试接口（DEBUG_TX=P0.00、DEBUG_RX=P0.01）；
   - [x] 完成 LSM6DSVTR 与 Sensor Hub（LIS2MDL 电子罗盘、BMP388 气压计）AUX I2C 总线连接；
   - [ ] W25Q512NW 64MB 1.8V SPI Flash 标准 4 线 8MHz 低噪声布线（**待改版**：Pin 3/7 现直连 1.9V，建议改 10kΩ 上拉；`/CS` 现依赖固件片内上拉）；
