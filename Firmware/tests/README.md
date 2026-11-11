@@ -15,7 +15,7 @@
 ```bash
 cd Firmware
 twister -p native_sim
-west build -b nrf52840dk_nrf52840 -- -DCONFIG_LGPS_MOCK_DATA=y
+west build -b nrf54l15dk/nrf54l15/cpuapp -- -DCONFIG_LGPS_MOCK_DATA=y
 ```
 
 ## Golden Vectors

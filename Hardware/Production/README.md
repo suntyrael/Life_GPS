@@ -14,13 +14,14 @@
 ## 命名
 
 ```text
-lifegps-hw-v0.1-gerber-2026xxxx.zip
-lifegps-hw-v0.1-cpl-2026xxxx.csv
-lifegps-hw-v0.1-bom-2026xxxx.csv
+lifegps-hw-v0.2-gerber-2026xxxx.zip
+lifegps-hw-v0.2-cpl-2026xxxx.csv
+lifegps-hw-v0.2-bom-2026xxxx.csv
 ```
 
 ## 规则
 
 - 不提交未定版的生产文件；定版后放本目录或 GitHub Release 资产。
 - 每次打样记录：板厂、工艺（沉金/阻抗）、层压结构、表面处理、批次。
+- 送厂 BOM 必须与原理图同版本，且 **DNP/NC 列齐全**（V0.2 的 RF Option A/B 互斥项、GNSS 双模组跳线 R13/R27/R28）。
 - 产测点与固件 `FACTORY/SELFTEST` 命令对应；ICT 夹具说明与固件版本绑定。

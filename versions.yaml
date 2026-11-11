@@ -1,15 +1,23 @@
-# 单仓版本锁定（M1 时把 TBD 换成实际版本）
+# 单仓版本锁定
 #
 # 规则：升级任何一项都要跑一次 firmware/app CI；release tag 记录本文件快照。
+#
+# 2026-11 锁定说明（目标芯片 nRF54L15-QFAA / QFN48，Rev2 QFAA-C00 及以后）：
+# - revision 取自 nrfconnect/sdk-nrf tag 的 VERSION 文件：3.4.2 / VERSION_METADATA=lts
+# - sdk 为随 revision 一同安装的 NCS 内建 toolchain（nRF Connect Toolchain Manager /
+#   nRF Connect for VS Code），**不使用独立 Zephyr SDK**，避免 toolchain 解析冲突
+# - kernel 取自 sdk-nrf v3.4.2 的 west.yml：zephyr -> sdk-zephyr @ ncs-v3.4.2，其 VERSION=4.4.2
+# - v3.5 当前仅 preview，不选；v3.4 为 LTS，优先
 
 protocol: "0.1.0"
 firmware: "0.1.0"
 app: "0.1.0"
 
 zephyr:
-  distribution: "nrf-connect-sdk" # 或 upstream zephyr
-  revision: "TBD"                 # west manifest / NCS tag
-  sdk: "TBD"                      # Zephyr SDK / NCS toolchain
+  distribution: "nrf-connect-sdk"       # 或 upstream zephyr
+  revision: "v3.4.2"                    # west manifest / NCS tag（LTS，含 errata 39 处理）
+  sdk: "ncs-toolchain-v3.4.2"           # NCS 内建 toolchain，随 revision 安装；勿用独立 Zephyr SDK
+  kernel: "4.4.2"                       # 由 sdk-zephyr ncs-v3.4.2 决定，仅作记录
 
 android:
   jdk: 17

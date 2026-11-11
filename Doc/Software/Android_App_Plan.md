@@ -44,7 +44,7 @@
 | 约束 | 对 App 的影响 |
 | :--- | :--- |
 | **设备无屏幕，只有 2 键 + 3 色 LED** | App 是唯一富交互界面；设备状态、错误、电量、模式必须通过 BLE 完整暴露；App 需内置 LED 灯语说明与故障排查 |
-| **BLE 5.0，nRF52840，2M PHY** | 目标 MTU 247、DLE 251；日同步（~10–12KB）应 <2s；64MB 全量转储约 15–40min，必须支持断点续传 |
+| **BLE，nRF54L15，2M PHY** | 目标 MTU 247、DLE 251；日同步（~10–12KB）应 <2s；64MB 全量转储约 15–40min，必须支持断点续传 |
 | **32B 定长轨迹 + 16B 定长 Beacon，双流解耦** | 解析器零拷贝、流式；App 数据模型也必须分表/分文件，不能把 Beacon 塞进轨迹点 |
 | **Life_GPS 2020 Epoch + 亚秒毫秒 + seq_id** | 需要统一时间工具与设备时钟漂移校正；`seq_id` 用于断点续传与去重 |
 | **32B 记录含 CRC8，日包含 CRC32** | 每块/每天校验后才提交；损坏可重传，不污染本地库 |
@@ -357,7 +357,7 @@ Android 的 LE Secure Connections **OOB 配对没有公开 API**，设备又无�
 
 **目标**：把 slot1 放到 64MB 外部 W25Q512 的独立 1MB 分区，**内部 slot0 扩到 896KB**，解决 430KB 容量风险；外部 Flash 同时继续存轨迹，但两者严格分区、互不覆盖。
 
-**内部 1MB 分区**
+**内部 RRAM 1524KB 分区（nRF52840 时代的 1MB 布局待重算）**
 
 | 区域 | 偏移 | 大小 | 说明 |
 | :--- | :--- | :--- | :--- |
@@ -395,7 +395,7 @@ Android 的 LE Secure Connections **OOB 配对没有公开 API**，设备又无�
   ```
 - 固件启用：`CONFIG_BOOTLOADER_MCUBOOT`、`CONFIG_MCUMGR_TRANSPORT_BLE`、`CONFIG_MCUMGR_GRP_IMG`、`CONFIG_MCUMGR_GRP_OS`（可选 FS）、`CONFIG_SPI_NOR`、`CONFIG_FLASH_MAP`、`CONFIG_BOOT_SWAP_USING_SCRATCH`、`CONFIG_BOOT_MAX_IMG_SECTORS=256`。
 - **MCUboot 必须能访问外部 Flash**：bootloader 要编译 SPI NOR 驱动，并在初始化时**先发送 0xAB Release Deep Power-Down**，否则 App 关机/看门狗复位后 Flash 仍在 DPD，slot1 读取会失败。这是 M1 POC 的硬性验收项。
-- **跨器件 swap 的约束**：Zephyr/MCUboot 文档有“两槽连续”的旧表述；nRF Connect SDK 有外部 QSPI/SPI secondary slot 的实践。M1 必须在 nRF52840 DK + W25Q512（或同系列）上验证：上传 → swap → 启动 → confirm → 回滚 → 断电恢复。若 POC 失败，回退内部双槽 456KB/槽（430KB 预算）或单槽 + 外部暂存（需批准）。
+- **跨器件 swap 的约束**：Zephyr/MCUboot 文档有“两槽连续”的旧表述；nRF Connect SDK 有外部 QSPI/SPI secondary slot 的实践。M1 必须在 nRF54L15 DK + W25Q512（或同系列）上验证：上传 → swap → 启动 → confirm → 回滚 → 断电恢复。若 POC 失败，回退内部双槽 456KB/槽（430KB 预算）或单槽 + 外部暂存（需批准）。
 - **速度/功耗**：8MHz SPI 下 896KB swap 预计数十秒；只在 OTA 时发生，需实测并给用户进度提示；升级前要求电量 >50% 或充电中。
 - **分区所有权**：App 的 Flash 管理器只使用 `traj_partition`（0–63MB），绝不写最后 1MB；MCUboot 只使用 `slot1_partition`。两边共用同一份 devicetree 分区表/生成头文件，CI 校验偏移。
 - **调试命令边界**：`FLASH_INFO/READ/ERASE` 只允许访问 `traj_partition`；slot1 由 MCUboot 独占，App 不提供读写入口。
@@ -587,7 +587,7 @@ Life_GPS/
 │   └── docs/
 ├── Firmware/                       # Zephyr RTOS / nRF Connect SDK
 │   ├── west.yml                    # 固定 Zephyr 与模块 revision
-│   ├── boards/lifegps/             # 自定义 nRF52840 板级定义
+│   ├── boards/lifegps/             # 自定义 nRF54L15 板级定义
 │   ├── src/                        # 电源状态机/GNSS/IMU/PDR/存储/BLE
 │   ├── include/generated/          # 协议生成 C 头文件（CI 校验）
 │   └── tests/                      # native_sim / twister 单测
@@ -682,8 +682,8 @@ concurrency:
 make bootstrap   # 检查 JDK17/Android SDK/Python/west，安装依赖
 make proto       # 生成协议代码 + 单测
 make proto-check # 生成物漂移检查
-make fw          # west build -b lifegps/nrf52840
-make fw-dk       # west build -b nrf52840dk_nrf52840（mock 传感器/轨迹）
+make fw          # west build -b lifegps/nrf54l15/cpuapp
+make fw-dk       # west build -b nrf54l15dk/nrf54l15/cpuapp（mock 传感器/轨迹）
 make fw-test     # twister -p native_sim
 make app         # ./gradlew :app:assembleDevDebug
 make app-test    # 单测 + lint + detekt
@@ -726,11 +726,11 @@ make release     # 签名产物 + SHA256SUMS
 | :--- | :--- | :--- |
 | **Fake Transport（JVM）** | UI/同步/解析在 CI 与模拟器上跑 | 按脚本返回 Status/Data；可注入断线、CRC 错、BUSY、低电量 |
 | **Python BLE Simulator** | 真手机连“假设备”，验证 Android BLE 栈 | `bless` + BlueZ（Linux）/ macOS；同 UUID、同 MTU 247、同帧格式；合成 30 天轨迹与日包 |
-| **nRF52840 DK 模拟固件** | 验证 2M PHY/DLE/真实 Zephyr 栈 | 固件加 `CONFIG_LGPS_MOCK_DATA`，用合成传感器/轨迹；与真机同协议 |
+| **nRF54L15 DK 模拟固件** | 验证 2M PHY/DLE/真实 Zephyr 栈 | 固件加 `CONFIG_LGPS_MOCK_DATA`，用合成传感器/轨迹；与真机同协议 |
 | **Golden Vectors** | App 与固件解析结果逐字节一致 | `protocol/vectors/`：32B 记录、16B Beacon、命令帧、日包、跨 0xFF delta、heatshrink |
 | **会话录制/回放** | 现场问题可复现 | `.lgpsr`（JSONL + 二进制附件）；回放驱动 UI 与单测 |
 | **协议代码生成** | 防止枚举/结构体漂移 | YAML → Kotlin + C header；CI 检查生成物是否最新 |
-| **USB-TTL 串口** | BLE 未就绪时的唯一可见通道 | 7P H1：DEBUG_TXD P0.24 / DEBUG_RXD P1.00；CP2102N 小板 |
+| **USB-TTL 串口** | BLE 未就绪时的唯一可见通道 | 7P H1：DEBUG_TX `P0.00` / DEBUG_RX `P0.01`；CP2102N 小板 |
 | **CI** | 每次提交跑协议/固件/App 逻辑测试与构建 | GitHub Actions 分 workflow：protocol / firmware / app / docs；真机 BLE 不进 CI |
 
 **联调顺序建议**
@@ -904,7 +904,7 @@ gantt
 
 ## 附录 C：Flash 分区与 OTA 体积预算
 
-**内部 1MB（MCUboot + swap-using-scratch）**
+**内部 RRAM 1524KB（MCUboot + swap-using-scratch；分区待重算）**
 
 | 区域 | 偏移 | 大小 | 备注 |
 | :--- | :--- | :--- | :--- |
@@ -930,7 +930,7 @@ gantt
 
 **M1 POC 清单（必须全过）**
 
-1. nRF52840 DK + W25Q512（或同系列）SPI NOR 接线，MCUboot 能读 JEDEC ID。
+1. nRF54L15 DK + W25Q512NW（1.8V）SPI NOR 接线，MCUboot 能读 JEDEC ID。
 2. SMP 上传镜像到外部 slot1 → swap → 启动 → confirm → 再次升级。
 3. 上传/swap 中断电，重启后 MCUboot 能回滚或继续，不砖。
 4. App 把 Flash 置于 Deep Power-Down 后触发看门狗复位，MCUboot 能发送 `0xAB` 释放并访问 slot1。
@@ -1017,8 +1017,8 @@ jobs:
       - uses: zephyrproject-rtos/action-zephyr-setup@v1
         with:
           app-path: Firmware
-      - run: west build -b lifegps/nrf52840 Firmware -- -DCONF_FILE=prj_release.conf
-      - run: python3 tools/ci/check_fw_size.py build/zephyr/zephyr.bin --max-kb 430
+      - run: west build -b lifegps/nrf54l15/cpuapp Firmware -- -DCONF_FILE=prj_release.conf
+      - run: python3 tools/ci/check_fw_size.py build/zephyr/zephyr.bin --max-kb 860
       - uses: actions/upload-artifact@v4
         with:
           name: firmware

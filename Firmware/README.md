@@ -4,7 +4,7 @@
 
 ## 推荐工具链
 
-nRF52840 + BLE + MCUboot + SMP 的组合，建议直接用 **nRF Connect SDK（NCS，Zephyr 下游）**，比纯 upstream Zephyr 少踩 Nordic 驱动/DFU 的坑。
+**nRF54L15**（Cortex-M33 + BLE + MCUboot + SMP）的组合，建议直接用 **nRF Connect SDK（NCS，Zephyr 下游）**，比纯 upstream Zephyr 少踩 Nordic 驱动/DFU 的坑。
 
 - nRF Connect SDK Toolchain（VS Code 扩展）或手动 `west`
 - Zephyr SDK / NCS toolchain 版本在根目录 `versions.yaml` 锁定
@@ -15,7 +15,7 @@ nRF52840 + BLE + MCUboot + SMP 的组合，建议直接用 **nRF Connect SDK（N
 ```text
 Firmware/
 ├── west.yml                 # 固定 NCS/Zephyr 与模块 revision
-├── boards/lifegps/          # 自定义 nRF52840 板级定义
+├── boards/lifegps/          # 自定义 nRF54L15 板级定义
 ├── src/                     # 电源状态机/GNSS/IMU/PDR/存储/BLE
 ├── include/generated/       # 协议生成 C 头文件（CI 校验）
 ├── tests/                   # native_sim / twister
@@ -29,11 +29,11 @@ Firmware/
 west init -m https://github.com/nrfconnect/sdk-nrf --mr <pinned-tag> ~/ncs
 cd ~/ncs && west update
 
-# 真实板
-west build -b lifegps/nrf52840 Life_GPS/Firmware
+# 真实板（板级名待 M1 定稿）
+west build -b lifegps/nrf54l15/cpuapp Life_GPS/Firmware
 
-# DK + mock 传感器/轨迹
-west build -b nrf52840dk_nrf52840 Life_GPS/Firmware -- -DCONFIG_LGPS_MOCK_DATA=y
+# DK + mock 传感器/轨迹（板级 target 需用 `west boards | grep nrf54l15` 复核）
+west build -b nrf54l15dk/nrf54l15/cpuapp Life_GPS/Firmware -- -DCONFIG_LGPS_MOCK_DATA=y
 
 # 单元测试
 cd Life_GPS/Firmware && twister -p native_sim
@@ -43,9 +43,9 @@ cd Life_GPS/Firmware && twister -p native_sim
 
 ## 关键约束
 
-- **内部 Flash**：MCUboot 64KB + slot0 896KB + scratch 32KB + NVS 32KB。
+- **内部 RRAM（1524KB）**：分区表必须按 RRAM 重算（nRF52840 的 1MB 布局不适用），M1 出表后回填 `docs/PARTITIONS.md`。
 - **外部 64MB Flash**：63MB 轨迹 + 1MB OTA slot1；App 只写轨迹区。
-- **镜像预算**：860KB（slot0 896KB - header/trailer）。
+- **镜像预算**：待分区表定稿后重算。
 - **OTA POC**：外部 SPI NOR slot1 的 swap/回滚/DPD 释放必须在 M1 验证；失败回退内部双槽 430KB。
 - **协议**：C 头文件由 `protocol/lifegps_protocol.yaml` 生成，不手写。
 

@@ -6,7 +6,7 @@
 
 | 目录 | 内容 | 入口 |
 | :--- | :--- | :--- |
-| `Doc/Hardware/` | 芯片规格书、硬件设计索引、Stackup、系统架构图 | [Hardware/README.md](Hardware/README.md) |
+| `Doc/Hardware/` | 芯片规格书、硬件设计索引、**Main_V0.2 引脚映射 SSOT**、Stackup、系统架构图 | [Hardware/README.md](Hardware/README.md) |
 | `Doc/Software/` | Android 规划、零基础开发指南、BLE 协议基线 | [Software/README.md](Software/README.md) |
 | `Hardware/` | 原理图、PCB、BOM、生产文件 | [../Hardware/README.md](../Hardware/README.md) |
 | `Firmware/` | Zephyr / nRF Connect SDK 固件、分区表 | [../Firmware/README.md](../Firmware/README.md) |
@@ -16,7 +16,7 @@
 ## 建议阅读顺序
 
 1. 仓库根 [README](../README.md)：硬件基线、系统架构、Roadmap。
-2. [Doc/Hardware/README.md](Hardware/README.md)：器件选型、电源域、引脚与避坑。
+2. [Doc/Hardware/README.md](Hardware/README.md)：器件选型、电源域与避坑；引脚查 [Pinmap_Main_V0.2.md](Hardware/Pinmap_Main_V0.2.md)。
 3. [Doc/Software/Android_Dev_Guide.md](Software/Android_Dev_Guide.md)：没有 Android 经验时的环境与学习路线。
 4. [Doc/Software/Android_App_Plan.md](Software/Android_App_Plan.md)：调试工具 → 产品终端的完整规划。
 5. [protocol/README.md](../protocol/README.md)：BLE 协议契约与校验方式。

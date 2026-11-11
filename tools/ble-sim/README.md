@@ -18,7 +18,7 @@ Python BLE 外设模拟器，让 Android 手机连接一个“假 Life_GPS”，
 
 ## 替代方案
 
-- nRF52840 DK 运行 `CONFIG_LGPS_MOCK_DATA=y` 固件：最接近真实 BLE 栈，能验证 2M PHY/DLE。
+- nRF54L15 DK 运行 `CONFIG_LGPS_MOCK_DATA=y` 固件：最接近真实 BLE 栈，能验证 2M PHY/DLE。
 - App 内 Fake Transport：CI/模拟器用，不经过真实蓝牙。
 
 ## 待办
