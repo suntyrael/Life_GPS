@@ -436,8 +436,8 @@ flowchart TD
 ## 5. 时钟源调试串口与引脚分配 (QFN48 真实物理引脚)
 
 ### 5.1 外部高低频时钟源规划（片内负载电容方案）
-* **32MHz 高频晶振 (HFXO)**：接 `XC1 (Pin 34)` / `XC2 (Pin 35)`，**不外挂电容**，用 `OSCILLATORS.XOSC32M.CONFIG.INTCAP` 可编程片内电容；晶体要求 `C_L 6~9pF`（选 **8pF**；⚠️ **V0.2 现选 12pF，超规格 must-fix**）、驱动功率 ≤100µW、频差 ≤±40ppm（BLE）、ESR 满足 Datasheet §11.9.1。
-* **32.768kHz 低频晶振 (LFXO)**：接 `XL1 (Pin 1)` / `XL2 (Pin 2)`，同样使用 `XOSC32KI.INTCAP` 片内电容；晶体要求 `C_L 6~9pF`（选 **9pF**；⚠️ **V0.2 现选 FC-135R 12.5pF，超规格 must-fix**）、`C0 ≤ 2pF`、ESR 按 Datasheet §11.9.2、频差 ≤±500ppm（BLE）。
+* **32MHz 高频晶振 (HFXO)**：接 `XC1 (Pin 34)` / `XC2 (Pin 35)`，**不外挂电容**，用 `OSCILLATORS.XOSC32M.CONFIG.INTCAP` 可编程片内电容；晶体要求 `C_L 6~9pF`（选 **8pF**；⚠️ **V0.2 现选 12pF，片内 trim 折算 CL≈9.5–10pF 够不到 12pF，实测估算频偏 +80~90ppm，超 BLE ±40ppm → 须换 8pF 或加外挂电容**）、驱动功率 ≤100µW、频差 ≤±40ppm（BLE）、ESR 满足 Datasheet §11.9.1。
+* **32.768kHz 低频晶振 (LFXO)**：接 `XL1 (Pin 1)` / `XL2 (Pin 2)`，同样使用 `XOSC32KI.INTCAP` 片内电容；晶体要求 `C_L 6~9pF`（选 **9pF**；⚠️ **V0.2 现选 FC-135R 12.5pF，估算频偏 +30~35ppm（BLE ±500ppm 可容忍，但 ≈3s/天 漂移）→ 建议换 9pF，或实测后记录豁免**）、`C0 ≤ 2pF`、ESR 按 Datasheet §11.9.2、频差 ≤±500ppm（BLE）。
 * **⚠️ 必须在启动晶振前写入 INTCAP 值**（按 `FICR.XOSC32MTRIM` 出厂 trim 计算），否则频偏不可控；改版建议仍预留两颗 DNP 外挂电容位，便于用频率计微调。
 
 ### 5.2 独立预留硬件调试串口 (DEBUG_UART) 与调试排针 H1

@@ -9,19 +9,23 @@
 
 ## 0. 项目事实（AI 必须先读，不得假设）
 
-| 项 | 实际状态（2026-11-05 核对） |
+| 项 | 实际状态（2026-11-11 核对） |
 |---|---|
 | 仓库根 | `/root/projects/Life_GPS`（pi-web 会话目录 `--root-projects-Life_GPS--`） |
 | 远端 | `https://github.com/suntyrael/Life_GPS.git`，分支 `main` |
-| 版本锁定 | `versions.yaml`：`zephyr.distribution: nrf-connect-sdk`，但 `revision: "TBD"` / `sdk: "TBD"` |
+| 版本锁定 | `versions.yaml` **已锁定**：`distribution: nrf-connect-sdk`、`revision: v3.4.2`（LTS）、`sdk: ncs-toolchain-v3.4.2`、`kernel: 4.4.2` |
+| 硬件 | **Main_V0.2**（2026-11-11 原理图 `Hardware/Schematic/Life_GPS_V0.2_SCH.pdf` + 网表 `Netlist_Main_V0.2_2026-11-11.tel`）；引脚 SSOT = `Doc/Hardware/Pinmap_Main_V0.2.md` |
 | 固件状态 | `Firmware/` **只有 README/docs/tests 的骨架**，无 `CMakeLists.txt`、无 `west.yml`、无 `prj.conf`、无源码 |
-| 芯片 | ⚠️ `Firmware/README.md` 写的是 **nRF52840**；对话中讨论的是 **nRF54L15**。**二者不一致，AI 不得擅自认定，必须先向用户确认目标芯片** |
+| 芯片 | ✅ **已确认：Nordic `NRF54L15-QFAA-R`（nRF54L15-QFAA，QFN48，49 脚含 EP）**。规格书 `Doc/Hardware/Datasheets/nRF54L15_nRF54L10_nRF54L05_Datasheet_v1.0.pdf`。nRF52840 仅出现在 V0.1 历史文档中，**不得用于新代码/新配置** |
 | 现有 CI | `.github/workflows/`：`protocol.yml`、`docs.yml`、`app.yml`。**没有 `firmware.yml`** |
 | 本地编译 | **无**。项目约定「只使用 GitHub 编译」（`.github/workflows/README.md`）。本地不装 Android SDK / Gradle / west / Zephyr SDK |
 | 固件 CI 计划 | `.github/workflows/README.md` 列了待加的 `firmware.yml`（Zephyr 构建、native_sim、MCUboot 体积/分区门禁）与 `release.yml`，**均尚未建立** |
 
 **推论（必须遵守）**：当前任何固件改动都**不会触发编译门禁**。AI 不得声称「已编译通过」「已验证」，
 必须在输出中明确标注「本次改动未经编译验证」，并提示用户是否需要新增 `firmware.yml`（新增文件也需先确认）。
+
+**引脚与硬件口径（2026-11-11 起）**：任何引脚/电平/供电相关结论，一律以
+`Doc/Hardware/Pinmap_Main_V0.2.md`（引脚 SSOT）+ 最新网表 + 原厂规格书为准；文档之间冲突时按此顺序裁定。
 
 ---
 
@@ -49,8 +53,8 @@
   2. 若涉及 `Firmware/**`：**明确警告「仓库无 firmware.yml，改动不会被编译」**；
   3. CI 待检查项清单，以及「本地未编译，最终以 Actions 结果为准」。
 - push 后由用户在 Actions 页面看结果；AI 不得替用户判断 CI 已通过。
-- `versions.yaml` 中 `revision`/`sdk` 为 `TBD` 时，**拒绝生成依赖具体 NCS/Zephyr 版本的代码**
-  （对应 §3 META-02）；先提示用户锁定版本（这属于修改已有文件，需确认）。
+- `versions.yaml` 已锁定 **NCS v3.4.2 / toolchain ncs-toolchain-v3.4.2 / kernel 4.4.2**；生成代码必须相对该版本查证。
+  若将来出现 `revision`/`sdk` 被改回 `TBD` 的情况，**拒绝生成依赖具体 NCS/Zephyr 版本的代码**（对应 §3 META-02）。
 
 ---
 
@@ -127,8 +131,9 @@
   新增 `CONFIG_*` 须给出 flash 增量与依据。
 - **HW-05 `must`** BLE / Thread / Zigbee / Matter / MCUboot / TF-M / secure boot 一律走
   nRF Connect SDK（Zephyr）的 C 实现；不得自造协议栈，不得套用 nRF52 S1xx SoftDevice API。
-- **HW-06 `must`** 「目标芯片未确认」时（见 §0 的 nRF52840 / nRF54L15 冲突），
-  **禁止**写任何芯片相关的寄存器、board target、Kconfig、overlay；先向用户确认。
+- **HW-06 `must`** 目标芯片已确认为 **`NRF54L15-QFAA-R`**（§0）。
+  仍**禁止**把 nRF52 系列（nRF52840/nRF52832 等）的寄存器、board target、Kconfig、overlay、SoftDevice API 混入；
+  board target 名称（如 `nRF54L15DK` 在 NCS v3.4.2 下的确切写法）必须用 `west boards` 或已锁定源码树查证后再写。
 
 ### CI / 流程
 
@@ -184,9 +189,8 @@ Pi 从 **agent 目录、工作目录、及其父目录**加载 `AGENTS.md` / `CL
 
 - ✅ **项目会话**：pi-web 在 `/root/projects/Life_GPS`（或 `Firmware/`、`App/` 等子目录）开会话时，
   本文件**自动加载**。仓库里已有 `--root-projects-Life_GPS--` 会话目录，说明这个 cwd 是正常用法。
-- ⚠️ **当前会话**：本次会话 `PI_SESSION_FILE` 为 `--root--/...`，即 cwd = `/root`。
-  `/root/projects/Life_GPS` 是 `/root` 的**子目录**，不在父目录链上，所以**当前会话不会自动加载本文件**。
-  若要在当前会话立即生效，任选其一：
+- ⚠️ **注意**：若会话 cwd 是 `/root`（`PI_SESSION_FILE` 为 `--root--/...`），`/root/projects/Life_GPS` 是**子目录**、
+  不在父目录链上，**不会自动加载本文件**；此时按下列任一方式生效：
   1. 用 `@/root/projects/Life_GPS/AGENTS.md` 显式引用（Pi 支持 `@path` 引用）；
   2. 在 `/root/projects/Life_GPS` 目录新开 pi-web 会话（推荐，零额外改动）；
   3. 或让 AI 读取本文件路径后按内容执行。

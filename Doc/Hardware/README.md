@@ -22,7 +22,7 @@
 
 | 模块类别 | 选定器件完整型号 | 原厂品牌 | 封装规格 | 工作电压域 | 关键总线 / 目标时钟 | 上电 / 控制方式 | 归档官方规格书 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **主控 SoC** | **`NRF54L15-QFAA-R`** | Nordic Semi | QFN48<br>*(6×6mm, 0.4mm pitch, 49 脚含 EP)* | 稳定 1.9V<br>*(VDD 1.7~3.6V, POR 阈值 1.75V)* | 128MHz Cortex-M33 + RISC-V FLPR<br>HFXO: 32MHz (CL=**8pF**) / LFXO: 32.768kHz (CL=**9pF**)<br>**⚠️ 现选 X2 12pF / X1 12.5pF 超 6~9pF 规格，待替换**<br>RRAM 1524KB / RAM 256KB | 全天候常通供电 (Always-On)<br>31 个 GPIO，分 P0(LP)/P1(PERI)/P2(MCU) 三域<br>**启用片上硬件看门狗 (WDT 30s)** | `nRF54L15_nRF54L10_nRF54L05_Datasheet_v1.0.pdf` |
+| **主控 SoC** | **`NRF54L15-QFAA-R`** | Nordic Semi | QFN48<br>*(6×6mm, 0.4mm pitch, 49 脚含 EP)* | 稳定 1.9V<br>*(VDD 1.7~3.6V, POR 阈值 1.75V)* | 128MHz Cortex-M33 + RISC-V FLPR<br>HFXO: 32MHz (CL=**8pF**) / LFXO: 32.768kHz (CL=**9pF**)<br>**⚠️ 现选 X2 12pF / X1 12.5pF 超 6~9pF 规格：X2 必须换 8pF；X1 可换 9pF 或实测豁免**<br>RRAM 1524KB / RAM 256KB | 全天候常通供电 (Always-On)<br>31 个 GPIO，分 P0(LP)/P1(PERI)/P2(MCU) 三域<br>**启用片上硬件看门狗 (WDT 30s)** | `nRF54L15_nRF54L10_nRF54L05_Datasheet_v1.0.pdf` |
 | **GNSS 模组（默认装配 · 唯一默认料）** | **MAX-M10S-00B** | u-blox | 18-LCC<br>*(10.1×9.7mm)* | 主电: 1.8V (Pin 8 VCC, 1.76~3.6V)<br>IO: 1.8V (Pin 7 V_IO, `VIO_SEL=GND`)<br>后备: 1.9V (Pin 6 V_BCKP, 1.65~3.6V) | UART 115200bps (UBX / NMEA)<br>多星并发 (GPS+BDS+GAL+GLO) | Pin 8 VCC 经 SGM2045-1.8 受控通断（`GPS_EN` = **P1.07**）<br>Pin 6 V_BCKP 由 SGM6040A 常通 1.9V 保持热启<br>**【MAX-M10S 装配】R13=0Ω(贴), R28=100Ω(贴), R27=NC**<br>Pin 15 VIO_SEL **必须接 GND**（1.8V IO 模式） | `Datasheets/UBLOX/MAX-M10S_DataSheet_UBX-20035208.pdf` |
 | **GNSS 模组（可选兼容位 · 默认不装配）** | **LC79H 系列**<br>*(LC79H AL / EL)* | Quectel (移远) | 18-LCC + 10-LGA<br>*(10.1×9.7×2.4mm，1~18 脚与 M10S 同构)* | 主电: 1.8V (Pin 8 VCC, **1.75~1.98V**)<br>IO: 跟随 VCC（1.8V）<br>后备: 1.9V (Pin 6 V_BCKP, 1.62~1.98V) | UART 115200bps (NMEA / PAIR)<br>L1+L5 双频 | **【LC79H 装配】R13=NC, R28=NC（Pin5/Pin7 为 RESERVED，禁止外接）**；若用 WAKEUP 唤醒则贴 R27=100Ω(接 Pin 18)<br>固件自适应协议识别 | `Datasheets/LC79H/quectel_lc79h_series_hardware_design_v1-6.pdf` |
 | **GNSS 射频天线** | **`BWGNSCNX25-25W4`（U7）** | 待补原厂手册 | `ANT-TH_L250-W250`<br>*(25×25mm 插件/焊盘)* | 无源器件 | 50Ω 馈电 + 预留 π 型调谐位 | **纯无源，零直流偏置**；`Pin 14 VCC_RF` 保持悬空（若改有源天线必须由 VCC_RF 供电 ≤50mA）<br>馈电端缺超低结容 ESD（改版补齐） | BOM 定稿后归档原厂手册 |
@@ -97,6 +97,27 @@ V0.2 射频部分由两条**互相独立**的链路构成，GNSS 侧**只保留�
 
 ---
 
+---
+
+### 2.2.1 晶振负载电容核算（X1 / X2）
+
+* **规格书口径（`nRF54L15` Datasheet v1.0 §11.9.1 / §11.9.2）**：
+  `CL_HFXO = 6 ~ 9 pF`、`CL_LFXO = 6 ~ 9 pF`。这是**电气规格（保证工作范围）**，超出后振荡器的频偏/起振时间/驱动电平均不再保证，不能等同于“典型推荐值”。
+* **片内 trim 能力**：`CINT` 是**每端**电容，HFXO `4.0 ~ 17.0 pF`（0.25pF 步进）、LFXO `3 ~ 18 pF`（0.65pF 步进）。
+  按 `CL ≈ C/2 + C_pcb`（`C_pcb ≈ 1~2 pF`）折算，trim 上限对应 `CL ≈ 9.5 ~ 10.5 pF` —— 与规格上限 9pF 吻合，说明**片内电容的设计覆盖就是 6~9 pF**。
+* **V0.2 实选料**：`X2 = 32MHz / CL 12pF`、`X1 = FC-135R / CL 12.5pF`，均高于片内可达到的上限。
+* **频偏估算**（`Δf/f ≈ (C_M/2)·[1/(C0+CL_实际) − 1/(C0+CL_标称)]`，按典型 `C_M ≈ 10fF@32MHz / 4fF@32.768kHz`、`C0 ≈ 1.2pF`）：
+
+  | 位号 | 标称 CL | 片内可达 CL | 估算频偏 | 判定 |
+  | :--- | :---: | :---: | :---: | :--- |
+  | **X2（HFXO 32MHz）** | 12 pF | ≈ 9.5 pF | **约 +80 ~ +90 ppm** | ❌ 超 BLE `±40 ppm` 约 2 倍 → **必须换 `CL=8pF` 料**（或加外挂电容） |
+  | **X1（LFXO 32.768kHz）** | 12.5 pF | ≈ 10 pF | **约 +30 ~ +35 ppm** | ⚠️ BLE LFXO 允许 `±500 ppm`，可容忍；但 ≈3 s/天 走时漂移 → 建议换 `CL=9pF`，或实测后按豁免记录 |
+
+* **三条可行路径**：
+  1. **换料**：X2 → `CL=8pF`、X1 → `CL=9pF`（成本最低，推荐）；
+  2. **外挂电容**：`INTCAP=0`，`C1=C2`，按 `CL = C1/2 + C_pcb + Cpin(3pF)` 计算，12pF 需 `C1=C2 ≈ 16pF` —— 需在 X1/X2 增补电容位；
+  3. **实测豁免**：`INTCAP` 设到最大后测实际频偏（频谱仪量 BLE 载波，或引 `CLKOUTFAST` 测频），若 X2 仍在 `±40ppm` 内方可按超规格豁免记录（需 owner + 到期日 + ticket，符合 `AGENTS.md` META-03）。
+
 ### 2.3 专项技术评估：传感器供电拓扑与 STOP 隐患排查
 
 针对评审意见中关于传感器抗噪与 DCDC 冻结的审查，硬件团队确立如下规范：
@@ -131,7 +152,7 @@ V0.2 射频部分由两条**互相独立**的链路构成，GNSS 侧**只保留�
   * **Pin 13 `LNA_EN` / Pin 14 `VCC_RF`**：本版**悬空**（无源天线，不需要偏置供电）；若改有源天线，VCC_RF 必须供电（≤50mA）；
   * **Pin 15 为 `VIO_SEL`（MAX-M10S）/ `RESERVED`（LC79H）**：**MAX-M10S 必须接 GND 才是 1.8V I/O 模式**（悬空 = 3.3V 模式，`V_IO` 要求 2.7~3.6V，与本板 1.8V 冲突）；
     **⚠️ 但 Quectel `lc79h_series_hardware_design_v1-6` Table 6 明确规定 Pin 5/7/15/19/20/24–27 为 RESERVED，"must be left floating and cannot be connected to power or GND"** ——
-    当前 `U1.15` 直接硬接 GND，**LC79H 无法直贴**。改版必须把该脚改为经 0Ω 跳线到 GND（MAX-M10S 贴 / LC79H 不贴），即双模组跳线由 2 只增加到 3 只。
+    当前 `U1.15` 直接硬接 GND，**LC79H 无法直贴**；**已决定下版增补该 0Ω 对地跳线**（MAX-M10S 贴 / LC79H 不贴），双模组跳线由 2 只增加到 3 只。
   * **Pin 16 / 17 为 `SDA` / `SCL`**：悬空（不使用模组 I2C）；
   * **Pin 18 为 `SAFEBOOT_N`（M10S）/ `WAKEUP`（LC79H）**：**R27 = NC**（默认不贴）；
 * **跳线矩阵（默认 u-blox；LC79H 为可选兼容位）**：
