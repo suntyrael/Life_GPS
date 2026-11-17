@@ -111,5 +111,5 @@ void lgps_diag_hexdump(const char *tag, const uint8_t *data, size_t len_bytes)
 		return;
 	}
 
-	LOG_HEXDUMP_INF(data, len_bytes, "%s", tag);
+	LOG_HEXDUMP_INF(data, len_bytes, tag);
 }
