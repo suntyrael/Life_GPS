@@ -126,8 +126,8 @@ jobs:
         run: |
           set -eux
           SIZE_TOOL=arm-zephyr-eabi-size
-          ${SIZE_TOOL} "${NCS_WORKSPACE}/build-fw/zephyr/zephyr.elf"
-          python3 - "${NCS_WORKSPACE}/build-fw/zephyr/zephyr.elf" <<'PY'
+          ${SIZE_TOOL} "${NCS_WORKSPACE}/build-fw/Firmware/zephyr/zephyr.elf"
+          python3 - "${NCS_WORKSPACE}/build-fw/Firmware/zephyr/zephyr.elf" <<'PY'
           import subprocess
           import sys
 
@@ -160,7 +160,7 @@ jobs:
         with:
           name: lifegps-firmware-m1
           path: |
-            /opt/ncs-workspace/build-fw/zephyr/zephyr.hex
-            /opt/ncs-workspace/build-fw/zephyr/zephyr.elf
-            /opt/ncs-workspace/build-fw/zephyr/zephyr.map
+            /opt/ncs-workspace/build-fw/Firmware/zephyr/zephyr.hex
+            /opt/ncs-workspace/build-fw/Firmware/zephyr/zephyr.elf
+            /opt/ncs-workspace/build-fw/Firmware/zephyr/zephyr.map
           if-no-files-found: error
