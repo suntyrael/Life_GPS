@@ -1,0 +1,14 @@
+# Copyright (c) 2026 Life_GPS contributors
+# SPDX-License-Identifier: MIT
+
+config HW_STACK_PROTECTION
+	default ARCH_HAS_STACK_PROTECTION
+
+# W25Q512NW sector size (4 KB) drives the external Flash page layout that the
+# trajectory ring and MCUboot slot1 both rely on (Firmware/docs/PARTITIONS.md).
+if SPI_NOR
+
+config SPI_NOR_FLASH_LAYOUT_PAGE_SIZE
+	default 4096 if MCUBOOT || BOOTLOADER_MCUBOOT
+
+endif # SPI_NOR

@@ -1,0 +1,5 @@
+# Copyright (c) 2026 Life_GPS contributors
+# SPDX-License-Identifier: MIT
+
+CONFIG_GPIO=y
+CONFIG_ARM_MPU=y

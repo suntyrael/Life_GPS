@@ -1,0 +1,30 @@
+# Life_GPS firmware west manifest.
+#
+# Mirrors versions.yaml (the single source of truth for toolchain revisions):
+#   distribution: nrf-connect-sdk
+#   revision    : v3.4.2   (NCS LTS)
+#   kernel      : 4.4.2    (sdk-zephyr @ ncs-v3.4.2, imported through sdk-nrf)
+#
+# Usage for a developer workspace (CI does the same thing explicitly):
+#   west init -m https://github.com/nrfconnect/sdk-nrf --mr v3.4.2 ~/ncs
+#   cd ~/ncs && west update
+#   west build -b lifegps/nrf54l15/cpuapp <repo>/Firmware
+
+manifest:
+  version: "0.13"
+
+  remotes:
+    - name: ncs
+      url-base: https://github.com/nrfconnect
+
+  projects:
+    - name: nrf
+      remote: ncs
+      repo-path: sdk-nrf
+      revision: v3.4.2
+      # Pulls in sdk-zephyr @ ncs-v3.4.2 plus the HAL/module revisions that
+      # belong to this NCS release, so the Zephyr version is never duplicated.
+      import: true
+
+  self:
+    path: Firmware

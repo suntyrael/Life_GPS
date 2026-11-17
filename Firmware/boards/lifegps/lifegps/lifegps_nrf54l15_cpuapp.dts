@@ -1,0 +1,240 @@
+/*
+ * Copyright (c) 2026 Life_GPS contributors
+ * SPDX-License-Identifier: MIT
+ *
+ * Life_GPS Main_V0.2 board (nRF54L15-QFAA, QFN48).
+ * Pin/level facts: Doc/Hardware/Pinmap_Main_V0.2.md (SSOT) + netlist
+ * Hardware/Schematic/Netlist_Main_V0.2_2026-11-11.tel.
+ */
+
+/dts-v1/;
+
+#include <arm/nordic/nrf54l15_cpuapp.dtsi>
+#include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/adc/nrf-saadc.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+
+#include "lifegps-pinctrl.dtsi"
+
+/ {
+	model = "Life_GPS Main V0.2 (nRF54L15-QFAA)";
+	compatible = "lifegps,lifegps-nrf54l15-cpuapp";
+
+	chosen {
+		zephyr,console = &uart30;
+		zephyr,shell-uart = &uart30;
+		zephyr,flash-controller = &rram_controller;
+		zephyr,flash = &cpuapp_rram;
+		zephyr,sram = &cpuapp_sram;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		led_red: led_red {
+			gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>;
+			label = "LED_RED";
+		};
+
+		led_green: led_green {
+			gpios = <&gpio2 7 GPIO_ACTIVE_HIGH>;
+			label = "LED_GREEN";
+		};
+
+		led_blue: led_blue {
+			gpios = <&gpio1 12 GPIO_ACTIVE_HIGH>;
+			label = "LED_BLUE";
+		};
+	};
+
+	keys: keys {
+		compatible = "gpio-keys";
+		/* No RC on the board (pinmap section "投板前"): debounce in firmware. */
+		debounce-interval-ms = <20>;
+
+		key_poi: key_poi {
+			gpios = <&gpio1 6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			label = "KEY1_POI";
+			zephyr,code = <INPUT_KEY_1>;
+		};
+
+		key_mode: key_mode {
+			gpios = <&gpio1 8 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			label = "KEY2_MODE";
+			zephyr,code = <INPUT_KEY_2>;
+		};
+	};
+
+	/*
+	 * Application GPIOs that are not part of a Zephyr subsystem class. The
+	 * polarity notes follow pinmap section 3:
+	 *   GPS_EN     high = GNSS rail on (SGM2045-1.8 enable)
+	 *   CHG_EN     low  = charging allowed (SGM4056 EN is active low)
+	 *   CHG_STAT   low  = charging in progress (open drain, needs pull-up)
+	 */
+	zephyr,user {
+		gnss-en-gpios = <&gpio1 7 GPIO_ACTIVE_HIGH>;
+		gnss-wake-gpios = <&gpio1 9 GPIO_ACTIVE_HIGH>;
+		chg-en-gpios = <&gpio0 3 GPIO_ACTIVE_LOW>;
+		chg-stat-gpios = <&gpio0 4 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		imu-int1-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
+		/*
+		 * The two chip selects are also owned by the SPI controllers; they are
+		 * listed here because firmware must drive them high before the SPI
+		 * driver initialises (no external pull-up on either memory).
+		 */
+		flash-cs-gpios = <&gpio2 5 GPIO_ACTIVE_LOW>;
+		imu-cs-gpios = <&gpio1 14 GPIO_ACTIVE_LOW>;
+		/* P1.11 = AIN4 through the 1 M / 330 k divider (pinmap section 3). */
+		io-channels = <&adc 4>;
+	};
+};
+
+&uicr {
+	/* P1.02 / P1.03 carry SPIM22; they leave reset as NFC antenna pads. */
+	nfct-pins-as-gpios;
+};
+
+&lfxo {
+	status = "okay";
+	load-capacitors = "internal";
+	/*
+	 * X1 is a 32.768 kHz FC-135R with CL = 12.5 pF. The nRF54L15 internal trim
+	 * tops out at 18000 fF (datasheet CL_LFXO range 6..9 pF), so this is the
+	 * closest achievable setting - see pinmap pending item "crystal CL".
+	 */
+	load-capacitance-femtofarad = <18000>;
+};
+
+&hfxo {
+	status = "okay";
+	load-capacitors = "internal";
+	/*
+	 * X2 is a 32 MHz crystal with CL = 12 pF; the HFXO trim tops out at
+	 * 17000 fF. Logged as a known deviation during bring-up.
+	 */
+	load-capacitance-femtofarad = <17000>;
+};
+
+&regulators {
+	status = "okay";
+};
+
+&vregmain {
+	status = "okay";
+	/* DCC pin drives L1 = 4.7 uH (pinmap section 2, pin 46): DC/DC must be used. */
+	regulator-initial-mode = <NRF5X_REG_MODE_DCDC>;
+};
+
+&clock {
+	status = "okay";
+};
+
+&temp {
+	status = "okay";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+&gpio2 {
+	status = "okay";
+};
+
+/* P1 keys use the PERI-domain GPIOTE, P0 IMU interrupt uses the LP-domain one. */
+&gpiote20 {
+	status = "okay";
+};
+
+&gpiote30 {
+	status = "okay";
+};
+
+/* DEBUG_UART: 7-pin H1 header, 115200 8N1 (README section 9.2). */
+&uart30 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart30_default>;
+	pinctrl-1 = <&uart30_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+/* GNSS UART to MAX-M10S (U1 pin 2/3 through 100 ohm series resistors). */
+&uart20 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart20_default>;
+	pinctrl-1 = <&uart20_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+/*
+ * External 64 MB QSPI NOR (W25Q512NWEIQ). Size comes from the part number; the
+ * JEDEC ID is *not* hard-coded here, the driver reads SFDP at runtime because
+ * the datasheet extract in Doc/Hardware/Datasheets does not print the ID bytes.
+ */
+&spi00 {
+	status = "okay";
+	cs-gpios = <&gpio2 5 GPIO_ACTIVE_LOW>;
+	pinctrl-0 = <&spi00_default>;
+	pinctrl-1 = <&spi00_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	w25q512: flash@0 {
+		compatible = "jedec,spi-nor";
+		status = "okay";
+		reg = <0>;
+		/* Board layout is noise-sensitive: run the NOR at 8 MHz, not 32 MHz. */
+		spi-max-frequency = <8000000>;
+		size = <67108864>;
+		has-dpd;
+		t-enter-dpd = <3000>;  /* tDP   = 3 us  (datasheet AC characteristics) */
+		t-exit-dpd = <30000>;  /* tRES1 = 30 us (datasheet AC characteristics) */
+	};
+};
+
+/* IMU on the PERI-domain SPIM22 (same-domain, no Constant Latency needed). */
+&spi22 {
+	status = "okay";
+	cs-gpios = <&gpio1 14 GPIO_ACTIVE_LOW>;
+	pinctrl-0 = <&spi22_default>;
+	pinctrl-1 = <&spi22_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	imu: imu@0 {
+		compatible = "lifegps,lsm6dsr";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+	};
+};
+
+/*
+ * BAT_ADC on P1.11 = AIN4. Divider R25 = 1 M, R26 = 330 k, C14 = 100 nF.
+ * SAADC gain 1/2 against the internal reference keeps a 4.2 V pack inside range
+ * (see src/power/battery.c for the divider + input-resistance correction).
+ */
+&adc {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@4 {
+		reg = <4>;
+		zephyr,gain = "ADC_GAIN_1_2";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 40)>;
+		zephyr,input-positive = <NRF_SAADC_AIN4>;
+		zephyr,resolution = <12>;
+		zephyr,oversampling = <8>;
+	};
+};
+
+/* 30 s hardware watchdog clocked from the low-frequency clock (README section 11). */
+&wdt30 {
+	status = "okay";
+};

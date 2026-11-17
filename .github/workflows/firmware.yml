@@ -1,0 +1,142 @@
+name: firmware
+
+on:
+  push:
+    paths:
+      - "Firmware/**"
+      - "protocol/**"
+      - "tools/protocol-gen/**"
+      - "versions.yaml"
+      - ".github/workflows/firmware.yml"
+  pull_request:
+    paths:
+      - "Firmware/**"
+      - "protocol/**"
+      - "tools/protocol-gen/**"
+      - "versions.yaml"
+      - ".github/workflows/firmware.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Must stay equal to versions.yaml (revision / sdk) - both are part of the
+  # frozen toolchain baseline, see versions.yaml header comment.
+  NCS_REVISION: v3.4.2
+  NCS_WORKSPACE: /opt/ncs
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install protocol tooling
+        run: python -m pip install -r tools/protocol-gen/requirements.txt
+      - name: Validate protocol YAML
+        run: python tools/protocol-gen/validate.py
+      - name: Generated C header drift check
+        run: python tools/protocol-gen/gen_c.py --check
+
+  build:
+    runs-on: ubuntu-latest
+    # Official NCS v3.4.2 toolchain image: gcc, cmake, ninja, west, dtc and the
+    # NCS host tools. BASH_ENV=/opt/non-interactive-setup.sh injects the toolchain
+    # environment into every non-interactive step.
+    container:
+      image: ghcr.io/nrfconnect/sdk-nrf-toolchain:v3.4.2
+      options: --user root
+    needs: contract
+    steps:
+      - name: Toolchain self-report
+        run: |
+          set -eux
+          bash -lc 'arm-zephyr-eabi-gcc --version | head -1'
+          python3 --version
+          cmake --version | head -1
+          ninja --version
+          west --version
+
+      - uses: actions/checkout@v4
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Cache NCS workspace
+        id: ncs-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NCS_WORKSPACE }}
+          key: ncs-${{ env.NCS_REVISION }}-${{ hashFiles('Firmware/west.yml', '.github/workflows/firmware.yml') }}
+
+      - name: Prepare NCS workspace
+        run: |
+          set -eux
+          if [ ! -d "${NCS_WORKSPACE}/.west" ]; then
+            rm -rf "${NCS_WORKSPACE}"
+            west init -m https://github.com/nrfconnect/sdk-nrf --mr "${NCS_REVISION}" "${NCS_WORKSPACE}"
+            cd "${NCS_WORKSPACE}"
+            # Only the projects this application actually compiles against.
+            west update --narrow nrf zephyr cmsis hal_nordic picolibc nrfxlib
+          fi
+          cd "${NCS_WORKSPACE}"
+          west list -f '{name}: {revision}' | sort | head -20
+          cat zephyr/VERSION
+
+      - name: Build firmware (lifegps/nrf54l15/cpuapp)
+        run: |
+          set -eux
+          export ZEPHYR_BASE="${NCS_WORKSPACE}/zephyr"
+          west build -p always -b lifegps/nrf54l15/cpuapp \
+            -d "${NCS_WORKSPACE}/build-fw" "${GITHUB_WORKSPACE}/Firmware" \
+            -- -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Size gate (RRAM slot0 712 KB / SRAM 256 KB, see Firmware/docs/PARTITIONS.md)
+        run: |
+          set -eux
+          SIZE_TOOL=arm-zephyr-eabi-size
+          ${SIZE_TOOL} "${NCS_WORKSPACE}/build-fw/zephyr/zephyr.elf"
+          python3 - "${NCS_WORKSPACE}/build-fw/zephyr/zephyr.elf" <<'PY'
+          import subprocess
+          import sys
+
+          elf = sys.argv[1]
+          out = subprocess.run(["arm-zephyr-eabi-size", elf], capture_output=True, text=True,
+                               check=True).stdout.splitlines()
+          header, values = out[0].split(), out[1].split()
+          data = dict(zip(header, (int(v) for v in values)))
+          flash_used = data["text"] + data["data"]
+          ram_used = data["data"] + data["bss"]
+          flash_limit = 712 * 1024
+          ram_limit = 256 * 1024
+          print(f"flash={flash_used} B / {flash_limit} B, ram={ram_used} B / {ram_limit} B")
+          if flash_used > flash_limit:
+              sys.exit("flash budget exceeded")
+          if ram_used > ram_limit:
+              sys.exit("ram budget exceeded")
+          PY
+
+      - name: Unit tests (twister, native_sim)
+        run: |
+          set -eux
+          export ZEPHYR_BASE="${NCS_WORKSPACE}/zephyr"
+          cd "${GITHUB_WORKSPACE}"
+          "${ZEPHYR_BASE}/scripts/twister" -p native_sim -T Firmware/tests \
+            -O "${NCS_WORKSPACE}/twister-out" --inline-logs -v
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lifegps-firmware-m1
+          path: |
+            /opt/ncs/build-fw/zephyr/zephyr.hex
+            /opt/ncs/build-fw/zephyr/zephyr.elf
+            /opt/ncs/build-fw/zephyr/zephyr.map
+          if-no-files-found: error
