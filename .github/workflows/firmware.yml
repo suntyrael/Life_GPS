@@ -85,7 +85,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.NCS_WORKSPACE }}
-          key: ncs-ws-${{ env.NCS_REVISION }}-${{ hashFiles('Firmware/west.yml') }}
+          # Keyed on the NCS revision only: the CI workspace is created by
+          # `west init -m nrfconnect/sdk-nrf --mr <revision>`, so editing
+          # Firmware/west.yml (a developer-side manifest) must not throw the
+          # 1.5 GB workspace cache away.
+          key: ncs-ws-${{ env.NCS_REVISION }}
 
       - name: Prepare NCS workspace
         run: |
@@ -110,7 +114,11 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ env.NCS_WORKSPACE }}
-          key: ncs-ws-${{ env.NCS_REVISION }}-${{ hashFiles('Firmware/west.yml') }}
+          # Keyed on the NCS revision only: the CI workspace is created by
+          # `west init -m nrfconnect/sdk-nrf --mr <revision>`, so editing
+          # Firmware/west.yml (a developer-side manifest) must not throw the
+          # 1.5 GB workspace cache away.
+          key: ncs-ws-${{ env.NCS_REVISION }}
 
       - name: Build firmware (lifegps/nrf54l15/cpuapp)
         run: |
