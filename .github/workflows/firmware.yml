@@ -135,9 +135,10 @@ jobs:
           out = subprocess.run(["arm-zephyr-eabi-size", elf], capture_output=True, text=True,
                                check=True).stdout.splitlines()
           header, values = out[0].split(), out[1].split()
-          data = dict(zip(header, (int(v) for v in values)))
-          flash_used = data["text"] + data["data"]
-          ram_used = data["data"] + data["bss"]
+          # columns are: text, data, bss, dec, hex, filename (hex/dec are not ints in base 10)
+          text, init_data, bss = (int(v) for v in values[:3])
+          flash_used = text + init_data
+          ram_used = init_data + bss
           flash_limit = 712 * 1024
           ram_limit = 256 * 1024
           print(f"flash={flash_used} B / {flash_limit} B, ram={ram_used} B / {ram_limit} B")
