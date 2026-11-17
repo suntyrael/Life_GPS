@@ -152,6 +152,13 @@ jobs:
         run: |
           set -eux
           export ZEPHYR_BASE="${NCS_WORKSPACE}/zephyr"
+          # The toolchain image ships cmake/ninja but not GNU make, which the Zephyr
+          # CMakeLists.txt looks up unconditionally for its external-project targets.
+          if ! command -v make >/dev/null 2>&1; then
+            apt-get update -qq
+            apt-get install -y --no-install-recommends make
+          fi
+          make --version | head -1
           cd "${GITHUB_WORKSPACE}"
           "${ZEPHYR_BASE}/scripts/twister" -p native_sim -T Firmware/tests \
             -O "${NCS_WORKSPACE}/twister-out" --inline-logs -v
