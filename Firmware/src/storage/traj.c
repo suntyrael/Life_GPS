@@ -62,6 +62,40 @@ static uint32_t get_le32(const uint8_t *src)
 	       ((uint32_t)src[3] << 24);
 }
 
+/*
+ * The record stores signed values as two's complement. Converting an out-of-range
+ * unsigned value to a signed type is implementation-defined in C17, so the sign
+ * extension is done arithmetically: the low half is always representable and the
+ * final addition cannot overflow. This keeps the codec conforming on any compiler,
+ * not just on GCC's wraparound behaviour.
+ */
+static int32_t to_i32(uint32_t value)
+{
+	if (value <= (uint32_t)INT32_MAX) {
+		return (int32_t)value;
+	}
+
+	return (int32_t)(value - 0x80000000U) + INT32_MIN;
+}
+
+static int16_t to_i16(uint16_t value)
+{
+	if (value <= (uint16_t)INT16_MAX) {
+		return (int16_t)value;
+	}
+
+	return (int16_t)(value - 0x8000U) + INT16_MIN;
+}
+
+static int8_t to_i8(uint8_t value)
+{
+	if (value <= (uint8_t)INT8_MAX) {
+		return (int8_t)value;
+	}
+
+	return (int8_t)(value - 0x80U) + INT8_MIN;
+}
+
 int lgps_traj_encode(const struct lgps_traj_sample *sample, uint8_t *raw)
 {
 	if ((sample == NULL) || (raw == NULL)) {
@@ -117,9 +151,9 @@ int lgps_traj_decode(const uint8_t *raw, struct lgps_traj_sample *sample)
 	sample->seq_id = get_le32(&raw[LGPS_RECORD_TRAJECTORY_OFF_SEQ_ID]);
 	sample->timestamp_s = get_le32(&raw[LGPS_RECORD_TRAJECTORY_OFF_TIMESTAMP]);
 	sample->subsecond_ms = get_le16(&raw[LGPS_RECORD_TRAJECTORY_OFF_SUBSECOND_MS]);
-	sample->lat_e7 = (int32_t)get_le32(&raw[LGPS_RECORD_TRAJECTORY_OFF_LATITUDE]);
-	sample->lon_e7 = (int32_t)get_le32(&raw[LGPS_RECORD_TRAJECTORY_OFF_LONGITUDE]);
-	sample->alt_m = (int16_t)get_le16(&raw[LGPS_RECORD_TRAJECTORY_OFF_ALTITUDE]);
+	sample->lat_e7 = to_i32(get_le32(&raw[LGPS_RECORD_TRAJECTORY_OFF_LATITUDE]));
+	sample->lon_e7 = to_i32(get_le32(&raw[LGPS_RECORD_TRAJECTORY_OFF_LONGITUDE]));
+	sample->alt_m = to_i16(get_le16(&raw[LGPS_RECORD_TRAJECTORY_OFF_ALTITUDE]));
 	sample->speed_cms = get_le16(&raw[LGPS_RECORD_TRAJECTORY_OFF_SPEED_CMS]);
 	sample->heading_ddeg = get_le16(&raw[LGPS_RECORD_TRAJECTORY_OFF_HEADING]);
 	sample->step_count = get_le16(&raw[LGPS_RECORD_TRAJECTORY_OFF_STEP_COUNT]);
@@ -127,7 +161,7 @@ int lgps_traj_decode(const uint8_t *raw, struct lgps_traj_sample *sample)
 	sample->satellites = raw[LGPS_RECORD_TRAJECTORY_OFF_SATELLITES];
 	sample->status_flags = raw[LGPS_RECORD_TRAJECTORY_OFF_STATUS_FLAGS];
 	sample->battery_pct = raw[LGPS_RECORD_TRAJECTORY_OFF_BATTERY_LEVEL];
-	sample->floor_level = (int8_t)raw[LGPS_RECORD_TRAJECTORY_OFF_FLOOR_LEVEL];
+	sample->floor_level = to_i8(raw[LGPS_RECORD_TRAJECTORY_OFF_FLOOR_LEVEL]);
 
 	return 0;
 }
