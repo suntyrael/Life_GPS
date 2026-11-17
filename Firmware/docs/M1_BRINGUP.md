@@ -1,7 +1,15 @@
 # M1 固件 bring-up 说明（Main_V0.2 / nRF54L15-QFAA）
 
-> 状态：**M1 骨架已落地，等待 GitHub Actions 编译验证**。本地零编译（见 `AGENTS.md` §2），
+> 状态：**M1 骨架已落地，GitHub Actions 编译 + 单测通过**。本地零编译（见 `AGENTS.md` §2），
 > 所有构建只在 `.github/workflows/firmware.yml` 中执行。
+
+首次通过的实测记录（commit `3ef1f2b4`，workflow run 44132071171，NCS v3.4.2 官方 toolchain 容器）：
+
+| 项 | 结果 |
+| :--- | :--- |
+| 固件镜像 `lifegps/nrf54l15/cpuapp` | FLASH 96,428 B / 729,088 B（6.18% of 1524 KB），RAM 15,765 B / 262,144 B（6.01%） |
+| twister native_sim | 6/6 套件、42/42 用例通过 |
+| 协议契约 | `validate.py` PASS，`gen_c.py --check` 无漂移 |
 
 ## 1. M1 覆盖范围
 
