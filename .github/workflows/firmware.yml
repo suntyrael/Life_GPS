@@ -24,6 +24,12 @@ concurrency:
   group: firmware-${{ github.ref }}
   cancel-in-progress: true
 
+# The NCS toolchain image exports its environment through BASH_ENV, which only a
+# bash shell sources. GitHub's default `sh -e` would not see cmake/ninja/west.
+defaults:
+  run:
+    shell: bash
+
 env:
   # Must stay equal to versions.yaml (revision / sdk) - both are part of the
   # frozen toolchain baseline, see versions.yaml header comment.
@@ -58,7 +64,8 @@ jobs:
       - name: Toolchain self-report
         run: |
           set -eux
-          bash -lc 'arm-zephyr-eabi-gcc --version | head -1'
+          echo "PATH=${PATH}"
+          arm-zephyr-eabi-gcc --version | head -1
           python3 --version
           cmake --version | head -1
           ninja --version
