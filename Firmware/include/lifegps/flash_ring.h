@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * Life_GPS firmware - W25Q512NW staging ring (external SPI NOR).
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * Life_GPS firmware - three-colour status LED.
  *

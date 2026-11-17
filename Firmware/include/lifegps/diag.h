@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * Life_GPS firmware - UART diagnostic channel.
  *

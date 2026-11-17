@@ -7,7 +7,7 @@
  *   CRC-16/CCITT-FALSE 0x29B1
  *   CRC-32/ISO-HDLC  0xCBF43926
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  */
 
 #include <stdint.h>

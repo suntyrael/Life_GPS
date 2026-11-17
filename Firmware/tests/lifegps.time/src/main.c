@@ -5,7 +5,7 @@
  * 2020-01-01T00:00:00Z; 2156-02-07T06:28:15Z is the last second representable
  * in uint32_t and must map to LGPS_TIME_MAX_S.
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  */
 
 #include <stdint.h>

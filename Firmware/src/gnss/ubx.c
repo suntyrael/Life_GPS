@@ -8,7 +8,7 @@
  * The module keeps no global state and logs nothing: the caller owns the UART
  * and decides how to report a rejected frame.
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  */
 
 #include <errno.h>

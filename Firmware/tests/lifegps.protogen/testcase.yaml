@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 tests:
   lifegps.protogen:
     platform_allow: native_sim

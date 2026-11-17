@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 board:
   name: lifegps
   full_name: Life_GPS Main V0.2 (nRF54L15-QFAA)

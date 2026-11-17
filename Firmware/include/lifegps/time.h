@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * Life_GPS firmware - "Life_GPS 2020 epoch" civil time conversion.
  *

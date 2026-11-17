@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * Life_GPS firmware - sensor-to-body-frame alignment, ZUPT and PDR maths.
  *

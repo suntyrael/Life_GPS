@@ -3,7 +3,7 @@
  *
  * Feeds synthetic IMU and magnetometer data; no device tree, no drivers.
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  */
 
 #include <zephyr/ztest.h>

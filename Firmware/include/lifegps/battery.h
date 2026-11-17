@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * Life_GPS firmware - battery voltage sensing (BAT_ADC, P1.11 = AIN4).
  *

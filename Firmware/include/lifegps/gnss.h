@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * Life_GPS firmware - GNSS (u-blox MAX-M10S default part) power and fix state.
  *

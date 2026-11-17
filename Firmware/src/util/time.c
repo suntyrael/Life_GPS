@@ -9,7 +9,7 @@
  * it is divisible by 400. All arithmetic is integer maths; lgps_time_from_utc()
  * and lgps_time_to_utc() are exact inverses over uint32_t.
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  */
 
 #include <stdbool.h>

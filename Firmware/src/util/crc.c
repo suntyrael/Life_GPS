@@ -10,7 +10,7 @@
  * Bitwise, table-free and stateless so every function is callable from an ISR:
  * no global state, no allocation, no blocking.
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  */
 
 #include <stddef.h>

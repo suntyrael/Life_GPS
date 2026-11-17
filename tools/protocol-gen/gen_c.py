@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """Generate the Life_GPS C protocol header from protocol/lifegps_protocol.yaml.
 
 The YAML is the single source of truth (META-04). This generator is
@@ -342,6 +343,8 @@ def render(doc: dict) -> str:
 
     lines: list[str] = [
         "/*",
+        " * SPDX-License-Identifier: MIT",
+        " *",
         " * Life_GPS BLE protocol - C constants and record layouts.",
         " *",
         f" * {BANNER}",

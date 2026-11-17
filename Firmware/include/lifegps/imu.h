@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * Life_GPS firmware - LSM6DSRTR 6-axis IMU + sensor hub.
  *

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 # Life_GPS - trajectory record codec unit tests (native_sim only).
 
 cmake_minimum_required(VERSION 3.20.0)

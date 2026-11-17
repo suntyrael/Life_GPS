@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 tests:
   lifegps.time:
     platform_allow: native_sim

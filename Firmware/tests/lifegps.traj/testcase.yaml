@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 tests:
   lifegps.traj:
     platform_allow: native_sim

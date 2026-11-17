@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * Life_GPS - generated protocol header contract tests (native_sim).
  *

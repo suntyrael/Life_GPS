@@ -1,4 +1,6 @@
 /*
+ * SPDX-License-Identifier: MIT
+ *
  * Life_GPS BLE protocol - C constants and record layouts.
  *
  * generated from protocol/lifegps_protocol.yaml by tools/protocol-gen/gen_c.py - do not edit

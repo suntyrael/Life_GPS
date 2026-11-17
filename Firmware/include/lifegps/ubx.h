@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * Life_GPS firmware - u-blox UBX framing (MAX-M10S default part).
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * Life_GPS firmware - KEY1_POI (P1.06) and KEY2_MODE (P1.08).
  *

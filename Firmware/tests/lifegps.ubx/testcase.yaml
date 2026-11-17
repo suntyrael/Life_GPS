@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 tests:
   lifegps.ubx:
     platform_allow: native_sim
