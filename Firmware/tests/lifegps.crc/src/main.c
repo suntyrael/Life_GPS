@@ -79,4 +79,13 @@ ZTEST(lifegps_crc, test_single_bit_flip_is_detected)
 			  "CRC-32 missed a one-bit change");
 }
 
+ZTEST(lifegps_crc, test_null_buffer_is_empty_input)
+{
+	/* Truncated flash/BLE frames must not fault the CRC helpers. */
+	zassert_equal(lgps_crc8(NULL, 5U), 0x00U, "crc8 NULL must return the init value");
+	zassert_equal(lgps_crc8_update(0x5AU, NULL, 5U), 0x5AU, "crc8 chaining must not advance");
+	zassert_equal(lgps_crc16_ccitt_false(NULL, 5U), 0xFFFFU, "crc16 NULL must return init");
+	zassert_equal(lgps_crc32_iso_hdlc(NULL, 5U), 0x00000000U, "crc32 NULL must return the empty CRC");
+}
+
 ZTEST_SUITE(lifegps_crc, NULL, NULL, NULL, NULL, NULL);

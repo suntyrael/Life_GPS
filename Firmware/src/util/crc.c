@@ -25,6 +25,10 @@ uint8_t lgps_crc8_update(uint8_t crc, const uint8_t *data, size_t len_bytes)
 	size_t index;
 	uint8_t bit;
 
+	if (data == NULL) {
+		return crc;
+	}
+
 	for (index = 0U; index < len_bytes; index++) {
 		value ^= data[index];
 		for (bit = 0U; bit < 8U; bit++) {
@@ -51,6 +55,10 @@ uint16_t lgps_crc16_ccitt_false(const uint8_t *data, size_t len_bytes)
 	size_t index;
 	uint8_t bit;
 
+	if (data == NULL) {
+		return value;
+	}
+
 	for (index = 0U; index < len_bytes; index++) {
 		value ^= (uint16_t)((uint16_t)data[index] << 8U);
 		for (bit = 0U; bit < 8U; bit++) {
@@ -71,6 +79,10 @@ uint32_t lgps_crc32_iso_hdlc(const uint8_t *data, size_t len_bytes)
 	uint32_t value = 0xFFFFFFFFU;
 	size_t index;
 	uint8_t bit;
+
+	if (data == NULL) {
+		return ~value;
+	}
 
 	for (index = 0U; index < len_bytes; index++) {
 		value ^= (uint32_t)data[index];

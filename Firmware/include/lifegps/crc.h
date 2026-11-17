@@ -7,6 +7,11 @@
  *   package : CRC-32/ISO-HDLC, poly 0x04C11DB7, init/xorout 0xFFFFFFFF, reflected
  *
  * All functions are ISR-safe, allocate nothing and never touch global state.
+ *
+ * A NULL @p data never dereferences: the function returns the value of an empty
+ * input (the CRC init value for the one-shot helpers, the unchanged running value
+ * for lgps_crc8_update). Callers feeding flash/BLE buffers therefore cannot turn
+ * a truncated frame into a hard fault.
  */
 
 #ifndef LIFEGPS_CRC_H_
