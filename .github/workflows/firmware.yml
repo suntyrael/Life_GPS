@@ -78,9 +78,11 @@ jobs:
       - name: Mark workspace safe for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Cache NCS workspace
+      # Explicit restore/save pair: the workspace must survive a failed build so a
+      # rerun does not download NCS again (that was 4 minutes per attempt).
+      - name: Restore NCS workspace
         id: ncs-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.NCS_WORKSPACE }}
           key: ncs-ws-${{ env.NCS_REVISION }}-${{ hashFiles('Firmware/west.yml', '.github/workflows/firmware.yml') }}
@@ -102,6 +104,13 @@ jobs:
           cd "${NCS_WORKSPACE}"
           west list -f '{name}: {revision}' | sort | head -20
           cat zephyr/VERSION
+
+      - name: Save NCS workspace
+        if: always() && steps.ncs-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.NCS_WORKSPACE }}
+          key: ncs-ws-${{ env.NCS_REVISION }}-${{ hashFiles('Firmware/west.yml', '.github/workflows/firmware.yml') }}
 
       - name: Build firmware (lifegps/nrf54l15/cpuapp)
         run: |

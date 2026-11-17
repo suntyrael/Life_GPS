@@ -31,12 +31,11 @@ LOG_MODULE_REGISTER(lgps_gnss, LOG_LEVEL_INF);
 
 static const struct device *gnss_uart = DEVICE_DT_GET(DT_NODELABEL(uart20));
 
-K_RING_BUF_DECLARE(gnss_rx_ring, GNSS_RX_RING_SIZE);
+RING_BUF_DECLARE(gnss_rx_ring, GNSS_RX_RING_SIZE);
 
 static struct lgps_ubx_parser parser;
 static struct lgps_gnss_fix current_fix;
 static enum lgps_gnss_state gnss_state = LGPS_GNSS_STATE_OFF;
-static struct k_sem gnss_state_sem;
 static uint32_t state_since_ms;
 static uint32_t last_pvt_log_ms;
 
@@ -63,7 +62,6 @@ static void set_state(enum lgps_gnss_state next, uint32_t duration_ms)
 		lgps_gnss_state_name(next), duration_ms);
 	gnss_state = next;
 	state_since_ms = lgps_diag_uptime_ms();
-	k_sem_give(&gnss_state_sem);
 }
 
 void lgps_gnss_get_fix(struct lgps_gnss_fix *out)
@@ -347,7 +345,6 @@ int lgps_gnss_init(void)
 {
 	int ret;
 
-	k_sem_init(&gnss_state_sem, 0, 1);
 
 	if (!device_is_ready(gnss_uart)) {
 		LOG_ERR("UARTE20 (GPS) not ready");
