@@ -93,7 +93,11 @@ jobs:
             west init -m https://github.com/nrfconnect/sdk-nrf --mr "${NCS_REVISION}" "${NCS_WORKSPACE}"
             cd "${NCS_WORKSPACE}"
             # Only the projects this application actually compiles against.
-            west update --narrow nrf zephyr cmsis hal_nordic picolibc nrfxlib
+            # A project filter is the supported way to trim imported projects
+            # (cmsis / hal_nordic / picolibc arrive through the sdk-zephyr manifest).
+            west config manifest.project-filter -- \
+              "+nrf +zephyr +nrfxlib +cmsis +hal_nordic +picolibc +littlefs +mbedtls +mcuboot +segger"
+            west update --narrow
           fi
           cd "${NCS_WORKSPACE}"
           west list -f '{name}: {revision}' | sort | head -20
