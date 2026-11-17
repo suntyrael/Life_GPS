@@ -113,6 +113,9 @@ struct lgps_ubx_parser {
 	uint8_t msg_id;
 	uint8_t ck_a;
 	uint8_t ck_b;
+	/* Sticky: CK_A did not match, so the frame must be reported as corrupt even
+	 * though only the CK_B byte can tell us the frame has ended. */
+	uint8_t ck_mismatch;
 	uint8_t state;
 };
 

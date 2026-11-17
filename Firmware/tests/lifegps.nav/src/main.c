@@ -247,8 +247,14 @@ ZTEST(lifegps_nav, test_pdr_frozen_holds_position)
 
 	lgps_pdr_set_frozen(&pdr, false);
 	zassert_false(lgps_pdr_is_frozen(&pdr), "frozen flag not cleared");
-	zassert_within(lgps_pdr_step(&pdr, 1.0F, 0.0F), LGPS_WEINBERG_K_PRIOR,
-		       TEST_TOLERANCE, "step length after unfreezing");
+
+	/* zassert_* evaluates its arguments more than once: never call a
+	 * side-effecting function inside an assertion.
+	 */
+	float step_m = lgps_pdr_step(&pdr, 1.0F, 0.0F);
+
+	zassert_within(step_m, LGPS_WEINBERG_K_PRIOR, TEST_TOLERANCE,
+		       "step length after unfreezing");
 	zassert_equal(pdr.steps_total, 3U, "step counted after unfreezing");
 }
 

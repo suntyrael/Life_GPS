@@ -138,6 +138,7 @@ enum lgps_ubx_status lgps_ubx_parser_feed(struct lgps_ubx_parser *parser, uint8_
 		parser->msg_class = byte;
 		parser->ck_a = 0U;
 		parser->ck_b = 0U;
+		parser->ck_mismatch = 0U;
 		ubx_checksum_byte(byte, &parser->ck_a, &parser->ck_b);
 		parser->state = (uint8_t)UBX_STATE_ID;
 		return LGPS_UBX_STATUS_NONE;
@@ -177,14 +178,13 @@ enum lgps_ubx_status lgps_ubx_parser_feed(struct lgps_ubx_parser *parser, uint8_
 		return LGPS_UBX_STATUS_NONE;
 	case UBX_STATE_CK_A:
 		if (byte != parser->ck_a) {
-			parser->state = (uint8_t)UBX_STATE_SYNC1;
-			return LGPS_UBX_STATUS_NONE;
+			parser->ck_mismatch = 1U;
 		}
 		parser->state = (uint8_t)UBX_STATE_CK_B;
 		return LGPS_UBX_STATUS_NONE;
 	case UBX_STATE_CK_B:
 		parser->state = (uint8_t)UBX_STATE_SYNC1;
-		if (byte != parser->ck_b) {
+		if ((byte != parser->ck_b) || (parser->ck_mismatch != 0U)) {
 			return LGPS_UBX_STATUS_BAD_CHECKSUM;
 		}
 		return LGPS_UBX_STATUS_MSG_READY;
