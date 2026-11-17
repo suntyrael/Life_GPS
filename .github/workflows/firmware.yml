@@ -34,7 +34,8 @@ env:
   # Must stay equal to versions.yaml (revision / sdk) - both are part of the
   # frozen toolchain baseline, see versions.yaml header comment.
   NCS_REVISION: v3.4.2
-  NCS_WORKSPACE: /opt/ncs
+  # The image ships the toolchain under /opt/ncs/toolchains/<id>; never touch that.
+  NCS_WORKSPACE: /opt/ncs-workspace
 
 jobs:
   contract:
@@ -65,6 +66,7 @@ jobs:
         run: |
           set -eux
           echo "PATH=${PATH}"
+          command -v west cmake ninja python3
           arm-zephyr-eabi-gcc --version | head -1
           python3 --version
           cmake --version | head -1
@@ -81,7 +83,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.NCS_WORKSPACE }}
-          key: ncs-${{ env.NCS_REVISION }}-${{ hashFiles('Firmware/west.yml', '.github/workflows/firmware.yml') }}
+          key: ncs-ws-${{ env.NCS_REVISION }}-${{ hashFiles('Firmware/west.yml', '.github/workflows/firmware.yml') }}
 
       - name: Prepare NCS workspace
         run: |
@@ -143,7 +145,7 @@ jobs:
         with:
           name: lifegps-firmware-m1
           path: |
-            /opt/ncs/build-fw/zephyr/zephyr.hex
-            /opt/ncs/build-fw/zephyr/zephyr.elf
-            /opt/ncs/build-fw/zephyr/zephyr.map
+            /opt/ncs-workspace/build-fw/zephyr/zephyr.hex
+            /opt/ncs-workspace/build-fw/zephyr/zephyr.elf
+            /opt/ncs-workspace/build-fw/zephyr/zephyr.map
           if-no-files-found: error
