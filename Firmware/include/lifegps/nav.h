@@ -79,10 +79,12 @@ float lgps_nav_mag_anomaly_ratio(float measured_ut, float reference_ut);
 bool lgps_nav_mag_anomaly(float measured_ut, float reference_ut);
 
 struct lgps_pdr {
-	float k;
+	float k;              /* Weinberg gain, always > 0 */
 	float position_x_m;
 	float position_y_m;
 	uint32_t steps_total;
+	/* True while ZUPT holds the position: no integration, no step counting. */
+	bool frozen;
 };
 
 void lgps_pdr_init(struct lgps_pdr *pdr);

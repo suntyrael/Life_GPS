@@ -175,20 +175,15 @@ void lgps_pdr_init(struct lgps_pdr *pdr)
 		return;
 	}
 
-	/*
-	 * A positive k means "running"; the frozen flag is carried by the sign of
-	 * k because the frozen contract has no dedicated member for it.
-	 */
 	pdr->k = LGPS_WEINBERG_K_PRIOR;
 	pdr->position_x_m = 0.0F;
 	pdr->position_y_m = 0.0F;
 	pdr->steps_total = 0U;
+	pdr->frozen = false;
 }
 
 void lgps_pdr_set_k(struct lgps_pdr *pdr, float k)
 {
-	bool frozen;
-
 	if (pdr == NULL) {
 		return;
 	}
@@ -196,8 +191,7 @@ void lgps_pdr_set_k(struct lgps_pdr *pdr, float k)
 		return;
 	}
 
-	frozen = (pdr->k < 0.0F);
-	pdr->k = frozen ? -k : k;
+	pdr->k = k;
 }
 
 float lgps_pdr_step(struct lgps_pdr *pdr, float delta_accel_g, float heading_rad)
@@ -207,8 +201,8 @@ float lgps_pdr_step(struct lgps_pdr *pdr, float delta_accel_g, float heading_rad
 	if (pdr == NULL) {
 		return 0.0F;
 	}
-	if (pdr->k < 0.0F) {
-		/* Frozen by ZUPT: the step is dropped, the position is left untouched. */
+	if (pdr->frozen) {
+		/* ZUPT lock: the step is dropped, the position is left untouched. */
 		return 0.0F;
 	}
 
@@ -228,12 +222,8 @@ void lgps_pdr_set_frozen(struct lgps_pdr *pdr, bool frozen)
 		return;
 	}
 
-	/* Sign of k carries the flag; the magnitude (and position) is preserved. */
-	if (frozen) {
-		pdr->k = -fabsf(pdr->k);
-	} else {
-		pdr->k = fabsf(pdr->k);
-	}
+	/* Position and accumulated steps are preserved across the lock. */
+	pdr->frozen = frozen;
 }
 
 bool lgps_pdr_is_frozen(const struct lgps_pdr *pdr)
@@ -242,5 +232,5 @@ bool lgps_pdr_is_frozen(const struct lgps_pdr *pdr)
 		return false;
 	}
 
-	return pdr->k < 0.0F;
+	return pdr->frozen;
 }
