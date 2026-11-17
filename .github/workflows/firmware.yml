@@ -107,9 +107,11 @@ jobs:
         run: |
           set -eux
           export ZEPHYR_BASE="${NCS_WORKSPACE}/zephyr"
+          # BOARD_ROOT must be on the command line: sysbuild configures the image
+          # before the application CMakeLists.txt is evaluated.
           west build -p always -b lifegps/nrf54l15/cpuapp \
             -d "${NCS_WORKSPACE}/build-fw" "${GITHUB_WORKSPACE}/Firmware" \
-            -- -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+            -- -DBOARD_ROOT="${GITHUB_WORKSPACE}/Firmware" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       - name: Size gate (RRAM slot0 712 KB / SRAM 256 KB, see Firmware/docs/PARTITIONS.md)
         run: |
