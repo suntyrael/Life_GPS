@@ -41,8 +41,19 @@ LOG_MODULE_REGISTER(lgps_main, LOG_LEVEL_INF);
 
 /* Poll faster than the 26 Hz ODR and let the data-ready bit do the pacing. */
 #define MAIN_LOOP_PERIOD_MS 10U
+/* The five-line text frame on DEBUG_UART keeps its 1 Hz cadence: it is the
+ * scope-free instrument for bring-up and changing it would invalidate every
+ * earlier capture.
+ */
 #define TELEMETRY_PERIOD_MS 1000U
 #define BATTERY_PERIOD_MS 10000U
+/* The BLE Status frame is the phone UI's only live feed, so it is published much
+ * faster - but only while a central is subscribed. Without a subscriber there is
+ * nothing to show, so the snapshot is refreshed at the text cadence and the
+ * GET_STATUS cache stays warm.
+ */
+#define BLE_STATUS_PERIOD_MS 100U
+#define BLE_STATUS_IDLE_PERIOD_MS 1000U
 
 static struct lgps_zupt zupt;
 static struct lgps_pdr pdr;
@@ -132,8 +143,9 @@ static int init_subsystems(void)
 	return 0;
 }
 
-static void emit_telemetry(uint32_t now_ms, const struct lgps_imu_sample *sample,
-			   bool imu_valid, int32_t bat_mv, bool bat_valid)
+static struct lgps_telemetry_snapshot *build_snapshot(uint32_t now_ms,
+					      const struct lgps_imu_sample *sample,
+					      bool imu_valid, int32_t bat_mv, bool bat_valid)
 {
 	static struct lgps_telemetry_snapshot snap;
 	struct lgps_imu_mag mag;
@@ -171,7 +183,15 @@ static void emit_telemetry(uint32_t now_ms, const struct lgps_imu_sample *sample
 		snap.baro_press_raw = baro.raw_pressure;
 		snap.baro_temp_raw = baro.raw_temperature;
 	} else if (ret != -EAGAIN) {
-		LOG_WRN("sensor hub read failed (%d)", ret);
+		static uint32_t last_hub_warn_ms;
+
+		/* The snapshot is now rebuilt at the BLE publication rate, so a dead
+		 * sensor hub must not turn into ten warning lines per second.
+		 */
+		if ((uint32_t)(now_ms - last_hub_warn_ms) >= 10000U) {
+			last_hub_warn_ms = now_ms;
+			LOG_WRN("sensor hub read failed (%d)", ret);
+		}
 	}
 
 	snap.bat_valid = bat_valid;
@@ -187,14 +207,14 @@ static void emit_telemetry(uint32_t now_ms, const struct lgps_imu_sample *sample
 	snap.ring_sector_seq = ring.sector_seq;
 	snap.ring_records = ring.records_written;
 
-	lgps_telemetry_emit(&snap);
-	lgps_ble_publish(&snap);
+	return &snap;
 }
 
 int main(void)
 {
 	uint32_t last_telemetry_ms = 0U;
 	uint32_t last_battery_ms = 0U;
+	uint32_t last_ble_ms = 0U;
 	int32_t bat_mv = 0;
 	bool bat_valid = false;
 	bool imu_valid = false;
@@ -209,6 +229,10 @@ int main(void)
 	for (;;) {
 		uint32_t now_ms = lgps_diag_uptime_ms();
 		int ret = lgps_imu_read_sample_if_ready(&sample);
+		uint32_t ble_period_ms = lgps_ble_status_subscribed() ? BLE_STATUS_PERIOD_MS
+								      : BLE_STATUS_IDLE_PERIOD_MS;
+		bool ble_due = (uint32_t)(now_ms - last_ble_ms) >= ble_period_ms;
+		bool telemetry_due = (uint32_t)(now_ms - last_telemetry_ms) >= TELEMETRY_PERIOD_MS;
 
 		lgps_wdt_checkin(LGPS_WDT_TASK_MAIN);
 
@@ -248,9 +272,19 @@ int main(void)
 			}
 		}
 
-		if ((uint32_t)(now_ms - last_telemetry_ms) >= TELEMETRY_PERIOD_MS) {
-			last_telemetry_ms = now_ms;
-			emit_telemetry(now_ms, &sample, imu_valid, bat_mv, bat_valid);
+		if (ble_due || telemetry_due) {
+			struct lgps_telemetry_snapshot *snap =
+				build_snapshot(now_ms, &sample, imu_valid, bat_mv, bat_valid);
+
+			if (ble_due) {
+				last_ble_ms = now_ms;
+				lgps_ble_publish(snap);
+			}
+
+			if (telemetry_due) {
+				last_telemetry_ms = now_ms;
+				lgps_telemetry_emit(snap);
+			}
 		}
 
 		lgps_wdt_feed();

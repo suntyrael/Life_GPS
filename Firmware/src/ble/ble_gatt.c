@@ -58,8 +58,18 @@ BUILD_ASSERT(LGPS_BLE_STATUS_SIZE <= LGPS_PROTO_MTU - 8,
 	     "status frame must fit in one notification");
 
 #define LGPS_BLE_NAME_SIZE 16
-#define LGPS_BLE_CMD_THREAD_STACK 2048
-#define LGPS_BLE_LOG_THREAD_STACK 1024
+/*
+ * Stack sizing, measured against what each thread actually runs:
+ *   command thread: traj encode + flash append (mutex, erase possible) + GATT
+ *                   notify chain + LOG formatting
+ *   log thread:     240-byte packet buffer + GATT notify chain
+ * The notify path goes ATT -> L2CAP -> HCI -> SDC and the log formatter
+ * (CBPRINTF_COMPLETE + FP) is called in the caller's context because
+ * CONFIG_LOG_MODE_IMMEDIATE is on, so 1 KB was not enough: the bench showed a
+ * stack overflow in the notify-error path right after a disconnect.
+ */
+#define LGPS_BLE_CMD_THREAD_STACK 3072
+#define LGPS_BLE_LOG_THREAD_STACK 3072
 #define LGPS_BLE_THREAD_PRIO K_PRIO_PREEMPT(10)
 #define LGPS_BLE_LOG_DRAIN_MS 20
 #define LGPS_BLE_REBOOT_DELAY_MS 200
@@ -121,7 +131,11 @@ static struct bt_gatt_attr *status_attr;
 static struct bt_gatt_attr *control_attr;
 static struct bt_gatt_attr *log_attr;
 
-static bool status_subscribed;
+/* Written by the BT RX thread (CCC callback), read by the main loop and by the
+ * command thread. A single-byte store is atomic on Cortex-M, but it is shared
+ * across threads, so it is declared volatile on purpose (no ISR is involved).
+ */
+static volatile bool status_subscribed;
 static bool control_subscribed;
 static bool log_subscribed;
 static bool debug_unlocked;
@@ -151,6 +165,11 @@ static struct k_spinlock status_lock;
  * thread must not see a half-updated pair.
  */
 static atomic_t published_steps;
+
+/* Counted instead of logged inside the notify path; reported from publish(), in
+ * the main thread, where the log backend is not on the notification path.
+ */
+static atomic_t notify_failures;
 
 static char device_name[LGPS_BLE_NAME_SIZE];
 
@@ -218,20 +237,21 @@ static void notify_guarded(struct bt_gatt_attr *attr, const uint8_t *data, uint1
 {
 	int err;
 
-	if (attr == NULL) {
+	if ((attr == NULL) || !link_up) {
 		return;
 	}
 
 	err = bt_gatt_notify(NULL, attr, data, len);
-	if (err == -ENOMEM) {
-		/* No ATT buffer free: the frame is stale by the time a buffer is
-		 * available again (this is a 1 Hz stream), so drop instead of
-		 * queueing. Logged at debug level because it is not an error the
-		 * user can act on.
+	if (err != 0) {
+		/* -ENOMEM (no ATT buffer) and -ENOTCONN (link gone between the CCC
+		 * and this call) are both normal while a connection is draining or
+		 * dying. Count them and nothing else: logging from inside the notify
+		 * path re-enters the log backend in the caller's context (immediate
+		 * mode), which both feeds itself - a failed log notification would
+		 * produce another log line - and costs the stack exactly where the
+		 * notify chain is already deepest.
 		 */
-		LOG_DBG("notify skipped, no buffer");
-	} else if (err != 0) {
-		LOG_WRN("notify failed (%d)", err);
+		(void)atomic_inc(&notify_failures);
 	}
 }
 
@@ -902,15 +922,28 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 
 /* --- public API ------------------------------------------------------------ */
 
+bool lgps_ble_status_subscribed(void)
+{
+	return status_subscribed;
+}
+
 void lgps_ble_publish(const struct lgps_telemetry_snapshot *snap)
 {
 	struct lgps_ble_status status;
 	uint8_t frame[LGPS_BLE_STATUS_SIZE];
+	static atomic_val_t reported_failures;
+	atomic_val_t failures;
 	k_spinlock_key_t key;
 	int len;
 
 	if (snap == NULL) {
 		return;
+	}
+
+	failures = atomic_get(&notify_failures);
+	if (failures != reported_failures) {
+		reported_failures = failures;
+		LOG_WRN("%d notification(s) dropped so far (link busy or gone)", (int)failures);
 	}
 
 	status_from_fix(&status, snap);

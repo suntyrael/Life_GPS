@@ -139,7 +139,7 @@ fun SensorStatusScreen(
 
             item {
                 Text(
-                    "Status 帧以 1 Hz 推送；加速度按 ±4 g（0.122 mg/LSB）、角速度按 ±1000 dps（35 mdps/LSB）、磁力计按 1.5 mG/LSB 换算。四元数与 hPa 不在 v1 帧内。",
+                    "Status 帧在有订阅时以 10 Hz 推送（无订阅 1 Hz）；加速度按 ±4 g（0.122 mg/LSB）、角速度按 ±1000 dps（35 mdps/LSB）、磁力计按 1.5 mG/LSB 换算。四元数与 hPa 不在 v1 帧内。",
                     color = TextDim,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(bottom = 20.dp),

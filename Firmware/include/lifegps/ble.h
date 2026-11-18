@@ -33,10 +33,17 @@
 int lgps_ble_init(void);
 
 /*
+ * True while a central has the Status characteristic subscribed. The main loop
+ * uses it to publish at the BLE rate only when somebody is listening; without a
+ * subscriber the snapshot is refreshed at the (slow) text cadence instead.
+ */
+bool lgps_ble_status_subscribed(void);
+
+/*
  * Encode @p snap as the 82-byte Status frame, cache it for reads and notify the
- * subscribed central. Thread context: any thread (the main loop calls it at
- * 1 Hz). Safe to call before lgps_ble_init(): the frame is cached and simply
- * not notified.
+ * subscribed central. Thread context: any thread (the main loop calls it at the
+ * publication rate). Safe to call before lgps_ble_init(): the frame is cached
+ * and simply not notified.
  */
 void lgps_ble_publish(const struct lgps_telemetry_snapshot *snap);
 
