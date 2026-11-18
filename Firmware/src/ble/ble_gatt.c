@@ -775,6 +775,66 @@ static void log_handler(void *unused1, void *unused2, void *unused3)
 
 /* --- connection ------------------------------------------------------------ */
 
+/*
+ * Human-readable disconnect reason. 0x08 is the one that matters on this bench:
+ * it means the controller stopped hearing the phone for the whole supervision
+ * timeout, which is a radio/link property and not a firmware fault (the device
+ * keeps running and keeps logging).
+ */
+static const char *disconnect_reason_name(uint8_t reason)
+{
+	switch (reason) {
+	case 0x05U:
+		return "authentication failure";
+	case 0x06U:
+		return "PIN or key missing";
+	case 0x08U:
+		return "connection timeout (supervision)";
+	case 0x13U:
+		return "remote user terminated";
+	case 0x14U:
+		return "remote terminated, resources";
+	case 0x15U:
+		return "remote terminated, power off";
+	case 0x16U:
+		return "local host terminated";
+	case 0x22U:
+		return "LL response timeout";
+	case 0x28U:
+		return "instant passed";
+	case 0x3BU:
+		return "unacceptable connection parameters";
+	case 0x3DU:
+		return "MIC failure";
+	case 0x3EU:
+		return "connection failed to be established";
+	default:
+		return "other HCI error";
+	}
+}
+
+/*
+ * The negotiated parameters are what a supervision timeout is measured against,
+ * so they belong in the log: without them a 0x08 is indistinguishable from
+ * "the phone moved away" versus "the timeout is 400 ms".
+ */
+static void log_conn_params(struct bt_conn *conn)
+{
+	struct bt_conn_info info;
+	int err;
+
+	err = bt_conn_get_info(conn, &info);
+	if (err != 0) {
+		LOG_WRN("connection info unavailable (%d)", err);
+
+		return;
+	}
+
+	LOG_INF("link: interval %u us, latency %u, supervision %u ms",
+		(unsigned int)info.le.interval_us, (unsigned int)info.le.latency,
+		(unsigned int)info.le.timeout * 10U);
+}
+
 static void connected(struct bt_conn *conn, uint8_t err)
 {
 	if (err != 0) {
@@ -786,6 +846,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 
 	LOG_INF("central connected");
 	link_up = true;
+	log_conn_params(conn);
 
 #if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
 	{
@@ -807,7 +868,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
 	ARG_UNUSED(conn);
 
-	LOG_INF("central disconnected (0x%02x)", reason);
+	LOG_INF("central disconnected (0x%02x: %s)", reason, disconnect_reason_name(reason));
 
 	link_up = false;
 	status_subscribed = false;
