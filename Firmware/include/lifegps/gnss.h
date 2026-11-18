@@ -17,6 +17,15 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/*
+ * Line rate of the receiver. The u-blox M10 factory default is 38400 8N1
+ * (interface description, CFG-UART1-BAUDRATE 0x40520001), and the devicetree
+ * current-speed matches it; 9600 is the only other rate worth trying before
+ * declaring the link broken.
+ */
+#define LGPS_GNSS_BAUD_DEFAULT 38400U
+#define LGPS_GNSS_BAUD_FALLBACK 9600U
+
 #define LGPS_GNSS_COLD_START_TIMEOUT_MS 60000U
 #define LGPS_GNSS_EPHEMERIS_HOLD_MS 35000U
 #define LGPS_GNSS_BACKOFF_STEP1_MS 120000U

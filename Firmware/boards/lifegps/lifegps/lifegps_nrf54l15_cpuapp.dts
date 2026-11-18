@@ -176,10 +176,16 @@
 	pinctrl-names = "default", "sleep";
 };
 
-/* GNSS UART to MAX-M10S (U1 pin 2/3 through 100 ohm series resistors). */
+/*
+ * GNSS UART to MAX-M10S (U1 pin 2/3 through 100 ohm series resistors).
+ * The receiver's factory default is 38400 8N1 (u-blox M10 interface description,
+ * configuration item CFG-UART1-BAUDRATE 0x40520001 = 38400), so the MCU has to
+ * match that; talking 115200 into a 38400 receiver produced the byte stream with
+ * no '$' and no UBX sync seen in the M1 logs.
+ */
 &uart20 {
 	status = "okay";
-	current-speed = <115200>;
+	current-speed = <38400>;
 	pinctrl-0 = <&uart20_default>;
 	pinctrl-1 = <&uart20_sleep>;
 	pinctrl-names = "default", "sleep";

@@ -40,6 +40,8 @@ static uint32_t state_since_ms;
 static uint32_t last_pvt_log_ms;
 static struct lgps_gnss_counters counters;
 static uint32_t next_reconfig_ms;
+static uint32_t current_baud = LGPS_GNSS_BAUD_DEFAULT;
+static bool baud_fallback_done;
 
 /* Given by lgps_gnss_init() only after the UART and its IRQ handler are live,
  * so the state machine can never power the rail before the receive path exists.
@@ -124,6 +126,35 @@ static void gnss_uart_isr(const struct device *dev, void *user_data)
 			LOG_WRN("GNSS RX ring overflow, %d bytes dropped", read);
 		}
 	}
+}
+
+static int gnss_uart_set_baud(uint32_t baud)
+{
+	struct uart_config cfg;
+	int ret;
+
+	if (baud == current_baud) {
+		return 0;
+	}
+
+	ret = uart_config_get(gnss_uart, &cfg);
+	if (ret < 0) {
+		LOG_ERR("uart_config_get failed (%d)", ret);
+		return ret;
+	}
+
+	cfg.baudrate = baud;
+
+	ret = uart_configure(gnss_uart, &cfg);
+	if (ret < 0) {
+		LOG_ERR("uart_configure(%u) failed (%d)", baud, ret);
+		return ret;
+	}
+
+	current_baud = baud;
+	LOG_INF("GNSS UART baud -> %u 8N1", baud);
+
+	return 0;
 }
 
 static int gnss_uart_send(const uint8_t *data, size_t len_bytes)
@@ -293,8 +324,8 @@ static void gnss_power_up(void)
 	next_reconfig_ms = 0U;
 	(void)gnss_configure_output();
 
-	LOG_INF("GNSS RX counters: rx_bytes=%u ubx=%u ckerr=%u nmea=%u", counters.rx_bytes,
-		counters.ubx_frames, counters.ubx_bad_checksum, counters.nmea_starts);
+	LOG_INF("GNSS RX counters: rx_bytes=%u ubx=%u ckerr=%u nmea=%u baud=%u", counters.rx_bytes,
+		counters.ubx_frames, counters.ubx_bad_checksum, counters.nmea_starts, current_baud);
 }
 
 static uint32_t backoff_duration_ms(enum lgps_gnss_state previous, uint32_t previous_ms)
@@ -340,6 +371,22 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 			 * and keeps streaming NMEA only. Re-send every 2 s for the first 10 s
 			 * until any UBX frame arrives, then stop.
 			 */
+			/*
+			 * Bytes arriving without a single '$' and without a UBX sync mean the
+			 * line rate is wrong (framing garbage), not that the module is silent.
+			 * Try the other common factory rate once, then report clearly.
+			 */
+			if (!baud_fallback_done && (counters.rx_bytes > 200U) &&
+			    (counters.nmea_starts == 0U) && (counters.ubx_frames == 0U) &&
+			    (elapsed > 3000U)) {
+				baud_fallback_done = true;
+				LOG_WRN("GNSS: %u bytes received at %u baud without any '$' or UBX sync - "
+					"assuming a line-rate mismatch", counters.rx_bytes, current_baud);
+				(void)gnss_uart_set_baud(LGPS_GNSS_BAUD_FALLBACK);
+				counters.rx_bytes = 0U;
+				next_reconfig_ms = 0U;
+			}
+
 			if ((counters.ubx_frames == 0U) && (elapsed < 10000U) &&
 			    (lgps_diag_uptime_ms() >= next_reconfig_ms)) {
 				next_reconfig_ms = lgps_diag_uptime_ms() + 2000U;

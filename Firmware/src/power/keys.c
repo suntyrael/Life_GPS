@@ -14,6 +14,7 @@
 LOG_MODULE_REGISTER(lgps_keys, LOG_LEVEL_INF);
 
 #define KEY_POLL_PERIOD_MS 10
+#define KEY_SETTLE_MS 5
 #define KEY_THREAD_STACK 1024
 #define KEY_THREAD_PRIORITY 8
 
@@ -51,6 +52,10 @@ static struct lgps_key_state keys[LGPS_KEY_COUNT] = {
 };
 
 static lgps_key_callback_t key_callback;
+
+/* The thread is created by K_THREAD_DEFINE, which starts it during kernel init,
+ * i.e. before lgps_keys_init() runs. It must not sample unconfigured pins. */
+static K_SEM_DEFINE(keys_ready_sem, 0, 1);
 
 /*
  * Bench diagnostic for a pin that reads low at boot. A low reading has three very
@@ -124,16 +129,25 @@ static void diagnose_key_pin(const struct gpio_dt_spec *spec, const char *name)
 		"explicit_down=%d)", name, spec->port->name, port_in, spec->pin,
 		(unsigned int)((port_in >> spec->pin) & 0x01U), as_dt, explicit_up, explicit_down);
 
-	if ((explicit_up == 0) && (explicit_down == 0)) {
+	if ((effective & GPIO_PULL_UP) == 0U) {
+		LOG_ERR("%s: the driver reports no pull-up on this pin - configuration did not "
+			"reach the hardware", name);
+	} else if ((explicit_up == 0) && (explicit_down == 0)) {
 		LOG_WRN("%s: both pulls read 0 -> the pin is externally driven low "
 			"(held button, net shorted to GND, or the wrong pin)", name);
 	} else if ((explicit_up == 0) && (explicit_down == 1)) {
-		LOG_ERR("%s: pull configuration has no effect on the pin (driver / pin mux)", name);
+		LOG_ERR("%s: the pull configuration has no effect on the pin (driver / pin mux)",
+			name);
 	} else if ((explicit_up == 1) && (explicit_down == 1)) {
 		LOG_WRN("%s: both pulls read 1 -> the pin is externally driven high", name);
 	} else if (as_dt == 0) {
-		LOG_ERR("%s: devicetree flags (0x%02x) lost GPIO_PULL_UP - pin floats when the "
-			"button is open", name, spec->dt_flags);
+		/*
+		 * up=1/down=0 proves the pull-up works and the button is open, so the low
+		 * reading taken right after the first configuration is a settling artefact,
+		 * not a wiring fault. Initialisation now uses the settled value.
+		 */
+		LOG_WRN("%s: pull-up works and the key is released, but the first sample after "
+			"configuration read low (pad settling); using the settled sample", name);
 	} else {
 		LOG_INF("%s: pull-up works, key is released", name);
 	}
@@ -216,6 +230,10 @@ static void keys_thread(void *arg1, void *arg2, void *arg3)
 	ARG_UNUSED(arg2);
 	ARG_UNUSED(arg3);
 
+	if (k_sem_take(&keys_ready_sem, K_FOREVER) != 0) {
+		return;
+	}
+
 	for (;;) {
 		uint32_t now_ms = k_uptime_get_32();
 
@@ -263,6 +281,13 @@ int lgps_keys_init(lgps_key_callback_t callback)
 			return ret;
 		}
 
+		/*
+		 * Let the pad settle before the first sample: right after the pull-up is
+		 * enabled the very first read can still return the old level, which would
+		 * latch a "pressed" state that no event can clear.
+		 */
+		k_msleep(KEY_SETTLE_MS);
+
 		int level = gpio_pin_get_dt(key->spec);
 
 		if (level < 0) {
@@ -270,20 +295,30 @@ int lgps_keys_init(lgps_key_callback_t callback)
 			return level;
 		}
 
+		if (level == 0) {
+			LOG_WRN("%s reads low after settling: long press disarmed until it is "
+				"released once", key->name);
+			diagnose_key_pin(key->spec, key->name);
+
+			/* Use the settled value the diagnostic left behind. */
+			level = gpio_pin_get_dt(key->spec);
+			if (level < 0) {
+				LOG_ERR("%s: read after self-test failed (%d)", key->name, level);
+				return level;
+			}
+		}
+
 		key->stable_pressed = (level == 0) ? 1U : 0U;
 		key->candidate_pressed = key->stable_pressed;
 		key->press_start_ms = k_uptime_get_32();
 		key->armed = (key->stable_pressed == 0U);
-
-		if (!key->armed) {
-			LOG_WRN("%s reads low at boot: long press disarmed until it is released "
-				"once", key->name);
-			diagnose_key_pin(key->spec, key->name);
-		}
 	}
 
 	LOG_INF("keys ready: KEY1_POI=P1.06 KEY2_MODE=P1.08 (pull-up, %u ms debounce, "
 		"%u ms long press, arm-on-release)", LGPS_KEY_DEBOUNCE_MS, LGPS_KEY_LONG_PRESS_MS);
+
+	/* Sampling may start only now that both pins are configured and settled. */
+	k_sem_give(&keys_ready_sem);
 
 	return 0;
 }
