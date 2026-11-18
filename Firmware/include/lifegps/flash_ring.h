@@ -36,6 +36,17 @@
 #define LGPS_RING_FLAGS_ARCHIVED 0x55AAU
 #define LGPS_RING_FLAGS_ERASING 0x0000U
 
+/* OTA slot1 lives at the top of the external flash, so the trajectory area is
+ * "whatever the part really is" minus this reservation (Firmware/docs/PARTITIONS.md).
+ */
+#define LGPS_EXT_FLASH_OTA_SLOT1_BYTES (1024U * 1024U)
+
+struct lgps_ring_capacity {
+	uint32_t flash_bytes;     /* density reported by SFDP */
+	uint32_t ota_slot1_bytes; /* reserved at the top for MCUboot slot1 */
+	uint32_t traj_bytes;      /* flash_bytes - ota_slot1_bytes */
+};
+
 struct lgps_ring_stats {
 	uint32_t sector_seq;
 	uint8_t erase_count_max;
@@ -55,5 +66,11 @@ int lgps_ring_append(const uint8_t *record);
 
 /* Copy the current statistics (never NULL). */
 void lgps_ring_get_stats(struct lgps_ring_stats *out);
+
+/*
+ * Detected capacities. The W25Q512NW is 64 MB and the W25Q256 is 32 MB; both are
+ * handled because the size comes from SFDP at runtime and nothing assumes 64 MB.
+ */
+void lgps_ring_get_capacity(struct lgps_ring_capacity *out);
 
 #endif /* LIFEGPS_FLASH_RING_H_ */

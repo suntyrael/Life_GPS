@@ -26,10 +26,15 @@
  */
 #define LGPS_WDT_FEED_WINDOW_MS 5000U
 
+/*
+ * One entry per *thread*. The IMU sampling runs inside the main loop, so it is not
+ * a supervised task of its own: a check-in must mean "this thread is still
+ * running", never "the last bus operation succeeded". Otherwise a silent sensor
+ * (or a rejected SPI read) turns into a 30 s reset loop instead of a logged fault.
+ */
 enum lgps_wdt_task {
 	LGPS_WDT_TASK_MAIN = 0,
 	LGPS_WDT_TASK_GNSS,
-	LGPS_WDT_TASK_IMU,
 	LGPS_WDT_TASK_COUNT,
 };
 

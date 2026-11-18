@@ -205,8 +205,6 @@ int main(void)
 			float accel_body[3];
 			float gyro_body[3];
 
-			lgps_wdt_checkin(LGPS_WDT_TASK_IMU);
-
 			lgps_nav_body_from_imu(sample.accel_g, accel_body);
 			lgps_nav_body_from_imu(sample.gyro_dps, gyro_body);
 

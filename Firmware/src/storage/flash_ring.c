@@ -33,6 +33,7 @@ static K_MUTEX_DEFINE(ring_lock);
 static struct lgps_ring_stats stats;
 static uint8_t active_sector;
 static bool ring_ready;
+static struct lgps_ring_capacity capacity;
 
 static off_t sector_offset(uint8_t sector)
 {
@@ -145,8 +146,40 @@ int lgps_ring_init(void)
 	int ret;
 
 	if (!device_is_ready(nor)) {
-		LOG_ERR("W25Q512NW (SPIM00) not ready");
+		LOG_ERR("external NOR (SPIM00) not ready");
 		return -ENODEV;
+	}
+
+	/* Density first: 32 MB and 64 MB parts must both work. */
+	struct flash_pages_info first_page;
+	size_t page_count = flash_get_page_count(nor);
+
+	if (flash_get_page_info_by_idx(nor, 0U, &first_page) < 0) {
+		LOG_ERR("external NOR: page info unavailable");
+		return -EIO;
+	}
+
+	capacity.flash_bytes = (uint32_t)(page_count * first_page.size);
+	capacity.ota_slot1_bytes = LGPS_EXT_FLASH_OTA_SLOT1_BYTES;
+	capacity.traj_bytes = (capacity.flash_bytes > capacity.ota_slot1_bytes)
+				      ? (capacity.flash_bytes - capacity.ota_slot1_bytes)
+				      : 0U;
+
+	if (capacity.flash_bytes < (LGPS_RING_SECTOR_COUNT * LGPS_RING_SECTOR_SIZE)) {
+		LOG_ERR("external NOR too small: %u bytes", capacity.flash_bytes);
+		return -ENOSPC;
+	}
+
+	LOG_INF("external NOR: %u MiB detected via SFDP (%u pages x %u bytes), "
+		"trajectory area %u MiB, OTA slot1 %u MiB at 0x%08x",
+		capacity.flash_bytes / (1024U * 1024U), (unsigned int)page_count,
+		(unsigned int)first_page.size, capacity.traj_bytes / (1024U * 1024U),
+		capacity.ota_slot1_bytes / (1024U * 1024U),
+		capacity.flash_bytes - capacity.ota_slot1_bytes);
+
+	if (capacity.flash_bytes != 64U * 1024U * 1024U) {
+		LOG_WRN("external NOR is not the 64 MB W25Q512NW the archive budget assumes; "
+			"the trajectory area scales with the real density");
 	}
 
 	k_mutex_lock(&ring_lock, K_FOREVER);
@@ -246,6 +279,15 @@ int lgps_ring_append(const uint8_t *record)
 	k_mutex_unlock(&ring_lock);
 
 	return 0;
+}
+
+void lgps_ring_get_capacity(struct lgps_ring_capacity *out)
+{
+	if (out == NULL) {
+		return;
+	}
+
+	*out = capacity;
 }
 
 void lgps_ring_get_stats(struct lgps_ring_stats *out)

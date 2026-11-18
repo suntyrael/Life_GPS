@@ -7,6 +7,7 @@
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/sys/printk.h>
 #include <zephyr/sys/util.h>
 
 #include <lifegps/wdt.h>
@@ -23,7 +24,6 @@ static uint32_t next_evaluation_ms;
 static const char *const task_names[LGPS_WDT_TASK_COUNT] = {
 	[LGPS_WDT_TASK_MAIN] = "main",
 	[LGPS_WDT_TASK_GNSS] = "gnss",
-	[LGPS_WDT_TASK_IMU] = "imu",
 };
 
 int lgps_wdt_init(void)
@@ -96,8 +96,24 @@ void lgps_wdt_feed(void)
 
 	missing = lgps_wdt_missing();
 	if (missing != 0U) {
-		LOG_ERR("WDT feed withheld: tasks missing in this %u ms window: 0x%02x",
-			LGPS_WDT_FEED_WINDOW_MS, missing);
+		char names[48] = { 0 };
+		size_t used = 0U;
+
+		for (uint8_t id = 0U; id < LGPS_WDT_TASK_COUNT; id++) {
+			if ((missing & BIT(id)) == 0U) {
+				continue;
+			}
+
+			int written = snprintk(&names[used], sizeof(names) - used, "%s%s",
+					       (used == 0U) ? "" : ",", task_names[id]);
+
+			if (written > 0) {
+				used += (size_t)written;
+			}
+		}
+
+		LOG_ERR("WDT feed withheld: %s did not check in during the last %u ms window",
+			names, LGPS_WDT_FEED_WINDOW_MS);
 		return;
 	}
 
