@@ -43,7 +43,7 @@ import com.lifegps.app.ui.theme.TextMain
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SerialLogScreen(
-    repo: FakeDebugRepository,
+    repo: DebugRepository,
     onBack: () -> Unit,
 ) {
     val logs by repo.logs.collectAsStateWithLifecycle()

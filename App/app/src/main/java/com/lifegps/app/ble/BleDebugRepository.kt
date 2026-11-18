@@ -1,0 +1,1162 @@
+package com.lifegps.app.ble
+
+import android.content.Context
+import com.lifegps.app.debug.BaroStatus
+import com.lifegps.app.debug.CheckItem
+import com.lifegps.app.debug.CheckState
+import com.lifegps.app.debug.ConsoleEntry
+import com.lifegps.app.debug.DebugRepository
+import com.lifegps.app.debug.DeviceSummary
+import com.lifegps.app.debug.FlashStatus
+import com.lifegps.app.debug.GeoPoint
+import com.lifegps.app.debug.GnssStatus
+import com.lifegps.app.debug.ImuStatus
+import com.lifegps.app.debug.LogEntry
+import com.lifegps.app.debug.LogLevel
+import com.lifegps.app.debug.LogSource
+import com.lifegps.app.debug.MagStatus
+import com.lifegps.app.debug.PoiMarker
+import com.lifegps.app.debug.ScannedDevice
+import com.lifegps.app.debug.TrailPoint
+import java.io.File
+import java.time.Instant
+import java.time.LocalTime
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+
+/**
+ * Debug data source backed by the real GATT link.
+ *
+ * Every number exposed to the UI is derived from a Status notification, a
+ * command response or a Log notification. When the firmware does not publish a
+ * quantity (quaternions, hPa, per-satellite C/N0, TTFF) the corresponding field
+ * stays zero / empty and the screens render "—", never a substitute value.
+ */
+class BleDebugRepository(context: Context) : DebugRepository {
+
+    private val transport = BleTransport(context)
+    private val appContext: Context = context.applicationContext
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val clock = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
+
+    @Volatile
+    private var permissionsGranted = false
+
+    @Volatile
+    private var capsInfo: CapsInfo? = null
+
+    @Volatile
+    private var flashInfo: FlashInfo? = null
+
+    @Volatile
+    private var lastStatus: StatusFrame? = null
+
+    private var lastLink: LinkState = LinkState.DISCONNECTED
+    private var wasScanning = false
+    private var handshakeJob: Job? = null
+    private var baroExplained = false
+    private var incompatibleReported = false
+
+    // PDR estimate state: firmware step count + heading, not an IMU attitude.
+    private var lastSteps = -1L
+    private var trailEastM = 0.0
+    private var trailNorthM = 0.0
+
+    // Command sequencing / response matching.
+    private val pendingLock = Any()
+    private val pending = mutableMapOf<Int, CompletableDeferred<CommandResult>>()
+    private var sequence = 0
+
+    private val _device = MutableStateFlow(initialDevice())
+    override val device: StateFlow<DeviceSummary> = _device.asStateFlow()
+
+    private val _gnss = MutableStateFlow(initialGnss())
+    override val gnss: StateFlow<GnssStatus> = _gnss.asStateFlow()
+
+    private val _imu = MutableStateFlow(initialImu())
+    override val imu: StateFlow<ImuStatus> = _imu.asStateFlow()
+
+    private val _mag = MutableStateFlow(initialMag())
+    override val mag: StateFlow<MagStatus> = _mag.asStateFlow()
+
+    private val _baro = MutableStateFlow(initialBaro())
+    override val baro: StateFlow<BaroStatus> = _baro.asStateFlow()
+
+    private val _flash = MutableStateFlow(initialFlash())
+    override val flash: StateFlow<FlashStatus> = _flash.asStateFlow()
+
+    private val _checks = MutableStateFlow(pendingChecks())
+    override val checks: StateFlow<List<CheckItem>> = _checks.asStateFlow()
+
+    private val _checkRunning = MutableStateFlow(false)
+    override val checkRunning: StateFlow<Boolean> = _checkRunning.asStateFlow()
+
+    private val _logs = MutableStateFlow<List<LogEntry>>(emptyList())
+    override val logs: StateFlow<List<LogEntry>> = _logs.asStateFlow()
+
+    private val _console = MutableStateFlow<List<ConsoleEntry>>(emptyList())
+    override val console: StateFlow<List<ConsoleEntry>> = _console.asStateFlow()
+
+    private val _devices = MutableStateFlow<List<ScannedDevice>>(emptyList())
+    override val devices: StateFlow<List<ScannedDevice>> = _devices.asStateFlow()
+
+    private val _scanning = MutableStateFlow(false)
+    override val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
+
+    private val _geoTrail = MutableStateFlow<List<GeoPoint>>(emptyList())
+    override val geoTrail: StateFlow<List<GeoPoint>> = _geoTrail.asStateFlow()
+
+    private val _liveTracking = MutableStateFlow(true)
+    override val liveTracking: StateFlow<Boolean> = _liveTracking.asStateFlow()
+
+    private val _trail = MutableStateFlow<List<TrailPoint>>(emptyList())
+    override val trail: StateFlow<List<TrailPoint>> = _trail.asStateFlow()
+
+    private val _trailRunning = MutableStateFlow(true)
+    override val trailRunning: StateFlow<Boolean> = _trailRunning.asStateFlow()
+
+    private val _pois = MutableStateFlow<List<PoiMarker>>(emptyList())
+    override val pois: StateFlow<List<PoiMarker>> = _pois.asStateFlow()
+
+    private var nextPoiId = 1
+
+    init {
+        transport.onStatus = { bytes -> handleStatusBytes(bytes) }
+        transport.onLog = { bytes -> handleLogPacket(bytes) }
+        transport.onFrame = { bytes -> handleResponseFrame(bytes) }
+
+        scope.launch {
+            transport.state.collect { link -> handleLinkState(link) }
+        }
+        scope.launch {
+            transport.scanning.collect { active ->
+                _scanning.value = active
+                if (wasScanning && !active) {
+                    addLog(LogLevel.INFO, LogSource.BLE, "SCAN", "扫描结束，发现 ${_devices.value.size} 个设备")
+                }
+                wasScanning = active
+            }
+        }
+        scope.launch {
+            transport.scanError.collect { message ->
+                if (message != null) {
+                    addLog(LogLevel.ERROR, LogSource.BLE, "SCAN", message)
+                }
+            }
+        }
+        addLog(
+            LogLevel.INFO,
+            LogSource.BLE,
+            "APP",
+            "调试数据源已切换为真实 BLE GATT（Service ${BleUuids.SERVICE}）",
+        )
+    }
+
+    /** Called by the UI once the runtime permission gate allows scanning. */
+    fun setPermissionsGranted(granted: Boolean) {
+        if (permissionsGranted == granted) return
+        permissionsGranted = granted
+        if (granted) {
+            addLog(LogLevel.INFO, LogSource.BLE, "PERM", "蓝牙权限已授予")
+        } else {
+            addLog(LogLevel.WARN, LogSource.BLE, "PERM", "蓝牙权限未授予：扫描与连接不可用")
+        }
+    }
+
+    /** Releases the GATT client; called when the composition goes away. */
+    fun close() {
+        transport.close()
+        scope.cancel()
+    }
+
+    // --- link lifecycle -------------------------------------------------------
+
+    private fun handleLinkState(link: LinkState) {
+        if (link == lastLink) return
+        lastLink = link
+        when (link) {
+            LinkState.DISCONNECTED -> {
+                resetTelemetry(keepName = true)
+                addLog(LogLevel.WARN, LogSource.BLE, "LINK", "链路已断开")
+            }
+
+            LinkState.CONNECTING -> {
+                _device.update { it.copy(connected = false) }
+                addLog(LogLevel.INFO, LogSource.BLE, "LINK", "正在建立 GATT 连接…")
+            }
+
+            LinkState.CONNECTED -> {
+                addLog(LogLevel.INFO, LogSource.BLE, "LINK", "GATT 已连接，协商 MTU 并发现服务…")
+            }
+
+            LinkState.READY -> {
+                _device.update { it.copy(connected = true) }
+                incompatibleReported = false
+                addLog(LogLevel.INFO, LogSource.BLE, "LINK", "Status/Log/Control 通知已订阅，链路就绪")
+                startHandshake()
+            }
+
+            is LinkState.ERROR -> {
+                resetTelemetry(keepName = true)
+                addLog(LogLevel.ERROR, LogSource.BLE, "LINK", link.message)
+            }
+        }
+    }
+
+    private fun startHandshake() {
+        handshakeJob?.cancel()
+        handshakeJob = scope.launch {
+            runAutoCommand(Opcode.GET_CAPS)
+            runAutoCommand(Opcode.GET_STATUS)
+            runAutoCommand(Opcode.FLASH_INFO)
+        }
+    }
+
+    private suspend fun runAutoCommand(opcode: Opcode) {
+        val result = execute(opcode, ByteArray(0))
+        val text = describeResult(opcode, result)
+        appendConsole(opcode.label, "-", text)
+        addLog(
+            if (result?.status == StatusCode.OK.code) LogLevel.INFO else LogLevel.WARN,
+            LogSource.BLE,
+            "CMD",
+            "${opcode.label} -> $text",
+        )
+    }
+
+    private fun resetTelemetry(keepName: Boolean) {
+        _device.update {
+            it.copy(
+                name = if (keepName) it.name else "未连接",
+                connected = false,
+                firmware = "—",
+                protocol = "—",
+                batteryPct = 0,
+                batteryMv = 0,
+                charging = false,
+                mode = "—",
+                uptimeSeconds = 0,
+            )
+        }
+        _gnss.value = initialGnss()
+        _imu.value = initialImu()
+        _mag.value = initialMag()
+        _baro.value = initialBaro()
+        _flash.value = initialFlash()
+        _checks.value = pendingChecks()
+        capsInfo = null
+        flashInfo = null
+        lastStatus = null
+        baroExplained = false
+        lastSteps = -1L
+        trailEastM = 0.0
+        trailNorthM = 0.0
+    }
+
+    // --- status / log notifications -------------------------------------------
+
+    private fun handleStatusBytes(bytes: ByteArray) {
+        val frame = BleFrame.parseStatus(bytes)
+        if (frame == null) {
+            addLog(LogLevel.WARN, LogSource.BLE, "STATUS", "Status 帧长度 ${bytes.size} B < ${StatusOffset.SIZE}，已忽略")
+            return
+        }
+        if (frame.ver != BleFrame.VER) {
+            rejectIncompatible("Status ver=${frame.ver}，App 支持 ${BleFrame.VER}")
+            return
+        }
+        onStatusFrame(frame)
+    }
+
+    private fun onStatusFrame(frame: StatusFrame) {
+        lastStatus = frame
+        val caps = capsInfo
+
+        val batteryMv = frame.batMv
+        _device.update {
+            it.copy(
+                connected = true,
+                firmware = caps?.let { c -> "fw ${c.firmwareText}" } ?: it.firmware,
+                protocol = caps?.let { c -> "proto ${c.protocolText}" } ?: it.protocol,
+                batteryMv = batteryMv,
+                batteryPct = if (batteryMv > 0) batteryPercent(batteryMv) else 0,
+                charging = frame.charging,
+                // v1 has no "work mode" field in the Status frame.
+                mode = "—",
+                uptimeSeconds = frame.uptimeMs / 1000L,
+            )
+        }
+
+        val latitude = frame.latE7 / 1e7
+        val longitude = frame.lonE7 / 1e7
+        _gnss.value = GnssStatus(
+            state = BleFrame.gnssStateName(frame.gnssState),
+            fix = frame.gnssFixValid,
+            sats = frame.satellites,
+            hdop = frame.pdop1e2 / 100.0,
+            latitude = latitude,
+            longitude = longitude,
+            altitudeM = frame.hmslMm / 1000.0,
+            speedKmh = frame.speedCms * 0.036,
+            headingDeg = frame.headingDdeg / 10.0,
+            utcTime = formatUtc(frame.utcEpochS),
+            ttff = "--",
+            // BLE_Wire_v1 §4: per-satellite C/N0, elevation and azimuth are not
+            // in the frame, so the list stays empty and the UI says "not provided".
+            satellites = emptyList(),
+        )
+
+        val acc = frame.accLsb
+        val gyro = frame.gyroLsb
+        _imu.value = ImuStatus(
+            ax = acc[0] * ACC_G_PER_LSB,
+            ay = acc[1] * ACC_G_PER_LSB,
+            az = acc[2] * ACC_G_PER_LSB,
+            gx = gyro[0] * GYRO_DPS_PER_LSB,
+            gy = gyro[1] * GYRO_DPS_PER_LSB,
+            gz = gyro[2] * GYRO_DPS_PER_LSB,
+            // v1 does not carry a quaternion; zeros mean "not provided".
+            qw = 0f,
+            qx = 0f,
+            qy = 0f,
+            qz = 0f,
+            steps = frame.steps.toInt().coerceAtLeast(0),
+            zupt = frame.zupt,
+        )
+
+        val mag = frame.magLsb
+        val mx = mag[0] * MAG_UT_PER_LSB
+        val my = mag[1] * MAG_UT_PER_LSB
+        val mz = mag[2] * MAG_UT_PER_LSB
+        _mag.value = MagStatus(
+            mx = mx,
+            my = my,
+            mz = mz,
+            norm = sqrt(mx * mx + my * my + mz * mz),
+            // No anomaly flag exists in the v1 frame.
+            anomaly = false,
+        )
+
+        if (!baroExplained) {
+            baroExplained = true
+            addLog(
+                LogLevel.WARN,
+                LogSource.BLE,
+                "BARO",
+                "Status 帧只带 BMP388 未补偿原始值（press=${frame.baroPressRaw} temp=${frame.baroTempRaw}）；" +
+                    "固件 v1 不下发 hPa/°C，界面保持 “—”，不做换算",
+            )
+        }
+        _baro.value = BaroStatus(pressureHpa = 0f, temperatureC = 0f, altitudeM = 0f, floor = 0)
+
+        if (frame.gnssFixValid && _liveTracking.value) {
+            val tick = frame.uptimeMs / 1000L
+            _geoTrail.update { points ->
+                (points + GeoPoint(latitude, longitude, tick)).takeLast(MAX_GEO_POINTS)
+            }
+        }
+        updatePdrTrail(frame)
+        rebuildChecks()
+    }
+
+    /**
+     * Advances the local trail by the real PDR step counter.
+     *
+     * This is an estimate, not an attitude solution: each new firmware step is
+     * treated as [STEP_LENGTH_M] metres along the current GNSS heading. The
+     * firmware does not publish a quaternion or a per-step vector, so no IMU
+     * attitude is implied here.
+     */
+    private fun updatePdrTrail(frame: StatusFrame) {
+        val steps = frame.steps
+        if (lastSteps < 0L) {
+            lastSteps = steps
+            return
+        }
+        if (steps <= lastSteps) {
+            lastSteps = steps
+            return
+        }
+        val delta = (steps - lastSteps).coerceAtMost(MAX_STEP_DELTA)
+        if (_trailRunning.value) {
+            val headingRad = Math.toRadians(frame.headingDdeg / 10.0)
+            trailEastM += delta * STEP_LENGTH_M * sin(headingRad)
+            trailNorthM += delta * STEP_LENGTH_M * cos(headingRad)
+            val tick = frame.uptimeMs / 1000L
+            _trail.update { points ->
+                (points + TrailPoint(trailEastM.toFloat(), trailNorthM.toFloat(), 0f, tick))
+                    .takeLast(MAX_TRAIL_POINTS)
+            }
+        }
+        lastSteps = steps
+    }
+
+    private fun handleLogPacket(bytes: ByteArray) {
+        val packet = BleFrame.parseLog(bytes) ?: return
+        val level = when (packet.level) {
+            0 -> LogLevel.ERROR
+            1 -> LogLevel.WARN
+            3 -> LogLevel.DEBUG
+            else -> LogLevel.INFO
+        }
+        addLog(level, LogSource.BLE, packet.source.ifBlank { "FW" }, packet.message.take(240))
+    }
+
+    private fun rejectIncompatible(reason: String) {
+        if (incompatibleReported) return
+        incompatibleReported = true
+        addLog(LogLevel.ERROR, LogSource.BLE, "COMPAT", "拒绝不兼容的固件线格式：$reason")
+        transport.disconnect()
+    }
+
+    // --- command transport ----------------------------------------------------
+
+    private suspend fun execute(opcode: Opcode, payload: ByteArray): CommandResult? {
+        val result = request(opcode, payload)
+        applyResult(opcode, result)
+        return result
+    }
+
+    private suspend fun request(opcode: Opcode, payload: ByteArray): CommandResult? {
+        if (transport.state.value != LinkState.READY) return null
+        val seq = nextSequence()
+        val deferred = CompletableDeferred<CommandResult>()
+        synchronized(pendingLock) { pending[seq] = deferred }
+        transport.send(BleFrame.encodeCommand(opcode.code, seq, payload))
+        val result = try {
+            withTimeoutOrNull(COMMAND_TIMEOUT_MS) { deferred.await() }
+        } finally {
+            synchronized(pendingLock) { pending.remove(seq) }
+        }
+        return result
+    }
+
+    private fun nextSequence(): Int = synchronized(pendingLock) {
+        sequence = (sequence + 1) and 0xFFFF
+        if (sequence == 0) sequence = 1
+        sequence
+    }
+
+    private fun handleResponseFrame(bytes: ByteArray) {
+        val frame = BleFrame.parseFrame(bytes)
+        if (frame == null) {
+            addLog(LogLevel.WARN, LogSource.BLE, "FRAME", "收到无法解析的 Control 帧（${bytes.size} B）")
+            return
+        }
+        if (!frame.isResponse) return
+        val status = if (frame.payload.isNotEmpty()) BleFrame.u8(frame.payload, 0) else -1
+        val body = if (frame.payload.size > 1) {
+            frame.payload.copyOfRange(1, frame.payload.size)
+        } else {
+            ByteArray(0)
+        }
+        val deferred = synchronized(pendingLock) { pending.remove(frame.seq) }
+        if (deferred != null) {
+            deferred.complete(CommandResult(status, body))
+            return
+        }
+        // Late response after the 2 s window: still fold a Status body into the UI.
+        if (frame.opcode == Opcode.GET_STATUS && status == StatusCode.OK.code) {
+            BleFrame.parseStatus(body)?.let { onStatusFrame(it) }
+        }
+    }
+
+    private fun applyResult(opcode: Opcode, result: CommandResult?) {
+        if (result == null || result.status != StatusCode.OK.code) return
+        when (opcode) {
+            Opcode.GET_CAPS -> {
+                val caps = BleFrame.parseCaps(result.payload) ?: return
+                if (caps.ver != BleFrame.VER) {
+                    rejectIncompatible("GET_CAPS ver=${caps.ver}，App 支持 ${BleFrame.VER}")
+                    return
+                }
+                if (caps.statusSize < StatusOffset.SIZE) {
+                    rejectIncompatible("status_size=${caps.statusSize} < ${StatusOffset.SIZE}")
+                    return
+                }
+                capsInfo = caps
+                _device.update {
+                    it.copy(
+                        firmware = "fw ${caps.firmwareText}",
+                        protocol = "proto ${caps.protocolText}",
+                    )
+                }
+                rebuildChecks()
+            }
+
+            Opcode.GET_STATUS -> BleFrame.parseStatus(result.payload)?.let { onStatusFrame(it) }
+
+            Opcode.FLASH_INFO -> BleFrame.parseFlashInfo(result.payload)?.let { info ->
+                flashInfo = info
+                updateFlash(info)
+                rebuildChecks()
+            }
+
+            Opcode.POI_MARK -> {
+                val written = if (result.payload.isNotEmpty()) BleFrame.u8(result.payload, 0) else -1
+                addLog(
+                    LogLevel.INFO,
+                    LogSource.BLE,
+                    "POI",
+                    if (written == 1) "固件已写入轨迹环" else "固件未写入轨迹环（written=$written）",
+                )
+            }
+
+            else -> Unit
+        }
+    }
+
+    private fun updateFlash(info: FlashInfo) {
+        val sectors = if (info.sectorCount > 0) {
+            List(info.sectorCount) { index ->
+                when {
+                    index.toLong() < info.sectorSeq -> "ARCHIVED"
+                    index.toLong() == info.sectorSeq -> "WRITING"
+                    else -> "ERASED"
+                }
+            }
+        } else {
+            emptyList()
+        }
+        _flash.value = FlashStatus(
+            // FLASH_INFO reports capacity/records only; no JEDEC, used bytes,
+            // beacon count or journal state exists in the v1 response.
+            jedec = "",
+            usedMb = 0f,
+            totalMb = info.flashBytes / (1024f * 1024f),
+            recordCount = info.recordsWritten.toInt(),
+            beaconCount = 0,
+            journal = "",
+            sectors = sectors,
+        )
+    }
+
+    private fun rebuildChecks() {
+        if (_checkRunning.value) return
+        val caps = capsInfo
+        val status = lastStatus
+        val flash = flashInfo
+        val items = mutableListOf<CheckItem>()
+
+        items += if (caps == null) {
+            CheckItem("MCU", "等待 GET_CAPS（0x01）", CheckState.PENDING)
+        } else {
+            CheckItem("MCU", "fw ${caps.firmwareText} / proto ${caps.protocolText}", CheckState.PASS)
+        }
+
+        items += if (flash == null || flash.flashBytes <= 0L) {
+            CheckItem("外部 Flash", "等待 FLASH_INFO（0x60）", CheckState.PENDING)
+        } else {
+            CheckItem(
+                "外部 Flash",
+                "${flash.flashBytes / (1024L * 1024L)} MB（固件 SFDP 实测）",
+                CheckState.PASS,
+            )
+        }
+
+        items += if (status == null) {
+            CheckItem("IMU", "等待 Status 帧", CheckState.PENDING)
+        } else {
+            CheckItem(
+                "IMU",
+                "Status flags.bit3 = ${if (status.imuValid) 1 else 0}",
+                if (status.imuValid) CheckState.PASS else CheckState.PENDING,
+            )
+        }
+
+        items += if (status == null) {
+            CheckItem("磁力计", "等待 Status 帧", CheckState.PENDING)
+        } else {
+            CheckItem(
+                "磁力计",
+                "Status flags.bit4 = ${if (status.magValid) 1 else 0}",
+                if (status.magValid) CheckState.PASS else CheckState.PENDING,
+            )
+        }
+
+        // MAG_CAL is in the protocol but v1 answers NOT_SUPPORTED.
+        items += CheckItem("磁校准", "固件 v1 未提供 MAG_CAL", CheckState.PENDING)
+
+        items += if (status == null) {
+            CheckItem("气压计", "等待 Status 帧", CheckState.PENDING)
+        } else {
+            CheckItem(
+                "气压计",
+                "Status flags.bit5 = ${if (status.baroValid) 1 else 0}",
+                if (status.baroValid) CheckState.PASS else CheckState.PENDING,
+            )
+        }
+
+        items += if (status == null) {
+            CheckItem("GNSS 模组", "等待 Status 帧", CheckState.PENDING)
+        } else {
+            CheckItem(
+                "GNSS 模组",
+                "gnss_state=${BleFrame.gnssStateName(status.gnssState)} / fix_type=${status.fixType}",
+                if (status.gnssState != 0) CheckState.PASS else CheckState.PENDING,
+            )
+        }
+
+        // No single-satellite C/N0 is on the wire, so antenna quality cannot be
+        // judged by the app; keep it PENDING instead of guessing.
+        items += CheckItem("GNSS 天线", "固件 v1 未提供（无单星 C/N0）", CheckState.PENDING)
+
+        items += if (status == null) {
+            CheckItem("电池 ADC", "等待 Status 帧", CheckState.PENDING)
+        } else if (status.batMv > 0) {
+            CheckItem("电池 ADC", "${status.batMv} mV", CheckState.PASS)
+        } else {
+            CheckItem("电池 ADC", "bat_mv 无效（${status.batMv}）", CheckState.PENDING)
+        }
+
+        items += if (status == null) {
+            CheckItem("充电状态", "等待 Status 帧", CheckState.PENDING)
+        } else {
+            CheckItem(
+                "充电状态",
+                "flags.bit1 = ${if (status.charging) 1 else 0}（${if (status.charging) "充电中" else "未充电"}）",
+                CheckState.PASS,
+            )
+        }
+
+        items += if (status == null) {
+            CheckItem("按键", "等待 Status 帧", CheckState.PENDING)
+        } else {
+            CheckItem(
+                "按键",
+                "KEY1=${status.keyLevels and 0x01} KEY2=${(status.keyLevels shr 1) and 0x01}",
+                CheckState.PASS,
+            )
+        }
+
+        items += CheckItem("LED", "固件 v1 未提供 LED 状态", CheckState.PENDING)
+
+        items += if (caps == null) {
+            CheckItem("BLE", "等待 GET_CAPS（0x01）", CheckState.PENDING)
+        } else {
+            CheckItem("BLE", "MTU ${caps.attMtu} / max payload ${caps.maxCmdPayload}", CheckState.PASS)
+        }
+
+        items += CheckItem("SELFTEST", "固件 v1 返回 NOT_SUPPORTED", CheckState.PENDING)
+
+        if (_checks.value != items) {
+            _checks.value = items
+        }
+    }
+
+    // --- UI actions -----------------------------------------------------------
+
+    override fun scan() {
+        if (!permissionsGranted) {
+            addLog(LogLevel.ERROR, LogSource.BLE, "SCAN", "缺少蓝牙扫描权限，未启动扫描")
+            return
+        }
+        if (_scanning.value) return
+        _devices.value = emptyList()
+        addLog(LogLevel.DEBUG, LogSource.BLE, "SCAN", "按 Service UUID 扫描（10 s，超时自动停止）")
+        transport.scan { device ->
+            _devices.update { current ->
+                val index = current.indexOfFirst { it.address == device.address }
+                when {
+                    index < 0 -> current + device
+                    device.rssi > current[index].rssi ||
+                        (current[index].name.isBlank() && device.name.isNotBlank()) -> {
+                        val copy = current.toMutableList()
+                        copy[index] = device
+                        copy
+                    }
+
+                    else -> current
+                }
+            }
+        }
+    }
+
+    override fun connect(device: ScannedDevice) {
+        if (!permissionsGranted) {
+            addLog(LogLevel.ERROR, LogSource.BLE, "BLE", "缺少蓝牙权限，未发起连接")
+            return
+        }
+        val label = device.name.ifBlank { device.address }
+        _device.update { it.copy(name = label, connected = false) }
+        addLog(
+            LogLevel.INFO,
+            LogSource.BLE,
+            "BLE",
+            "连接 $label（${device.address}，RSSI ${device.rssi} dBm）",
+        )
+        transport.connect(device.address)
+    }
+
+    override fun disconnect() {
+        addLog(LogLevel.INFO, LogSource.BLE, "BLE", "请求断开连接")
+        transport.disconnect()
+    }
+
+    override fun markPoi() {
+        val current = _gnss.value
+        if (!current.fix) {
+            addLog(LogLevel.WARN, LogSource.BLE, "POI", "GNSS 无有效定位，未打点")
+            return
+        }
+        sendCommand(Opcode.POI_MARK.label, "")
+        addPoi(current.latitude, current.longitude, "快捷打点")
+    }
+
+    override fun addPoi(latitude: Double, longitude: Double, note: String) {
+        if (!latitude.isFinite() || !longitude.isFinite()) {
+            addLog(LogLevel.WARN, LogSource.BLE, "POI", "坐标无效，未打点")
+            return
+        }
+        if (latitude == 0.0 && longitude == 0.0) {
+            addLog(LogLevel.WARN, LogSource.BLE, "POI", "坐标为 0,0（无定位），未打点")
+            return
+        }
+        val id = nextPoiId++
+        val marker = PoiMarker(
+            id = id,
+            latitude = latitude,
+            longitude = longitude,
+            label = "P$id",
+            note = note,
+            time = now(),
+        )
+        _pois.update { it + marker }
+        addLog(
+            LogLevel.INFO,
+            LogSource.BLE,
+            "POI",
+            "%s @ %.6f, %.6f".format(Locale.US, marker.label, latitude, longitude),
+        )
+    }
+
+    override fun removePoi(id: Int) {
+        _pois.update { list -> list.filterNot { it.id == id } }
+        addLog(LogLevel.INFO, LogSource.BLE, "POI", "removed P$id")
+    }
+
+    override fun setLiveTracking(enabled: Boolean) {
+        _liveTracking.value = enabled
+        addLog(
+            LogLevel.INFO,
+            LogSource.BLE,
+            "MAP",
+            if (enabled) "real-time trajectory resumed" else "real-time trajectory paused",
+        )
+    }
+
+    override fun clearGeoTrail() {
+        _geoTrail.value = emptyList()
+        addLog(LogLevel.INFO, LogSource.BLE, "MAP", "geo trail cleared")
+    }
+
+    override fun setTrailRunning(enabled: Boolean) {
+        _trailRunning.value = enabled
+        addLog(
+            LogLevel.INFO,
+            LogSource.BLE,
+            "PDR",
+            if (enabled) "spatial trail resumed" else "spatial trail paused",
+        )
+    }
+
+    override fun clearTrail() {
+        _trail.value = emptyList()
+        addLog(LogLevel.INFO, LogSource.BLE, "PDR", "spatial trail cleared")
+    }
+
+    override fun sendCommand(opcode: String, payload: String): ConsoleEntry {
+        val label = opcode.trim()
+        val entry = ConsoleEntry(
+            time = now(),
+            opcode = label.ifBlank { "UNKNOWN" },
+            request = payload.ifBlank { "-" },
+            response = PENDING_RESPONSE,
+        )
+        _console.update { (it + entry).takeLast(MAX_CONSOLE_ENTRIES) }
+
+        val parsedOpcode = Opcode.fromName(label)
+        if (parsedOpcode == null) {
+            finishConsole(entry, "-- UNKNOWN OPCODE（协议 §6 无此命令，未发送）")
+            return entry
+        }
+        val bytes = parseHex(payload)
+        if (bytes == null) {
+            finishConsole(entry, "-- INVALID HEX（payload 必须是偶数个十六进制字符）")
+            return entry
+        }
+        if (bytes.size > BleFrame.MAX_PAYLOAD) {
+            finishConsole(entry, "-- PAYLOAD TOO LARGE（${bytes.size} B > ${BleFrame.MAX_PAYLOAD} B）")
+            return entry
+        }
+        if (transport.state.value != LinkState.READY) {
+            finishConsole(entry, "-- NOT CONNECTED（链路未就绪，命令未发送）")
+            return entry
+        }
+
+        scope.launch {
+            val result = execute(parsedOpcode, bytes)
+            finishConsole(entry, describeResult(parsedOpcode, result))
+        }
+        return entry
+    }
+
+    override fun runSelfTest() {
+        if (_checkRunning.value) return
+        if (transport.state.value != LinkState.READY) {
+            addLog(LogLevel.WARN, LogSource.BLE, "SELFTEST", "链路未就绪，未发送 SELFTEST")
+            return
+        }
+        _checkRunning.value = true
+        _checks.update { items -> items.map { it.copy(state = CheckState.RUNNING) } }
+        addLog(LogLevel.INFO, LogSource.BLE, "SELFTEST", "发送 SELFTEST (0x40)")
+
+        scope.launch {
+            val result = execute(Opcode.SELFTEST, ByteArray(0))
+            val text = describeResult(Opcode.SELFTEST, result)
+            appendConsole(Opcode.SELFTEST.label, "-", text)
+            if (result == null) {
+                _checks.update { items ->
+                    items.map { it.copy(state = CheckState.PENDING, detail = "SELFTEST 超时（2 s）") }
+                }
+                addLog(LogLevel.WARN, LogSource.BLE, "SELFTEST", "2 s 内未收到 SELFTEST 响应")
+                _checkRunning.value = false
+            } else if (result.status == StatusCode.NOT_SUPPORTED.code) {
+                _checks.update { items ->
+                    items.map { it.copy(state = CheckState.PENDING, detail = "固件 v1 未实现 SELFTEST") }
+                }
+                addLog(
+                    LogLevel.WARN,
+                    LogSource.BLE,
+                    "SELFTEST",
+                    "固件 v1 未实现 SELFTEST（03 NOT_SUPPORTED），检查项保持 PENDING",
+                )
+                _checkRunning.value = false
+            } else if (result.status == StatusCode.OK.code) {
+                addLog(
+                    LogLevel.INFO,
+                    LogSource.BLE,
+                    "SELFTEST",
+                    "SELFTEST 返回 00 OK，payload=${hexOrDash(result.payload)}",
+                )
+                _checkRunning.value = false
+                rebuildChecks()
+            } else {
+                _checks.update { items ->
+                    items.map { it.copy(state = CheckState.PENDING, detail = text) }
+                }
+                addLog(LogLevel.WARN, LogSource.BLE, "SELFTEST", text)
+                _checkRunning.value = false
+            }
+        }
+    }
+
+    override fun clearLogs() {
+        _logs.value = emptyList()
+    }
+
+    override fun clearConsole() {
+        _console.value = emptyList()
+    }
+
+    override fun exportLogs() {
+        val directory = appContext.getExternalFilesDir(null)
+        if (directory == null) {
+            addLog(LogLevel.ERROR, LogSource.USB, "EXPORT", "外部文件目录不可用（getExternalFilesDir 返回 null），未导出")
+            return
+        }
+        scope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!directory.exists() && !directory.mkdirs()) {
+                        error("无法创建目录 ${directory.absolutePath}")
+                    }
+                    val target = File(directory, "life-gps-log-${System.currentTimeMillis()}.txt")
+                    target.bufferedWriter(Charsets.UTF_8).use { writer ->
+                        writer.write("# Life_GPS debug log\n")
+                        _logs.value.forEach { entry ->
+                            writer.write(
+                                "${entry.time} ${entry.level.short} ${entry.source.label} ${entry.tag}: ${entry.message}\n",
+                            )
+                        }
+                    }
+                    target
+                }
+            }
+            outcome.fold(
+                onSuccess = { file ->
+                    addLog(LogLevel.INFO, LogSource.USB, "EXPORT", "日志已写入 ${file.absolutePath}")
+                },
+                onFailure = { error ->
+                    addLog(
+                        LogLevel.ERROR,
+                        LogSource.USB,
+                        "EXPORT",
+                        "写入失败：${error.message ?: error.javaClass.simpleName}",
+                    )
+                },
+            )
+        }
+    }
+
+    override fun addLog(level: LogLevel, source: LogSource, tag: String, message: String) {
+        val entry = LogEntry(now(), level, source, tag, message)
+        _logs.update { (it + entry).takeLast(MAX_LOG_ENTRIES) }
+    }
+
+    // --- helpers --------------------------------------------------------------
+
+    private fun appendConsole(opcode: String, request: String, response: String) {
+        val entry = ConsoleEntry(now(), opcode, request.ifBlank { "-" }, response)
+        _console.update { (it + entry).takeLast(MAX_CONSOLE_ENTRIES) }
+    }
+
+    private fun finishConsole(entry: ConsoleEntry, response: String) {
+        _console.update { list ->
+            list.map { if (it === entry) it.copy(response = response) else it }
+        }
+        addLog(
+            if (response.startsWith("00")) LogLevel.INFO else LogLevel.WARN,
+            LogSource.BLE,
+            "CMD",
+            "${entry.opcode} -> $response",
+        )
+    }
+
+    private fun describeResult(opcode: Opcode, result: CommandResult?): String {
+        if (result == null) return "-- TIMEOUT（2 s 内未收到 Control 通知）"
+        if (result.status < 0) return "-- RESPONSE WITHOUT STATUS BYTE"
+        val head = String.format(Locale.US, "%02X %s", result.status, StatusCode.labelOf(result.status))
+        if (result.status != StatusCode.OK.code) return head
+        val detail = when (opcode) {
+            Opcode.GET_CAPS -> BleFrame.parseCaps(result.payload)?.let { caps ->
+                String.format(
+                    Locale.US,
+                    "proto %s fw %s mtu %d status %d B caps 0x%08X",
+                    caps.protocolText,
+                    caps.firmwareText,
+                    caps.attMtu,
+                    caps.statusSize,
+                    caps.caps,
+                )
+            } ?: hexOrDash(result.payload)
+
+            Opcode.GET_STATUS -> "status ${result.payload.size} B"
+
+            Opcode.FLASH_INFO -> BleFrame.parseFlashInfo(result.payload)?.let { info ->
+                "flash ${info.flashBytes} B / traj ${info.trajBytes} B / " +
+                    "sectors ${info.sectorCount} / seq ${info.sectorSeq} / records ${info.recordsWritten}"
+            } ?: hexOrDash(result.payload)
+
+            Opcode.POI_MARK -> if (result.payload.isNotEmpty()) {
+                "written=${BleFrame.u8(result.payload, 0)}"
+            } else {
+                "written=?"
+            }
+
+            else -> hexOrDash(result.payload)
+        }
+        return if (detail == "--") head else "$head | $detail"
+    }
+
+    private fun hexOrDash(bytes: ByteArray): String =
+        if (bytes.isEmpty()) "--" else BleFrame.toHex(bytes)
+
+    private fun parseHex(text: String): ByteArray? {
+        val cleaned = text
+            .replace(" ", "")
+            .replace("\t", "")
+            .replace("\n", "")
+            .replace(",", "")
+            .replace("0x", "", ignoreCase = true)
+        if (cleaned.isEmpty()) return ByteArray(0)
+        if (cleaned.length % 2 != 0) return null
+        val out = ByteArray(cleaned.length / 2)
+        for (index in out.indices) {
+            val high = Character.digit(cleaned[index * 2], 16)
+            val low = Character.digit(cleaned[index * 2 + 1], 16)
+            if (high < 0 || low < 0) return null
+            out[index] = ((high shl 4) or low).toByte()
+        }
+        return out
+    }
+
+    private fun now(): String = LocalTime.now().format(clock)
+
+    private fun formatUtc(epochS: Long): String {
+        if (epochS <= 0L) return "--"
+        // utc_epoch_s counts from the Life_GPS 2020 epoch, not from Unix.
+        val unixSeconds = epochS + LIFEGPS_EPOCH_UNIX_OFFSET_S
+        return try {
+            UTC_FORMAT.format(Instant.ofEpochSecond(unixSeconds))
+        } catch (error: RuntimeException) {
+            "--"
+        }
+    }
+
+    /**
+     * Typical single-cell LiPo open-circuit curve, used only to turn the real
+     * `bat_mv` reading into a percentage (v1 sends 0xFF in `soc_pct`).
+     */
+    private fun batteryPercent(mv: Int): Int {
+        if (mv <= 0) return 0
+        if (mv >= LIPO_CURVE_MV.last()) return 100
+        if (mv <= LIPO_CURVE_MV.first()) return 0
+        for (index in 0 until LIPO_CURVE_MV.size - 1) {
+            val lowMv = LIPO_CURVE_MV[index]
+            val highMv = LIPO_CURVE_MV[index + 1]
+            if (mv in lowMv..highMv) {
+                val lowPct = LIPO_CURVE_PCT[index].toFloat()
+                val highPct = LIPO_CURVE_PCT[index + 1].toFloat()
+                val span = (highMv - lowMv).toFloat()
+                if (span <= 0f) return lowPct.toInt()
+                val ratio = (mv - lowMv) / span
+                return (lowPct + ratio * (highPct - lowPct)).toInt().coerceIn(0, 100)
+            }
+        }
+        return 0
+    }
+
+    private data class CommandResult(val status: Int, val payload: ByteArray)
+
+    private fun initialDevice(): DeviceSummary = DeviceSummary(
+        name = "未连接",
+        connected = false,
+        firmware = "—",
+        protocol = "—",
+        batteryPct = 0,
+        batteryMv = 0,
+        charging = false,
+        mode = "—",
+        uptimeSeconds = 0,
+    )
+
+    private fun initialGnss(): GnssStatus = GnssStatus(
+        state = "OFF",
+        fix = false,
+        sats = 0,
+        hdop = 0.0,
+        latitude = 0.0,
+        longitude = 0.0,
+        altitudeM = 0.0,
+        speedKmh = 0.0,
+        headingDeg = 0.0,
+        utcTime = "--",
+        ttff = "--",
+        satellites = emptyList(),
+    )
+
+    private fun initialImu(): ImuStatus = ImuStatus(
+        ax = 0f,
+        ay = 0f,
+        az = 0f,
+        gx = 0f,
+        gy = 0f,
+        gz = 0f,
+        qw = 0f,
+        qx = 0f,
+        qy = 0f,
+        qz = 0f,
+        steps = 0,
+        zupt = false,
+    )
+
+    private fun initialMag(): MagStatus = MagStatus(
+        mx = 0f,
+        my = 0f,
+        mz = 0f,
+        norm = 0f,
+        anomaly = false,
+    )
+
+    private fun initialBaro(): BaroStatus = BaroStatus(
+        pressureHpa = 0f,
+        temperatureC = 0f,
+        altitudeM = 0f,
+        floor = 0,
+    )
+
+    private fun initialFlash(): FlashStatus = FlashStatus(
+        jedec = "",
+        usedMb = 0f,
+        totalMb = 0f,
+        recordCount = 0,
+        beaconCount = 0,
+        journal = "",
+        sectors = emptyList(),
+    )
+
+    private fun pendingChecks(): List<CheckItem> = listOf(
+        CheckItem("MCU", "等待 GET_CAPS（0x01）", CheckState.PENDING),
+        CheckItem("外部 Flash", "等待 FLASH_INFO（0x60）", CheckState.PENDING),
+        CheckItem("IMU", "等待 Status 帧", CheckState.PENDING),
+        CheckItem("磁力计", "等待 Status 帧", CheckState.PENDING),
+        CheckItem("磁校准", "固件 v1 未提供 MAG_CAL", CheckState.PENDING),
+        CheckItem("气压计", "等待 Status 帧", CheckState.PENDING),
+        CheckItem("GNSS 模组", "等待 Status 帧", CheckState.PENDING),
+        CheckItem("GNSS 天线", "固件 v1 未提供（无单星 C/N0）", CheckState.PENDING),
+        CheckItem("电池 ADC", "等待 Status 帧", CheckState.PENDING),
+        CheckItem("充电状态", "等待 Status 帧", CheckState.PENDING),
+        CheckItem("按键", "等待 Status 帧", CheckState.PENDING),
+        CheckItem("LED", "固件 v1 未提供 LED 状态", CheckState.PENDING),
+        CheckItem("BLE", "等待 GET_CAPS（0x01）", CheckState.PENDING),
+    )
+
+    private companion object {
+        const val COMMAND_TIMEOUT_MS = 2_000L
+
+        /** acc_lsb unit is 0.122 mg/LSB at ±4 g; convert to g. */
+        const val ACC_G_PER_LSB = 0.122f / 1000f
+
+        /** gyro_lsb unit is 35 mdps/LSB at ±1000 dps; convert to °/s. */
+        const val GYRO_DPS_PER_LSB = 35f / 1000f
+
+        /** LIS2MDL: 1.5 mG/LSB = 0.15 µT/LSB. */
+        const val MAG_UT_PER_LSB = 0.15f
+
+        /** Assumed PDR step length (metres) for the local trail estimate. */
+        const val STEP_LENGTH_M = 0.7
+
+        /** Ignore step-counter jumps larger than this between two status frames. */
+        const val MAX_STEP_DELTA = 50L
+
+        const val MAX_GEO_POINTS = 2_000
+        const val MAX_TRAIL_POINTS = 600
+        const val MAX_LOG_ENTRIES = 300
+        const val MAX_CONSOLE_ENTRIES = 40
+
+        const val PENDING_RESPONSE = "-- 等待响应…"
+
+        /** Seconds between the Life_GPS 2020 epoch and the Unix epoch. */
+        const val LIFEGPS_EPOCH_UNIX_OFFSET_S = 1_577_836_800L
+
+        val UTC_FORMAT: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneOffset.UTC)
+
+        val LIPO_CURVE_MV = intArrayOf(
+            3000, 3200, 3300, 3400, 3500, 3600, 3700, 3750,
+            3800, 3850, 3900, 3950, 4000, 4050, 4100, 4200,
+        )
+        val LIPO_CURVE_PCT = intArrayOf(
+            0, 5, 8, 12, 18, 25, 35, 45,
+            55, 65, 75, 82, 88, 93, 97, 100,
+        )
+    }
+}

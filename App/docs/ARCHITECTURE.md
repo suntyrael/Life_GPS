@@ -1,17 +1,18 @@
 # LIFE GPS App 架构
 
-## 当前实现（骨架）
+## 当前实现（真实 BLE 数据源）
 
 ```text
 App/app/src/main/java/com/lifegps/app/
 ├── MainActivity.kt
-├── LifeGpsApp.kt          # NavHost + FakeDebugRepository
+├── LifeGpsApp.kt          # NavHost + 权限门禁 + BleDebugRepository
 ├── navigation/Routes.kt
-├── debug/                 # 硬件调试页面 + 假数据
+├── ble/                   # UUID、线格式编解码、BleTransport、BleDebugRepository
+├── debug/                 # 硬件调试页面 + DebugRepository 接口
 └── ui/theme + ui/components
 ```
 
-第一阶段是**单模块** `:app`，优先把硬件调试界面和假数据流程跑通。协议/BLE 稳定后再拆 `core:protocol`、`core:ble`、`core:sync`、`core:data`、`feature:*`。
+第一阶段是**单模块** `:app`，硬件调试界面已经接到真实 GATT 数据（Status 1 Hz / Log / Control 命令）。协议/BLE 稳定后再拆 `core:protocol`、`core:ble`、`core:sync`、`core:data`、`feature:*`。
 
 ## 目标分层
 

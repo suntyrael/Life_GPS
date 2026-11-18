@@ -40,18 +40,29 @@ import com.lifegps.app.ui.theme.Green
 import com.lifegps.app.ui.theme.TextDim
 import com.lifegps.app.ui.theme.TextMain
 
+// Names must match protocol/lifegps_protocol.yaml and BLE_Wire_v1.md §6 exactly;
+// the repository resolves them to opcodes and shows UNKNOWN for anything else.
 private val OPCODES = listOf(
-    "GET_STATUS",
     "GET_CAPS",
-    "SET_TIME",
+    "GET_STATUS",
     "POI_MARK",
+    "LOG_SUBSCRIBE",
+    "FLASH_INFO",
+    "DEBUG_UNLOCK",
+    "REBOOT",
+    "SET_MODE",
+    "SET_TIME",
     "SELFTEST",
+    "MAG_CAL",
+    "BARO_BASELINE",
+    "SYNC_BEGIN",
+    "GNSS_SNAPSHOT",
     "GET_DAY_INDEX",
 )
 
 @Composable
 fun CommandConsoleScreen(
-    repo: FakeDebugRepository,
+    repo: DebugRepository,
     onBack: () -> Unit,
 ) {
     val console by repo.console.collectAsStateWithLifecycle()
@@ -175,7 +186,7 @@ fun CommandConsoleScreen(
 
             item {
                 Text(
-                    "真实接入后：从 protocol YAML 自动生成 opcode 列表与 payload 表单；响应按命令模型解码，不再显示裸 hex。",
+                    "opcode 名称与协议 §6 一致；payload 按十六进制原样写入 Control 特征，响应按状态码解码，超时或未连接会如实标注。",
                     color = TextDim,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(top = 6.dp, bottom = 20.dp),

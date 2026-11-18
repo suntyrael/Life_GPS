@@ -47,7 +47,7 @@ import com.lifegps.app.ui.theme.TextMain
 
 @Composable
 fun DebugHomeScreen(
-    repo: FakeDebugRepository,
+    repo: DebugRepository,
     onNavigate: (String) -> Unit,
 ) {
     val device by repo.device.collectAsStateWithLifecycle()
@@ -57,9 +57,15 @@ fun DebugHomeScreen(
     val logs by repo.logs.collectAsStateWithLifecycle()
 
     val batteryColor = when {
+        device.batteryMv <= 0 -> TextDim
         device.batteryPct > 50 -> Green
         device.batteryPct > 20 -> Amber
         else -> Red
+    }
+    val batteryLabel = when {
+        device.charging -> "充电中"
+        device.batteryMv > 0 -> "电池 ${device.batteryPct}%"
+        else -> "电量未知"
     }
 
     DebugScaffold(
@@ -103,7 +109,7 @@ fun DebugHomeScreen(
                                 )
                             }
                             StatusPill(
-                                text = if (device.charging) "充电中" else "电池 ${device.batteryPct}%",
+                                text = batteryLabel,
                                 color = batteryColor,
                                 filled = true,
                             )
@@ -112,7 +118,10 @@ fun DebugHomeScreen(
                         HorizontalDivider(color = MaterialTheme.colorScheme.background)
                         Spacer(Modifier.height(10.dp))
                         MetricRow("工作模式", device.mode, Cyan)
-                        MetricRow("电池电压", "${device.batteryMv} mV")
+                        MetricRow(
+                            "电池电压",
+                            if (device.batteryMv > 0) "${device.batteryMv} mV" else "—",
+                        )
                         MetricRow("运行时间", formatUptime(device.uptimeSeconds))
                         Row(
                             modifier = Modifier
@@ -142,8 +151,8 @@ fun DebugHomeScreen(
                         if (gnss.fix) Green else Red,
                         Modifier.weight(1f),
                     )
-                    StatTile("HDOP", String.format("%.1f", gnss.hdop), "", Cyan, Modifier.weight(1f))
-                    StatTile("步数", "${imu.steps}", "", Amber, Modifier.weight(1f))
+                    StatTile("HDOP", if (gnss.fix) String.format("%.1f", gnss.hdop) else "--", "", Cyan, Modifier.weight(1f))
+                    StatTile("步数", if (device.connected) "${imu.steps}" else "--", "", Amber, Modifier.weight(1f))
                 }
             }
 
@@ -167,7 +176,7 @@ fun DebugHomeScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     ToolCard(
                         "GPS 状态",
-                        "六状态机 / 星数 / HDOP\n经纬度 / C/N0",
+                        "六状态机 / 星数 / HDOP\n经纬度 / 时间",
                         { onNavigate(Routes.GNSS) },
                         Modifier.weight(1f),
                         Green,
@@ -231,7 +240,7 @@ fun DebugHomeScreen(
                         modifier = Modifier.weight(1f),
                     ) { Text("打点 POI") }
                     OutlinedButton(
-                        onClick = { repo.addLog(LogLevel.INFO, LogSource.BLE, "SYNC", "同步请求已排队（模拟）") },
+                        onClick = { repo.sendCommand("SYNC_BEGIN", "") },
                         modifier = Modifier.weight(1f),
                     ) { Text("同步") }
                 }
@@ -286,7 +295,7 @@ fun DebugHomeScreen(
 
             item {
                 Text(
-                    "提示：当前为假数据（FakeDebugRepository）。真实 BLE / USB 串口接入后，替换数据源即可。",
+                    "提示：数据来自设备 Status 通知（1 Hz）与命令响应。未连接、或固件 v1 未提供的字段显示 “—”，不会用默认值代替。",
                     color = TextDim,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(top = 4.dp, bottom = 20.dp),

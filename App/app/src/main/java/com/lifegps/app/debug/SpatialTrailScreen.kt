@@ -51,7 +51,7 @@ import kotlin.math.sqrt
 
 @Composable
 fun SpatialTrailScreen(
-    repo: FakeDebugRepository,
+    repo: DebugRepository,
     onBack: () -> Unit,
 ) {
     val trail by repo.trail.collectAsStateWithLifecycle()
@@ -212,7 +212,7 @@ fun SpatialTrailScreen(
 
             item {
                 Text(
-                    "当前是假数据：用 IMU/PDR 局部坐标画 3D 轨迹。真实接入后使用 PDR 位移 + 四元数姿态，可用于检查航向漂移、ZUPT 和步长。",
+                    "轨迹由固件 PDR 累计步数与 GNSS 航向按 0.7 m/步 累积估算（真实数据推算，非 IMU 姿态积分）；四元数不在 v1 帧内，因此 Z 轴与姿态相关结论都不可用。",
                     color = TextDim,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(bottom = 20.dp),

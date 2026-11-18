@@ -38,7 +38,7 @@ import java.util.Locale
 
 @Composable
 fun GnssStatusScreen(
-    repo: FakeDebugRepository,
+    repo: DebugRepository,
     onBack: () -> Unit,
 ) {
     val gnss by repo.gnss.collectAsStateWithLifecycle()
@@ -78,7 +78,7 @@ fun GnssStatusScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     StatusPill(gnss.state, Cyan, filled = true)
                     StatusPill("${gnss.sats} sats", if (gnss.sats >= 8) Green else Amber, filled = true)
-                    StatusPill("HDOP ${fmtOne(gnss.hdop)}", hdopColor, filled = true)
+                    StatusPill(if (gnss.fix) "HDOP ${fmtOne(gnss.hdop)}" else "HDOP --", hdopColor, filled = true)
                 }
             }
 
@@ -88,8 +88,8 @@ fun GnssStatusScreen(
                     MetricRow("定位", if (gnss.fix) "YES" else "NO", fixColor)
                     MetricRow("有效卫星", "${gnss.sats}", if (gnss.sats >= 8) Green else Amber)
                     ValueBar("HDOP", gnss.hdop.toFloat(), 5f, hdopColor, fmtOne(gnss.hdop))
-                    MetricRow("参与解算", "$used / ${gnss.satellites.size}")
-                    MetricRow("平均 C/N0", "$avgCno dB-Hz")
+                    MetricRow("参与解算", if (gnss.satellites.isEmpty()) "固件未提供" else "$used / ${gnss.satellites.size}")
+                    MetricRow("平均 C/N0", if (gnss.satellites.isEmpty()) "固件未提供" else "$avgCno dB-Hz")
                     MetricRow("TTFF", gnss.ttff)
                     MetricRow("UTC 时间", gnss.utcTime)
                     MetricRow("设备", device.name)
@@ -98,33 +98,43 @@ fun GnssStatusScreen(
 
             item {
                 CardBlock("位置 / 运动") {
-                    MetricRow("纬度", fmtSix(gnss.latitude))
-                    MetricRow("经度", fmtSix(gnss.longitude))
-                    MetricRow("海拔", "${fmtOne(gnss.altitudeM)} m")
-                    MetricRow("地速", "${fmtOne(gnss.speedKmh)} km/h")
-                    MetricRow("航向", "${fmtOne(gnss.headingDeg)}°")
+                    MetricRow("纬度", if (gnss.fix) fmtSix(gnss.latitude) else "—")
+                    MetricRow("经度", if (gnss.fix) fmtSix(gnss.longitude) else "—")
+                    MetricRow("海拔", if (gnss.fix) "${fmtOne(gnss.altitudeM)} m" else "—")
+                    MetricRow("地速", if (gnss.fix) "${fmtOne(gnss.speedKmh)} km/h" else "—")
+                    MetricRow("航向", if (gnss.fix) "${fmtOne(gnss.headingDeg)}°" else "—")
                 }
             }
 
             item {
                 SectionHeader("卫星信息", "SVID / 系统 / C/N0 / 仰角 / 方位 / 参与解算")
                 CardBlock {
-                    SatHeader()
-                    Spacer(Modifier.height(4.dp))
-                    sorted.forEach { satellite ->
-                        SatRow(satellite)
+                    if (gnss.satellites.isEmpty()) {
+                        Text(
+                            "固件 v1 的 Status 帧不含单星信息（SVID / C/N0 / 仰角 / 方位），此处没有数据可显示。",
+                            color = TextDim,
+                            fontSize = 12.sp,
+                        )
+                    } else {
+                        SatHeader()
+                        Spacer(Modifier.height(4.dp))
+                        sorted.forEach { satellite ->
+                            SatRow(satellite)
+                        }
                     }
                 }
             }
 
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // SET_MODE exists in the protocol; v1 answers 03 NOT_SUPPORTED, and the
+                    // console shows that answer verbatim. The leading byte is the mode.
                     Button(
-                        onClick = { repo.addLog(LogLevel.INFO, LogSource.BLE, "GNSS", "cold start requested（模拟）") },
+                        onClick = { repo.sendCommand("SET_MODE", "00") },
                         modifier = Modifier.weight(1f),
                     ) { Text("冷启动") }
                     OutlinedButton(
-                        onClick = { repo.addLog(LogLevel.INFO, LogSource.BLE, "GNSS", "hot start requested（模拟）") },
+                        onClick = { repo.sendCommand("SET_MODE", "01") },
                         modifier = Modifier.weight(1f),
                     ) { Text("热启动") }
                 }
@@ -132,7 +142,7 @@ fun GnssStatusScreen(
 
             item {
                 Text(
-                    "真实接入后：解析 UBX NAV-PVT / MON-VER，显示卫星列表、C/N0、仰角/方位与参与解算状态；柱状图不再作为主视图。",
+                    "数值来自 Status 帧的 gnss_state / satellites / pdop / 位置字段；单星 C/N0、仰角方位与 TTFF 不在 v1 帧内，因此显示 “—”，不伪造。",
                     color = TextDim,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(bottom = 20.dp),

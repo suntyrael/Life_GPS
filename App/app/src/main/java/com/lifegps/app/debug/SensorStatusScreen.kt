@@ -34,17 +34,15 @@ import kotlin.math.sqrt
 
 @Composable
 fun SensorStatusScreen(
-    repo: FakeDebugRepository,
+    repo: DebugRepository,
     onBack: () -> Unit,
     onOpenTrail: () -> Unit,
 ) {
     val imu by repo.imu.collectAsStateWithLifecycle()
     val mag by repo.mag.collectAsStateWithLifecycle()
-    val baro by repo.baro.collectAsStateWithLifecycle()
 
     val accelMag = sqrt(imu.ax * imu.ax + imu.ay * imu.ay + imu.az * imu.az)
     val gyroMag = sqrt(imu.gx * imu.gx + imu.gy * imu.gy + imu.gz * imu.gz)
-    val qMag = sqrt(imu.qw * imu.qw + imu.qx * imu.qx + imu.qy * imu.qy + imu.qz * imu.qz)
 
     DebugScaffold(title = "传感器状态", onBack = onBack) { padding ->
         LazyColumn(
@@ -56,14 +54,14 @@ fun SensorStatusScreen(
         ) {
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatusPill("IMU 60Hz", Green, filled = true)
+                    StatusPill("IMU 26Hz", Green, filled = true)
                     StatusPill(if (imu.zupt) "ZUPT 锁死" else "运动中", if (imu.zupt) Amber else Cyan, filled = true)
-                    StatusPill(if (mag.anomaly) "磁异常" else "磁场正常", if (mag.anomaly) Red else Green, filled = true)
+                    StatusPill("磁异常检测：固件未提供", TextDim, filled = true)
                 }
             }
 
             item {
-                CardBlock("IMU · LSM6DSVTR") {
+                CardBlock("IMU · LSM6DSR") {
                     MetricRow("加速度 X", f(imu.ax, "g"))
                     MetricRow("加速度 Y", f(imu.ay, "g"))
                     MetricRow("加速度 Z", f(imu.az, "g"))
@@ -74,11 +72,7 @@ fun SensorStatusScreen(
                     MetricRow("角速度 Z", f(imu.gz, "°/s"))
                     ValueBar("角速度模长", gyroMag, 300f, Amber, f(gyroMag, "°/s"))
                     Spacer(Modifier.height(6.dp))
-                    MetricRow("四元数 W", f(imu.qw, ""))
-                    MetricRow("四元数 X", f(imu.qx, ""))
-                    MetricRow("四元数 Y", f(imu.qy, ""))
-                    MetricRow("四元数 Z", f(imu.qz, ""))
-                    ValueBar("四元数模长", qMag, 1.1f, Green, f(qMag, ""))
+                    MetricRow("四元数", "固件 v1 未提供", TextDim)
                 }
             }
 
@@ -88,17 +82,22 @@ fun SensorStatusScreen(
                     MetricRow("Y", f(mag.my, "µT"))
                     MetricRow("Z", f(mag.mz, "µT"))
                     ValueBar("磁场模长", mag.norm, 100f, if (mag.anomaly) Red else Green, f(mag.norm, "µT"))
-                    MetricRow("异常检测", if (mag.anomaly) "YES" else "NO", if (mag.anomaly) Red else Green)
+                    MetricRow("异常检测", "固件 v1 未提供", TextDim)
                 }
             }
 
             item {
                 CardBlock("气压计 · BMP388") {
-                    MetricRow("气压", f(baro.pressureHpa, "hPa"))
-                    MetricRow("温度", f(baro.temperatureC, "°C"))
-                    MetricRow("相对高度", f(baro.altitudeM, "m"))
-                    MetricRow("楼层", "${baro.floor}", Cyan)
-                    ValueBar("气压", baro.pressureHpa, 1100f, Cyan, f(baro.pressureHpa, "hPa"))
+                    MetricRow("气压", "—")
+                    MetricRow("温度", "—")
+                    MetricRow("相对高度", "—")
+                    MetricRow("楼层", "—")
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Status 帧只带 BMP388 未补偿原始值，固件 v1 不下发 hPa / °C / 高度，App 不做换算。",
+                        color = TextDim,
+                        fontSize = 11.sp,
+                    )
                 }
             }
 
@@ -106,7 +105,7 @@ fun SensorStatusScreen(
                 CardBlock("PDR / 计步") {
                     MetricRow("累计步数", "${imu.steps}")
                     MetricRow("ZUPT", if (imu.zupt) "LOCKED" else "MOVING", if (imu.zupt) Amber else Green)
-                    MetricRow("数据源", "SFLP + 固件计步（模拟）")
+                    MetricRow("数据源", "ZUPT + PDR 计步（固件）")
                 }
             }
 
@@ -128,11 +127,11 @@ fun SensorStatusScreen(
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
-                        onClick = { repo.addLog(LogLevel.INFO, LogSource.BLE, "CAL", "磁校准开始（模拟）") },
+                        onClick = { repo.sendCommand("MAG_CAL", "") },
                         modifier = Modifier.weight(1f),
                     ) { Text("磁校准") }
                     OutlinedButton(
-                        onClick = { repo.addLog(LogLevel.INFO, LogSource.BLE, "CAL", "气压基准已采集（模拟）") },
+                        onClick = { repo.sendCommand("BARO_BASELINE", "") },
                         modifier = Modifier.weight(1f),
                     ) { Text("气压基准") }
                 }
@@ -140,7 +139,7 @@ fun SensorStatusScreen(
 
             item {
                 Text(
-                    "真实接入后：IMU 订阅 60Hz、磁力计走 Sensor Hub、气压计 10Hz；图表可用 Vico 或自绘 Canvas。",
+                    "Status 帧以 1 Hz 推送；加速度按 ±4 g（0.122 mg/LSB）、角速度按 ±1000 dps（35 mdps/LSB）、磁力计按 1.5 mG/LSB 换算。四元数与 hPa 不在 v1 帧内。",
                     color = TextDim,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(bottom = 20.dp),

@@ -59,7 +59,7 @@ import kotlin.math.cos
 
 @Composable
 fun MapLiveScreen(
-    repo: FakeDebugRepository,
+    repo: DebugRepository,
     onBack: () -> Unit,
 ) {
     val gnss by repo.gnss.collectAsStateWithLifecycle()
@@ -125,6 +125,7 @@ fun MapLiveScreen(
                     ) { Text(if (live) "暂停轨迹" else "继续轨迹") }
                     OutlinedButton(
                         onClick = { repo.addPoi(gnss.latitude, gnss.longitude, "当前定位打点") },
+                        enabled = gnss.fix,
                         modifier = Modifier.weight(1f),
                     ) { Text("当前定位打点") }
                 }
@@ -138,11 +139,11 @@ fun MapLiveScreen(
             item {
                 SectionHeader("当前位置", "WGS-84")
                 CardBlock {
-                    MetricRow("纬度", fmtSix(gnss.latitude))
-                    MetricRow("经度", fmtSix(gnss.longitude))
-                    MetricRow("海拔", "%.1f m".format(gnss.altitudeM))
-                    MetricRow("速度", "%.1f km/h".format(gnss.speedKmh))
-                    MetricRow("航向", "%.1f°".format(gnss.headingDeg))
+                    MetricRow("纬度", if (gnss.fix) fmtSix(gnss.latitude) else "—")
+                    MetricRow("经度", if (gnss.fix) fmtSix(gnss.longitude) else "—")
+                    MetricRow("海拔", if (gnss.fix) "%.1f m".format(gnss.altitudeM) else "—")
+                    MetricRow("速度", if (gnss.fix) "%.1f km/h".format(gnss.speedKmh) else "—")
+                    MetricRow("航向", if (gnss.fix) "%.1f°".format(gnss.headingDeg) else "—")
                     MetricRow("定位", if (gnss.fix) "FIX / ${gnss.sats} sats" else "NO FIX", if (gnss.fix) Green else Red)
                 }
             }
@@ -194,7 +195,7 @@ fun MapLiveScreen(
 
             item {
                 Text(
-                    "当前是 Canvas 实时轨迹占位：用 GNSS 经纬度实时画线 + 点击打点。下一步替换为 MapLibre 瓦片，轨迹/POI 数据模型与交互保持不变。",
+                    "地图为自绘 Canvas：GNSS 有效时按经纬度实时画线，点击地图或按钮打 POI；无定位时不记录任何点。后续替换为 MapLibre 瓦片时数据模型与交互不变。",
                     color = TextDim,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(top = 6.dp, bottom = 20.dp),
@@ -220,8 +221,9 @@ private fun LiveTrackMap(
     Canvas(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(centerLat, centerLon) {
+            .pointerInput(centerLat, centerLon, gnss.fix) {
                 detectTapGestures { offset ->
+                    if (!gnss.fix) return@detectTapGestures
                     val dLon = (offset.x - size.width / 2f) * metersPerPixel / metersPerDegLon
                     val dLat = -(offset.y - size.height / 2f) * metersPerPixel / metersPerDegLat
                     onAddPoi(centerLat + dLat, centerLon + dLon)

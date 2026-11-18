@@ -1,0 +1,308 @@
+package com.lifegps.app.ble
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * JVM tests for the v1 wire codec.
+ *
+ * These run in CI (`:app:testDevDebugUnitTest`) without an emulator or a device,
+ * and they are the only place where the App's byte offsets are checked against
+ * `Doc/Software/BLE_Wire_v1.md`. The firmware side pins the same numbers in
+ * `Firmware/tests/lifegps.ble_frame`, so a one-sided edit fails one of the two
+ * suites instead of failing on a phone at night.
+ */
+class BleFrameTest {
+
+    private fun writeU16(dst: ByteArray, offset: Int, value: Int) {
+        dst[offset] = (value and 0xFF).toByte()
+        dst[offset + 1] = ((value ushr 8) and 0xFF).toByte()
+    }
+
+    private fun writeU32(dst: ByteArray, offset: Int, value: Long) {
+        for (index in 0 until 4) {
+            dst[offset + index] = ((value ushr (8 * index)) and 0xFF).toByte()
+        }
+    }
+
+    // --- CRC ------------------------------------------------------------------
+
+    @Test
+    fun crc16CcittFalseMatchesTheReferenceVector() {
+        // "123456789" -> 0x29B1 is the published check value for
+        // CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflection).
+        val data = "123456789".toByteArray(Charsets.US_ASCII)
+        assertEquals(0x29B1, BleFrame.crc16CcittFalse(data))
+    }
+
+    @Test
+    fun crc16OfEmptyInputIsTheInitValue() {
+        assertEquals(0xFFFF, BleFrame.crc16CcittFalse(ByteArray(0)))
+    }
+
+    // --- command frames -------------------------------------------------------
+
+    @Test
+    fun encodeCommandWritesTheDocumentedHeader() {
+        val payload = byteArrayOf(0xDE.toByte(), 0xAD.toByte(), 0xBE.toByte(), 0xEF.toByte())
+        val frame = BleFrame.encodeCommand(Opcode.POI_MARK.code, 0x1234, payload)
+
+        assertEquals(BleFrame.HEADER_SIZE + payload.size + BleFrame.TRAILER_SIZE, frame.size)
+        assertEquals(0xA5, BleFrame.u8(frame, 0))
+        assertEquals(0x01, BleFrame.u8(frame, 1))
+        assertEquals(0x12, BleFrame.u8(frame, 2))
+        assertEquals(0x00, BleFrame.u8(frame, 3))
+        assertEquals(0x1234, BleFrame.u16(frame, 4))
+        assertEquals(payload.size, BleFrame.u16(frame, 6))
+
+        val stored = BleFrame.u16(frame, frame.size - 2)
+        assertEquals(BleFrame.crc16CcittFalse(frame, 0, frame.size - 2), stored)
+    }
+
+    @Test
+    fun parseFrameRoundTripsAndRejectsDamage() {
+        val payload = byteArrayOf(0x01)
+        val frame = BleFrame.encodeCommand(Opcode.LOG_SUBSCRIBE.code, 7, payload)
+        val parsed = BleFrame.parseFrame(frame)
+
+        assertNotNull(parsed)
+        assertEquals(Opcode.LOG_SUBSCRIBE.code, parsed!!.opcodeCode)
+        assertEquals(Opcode.LOG_SUBSCRIBE, parsed.opcode)
+        assertEquals(7, parsed.seq)
+        assertFalse(parsed.isResponse)
+        assertEquals(1, parsed.payload.size)
+        assertEquals(0x01, BleFrame.u8(parsed.payload, 0))
+
+        // A single flipped CRC byte must invalidate the frame.
+        val badCrc = frame.copyOf()
+        badCrc[badCrc.size - 1] = (badCrc[badCrc.size - 1].toInt() xor 0xFF).toByte()
+        assertNull(BleFrame.parseFrame(badCrc))
+
+        // Truncated frame: the length field no longer matches the buffer.
+        assertNull(BleFrame.parseFrame(frame.copyOf(frame.size - 1)))
+
+        // Empty payload is legal.
+        val empty = BleFrame.encodeCommand(Opcode.GET_CAPS.code, 1, ByteArray(0))
+        val parsedEmpty = BleFrame.parseFrame(empty)
+        assertNotNull(parsedEmpty)
+        assertEquals(0, parsedEmpty!!.payload.size)
+
+        // Payload above the protocol maximum is not encodable.
+        val tooBig = ByteArray(BleFrame.MAX_PAYLOAD + 1)
+        val threw = runCatching { BleFrame.encodeCommand(Opcode.GET_CAPS.code, 1, tooBig) }
+        assertTrue(threw.isFailure)
+    }
+
+    @Test
+    fun responseFlagIsRecognised() {
+        val frame = BleFrame.encodeCommand(Opcode.GET_STATUS.code, 9, byteArrayOf(0x00))
+        frame[3] = BleFrame.FLAG_RESPONSE.toByte()
+        // The CRC no longer matches after patching, but the flag test only needs
+        // the parser to see a well-formed frame.
+        val crc = BleFrame.crc16CcittFalse(frame, 0, frame.size - 2)
+        writeU16(frame, frame.size - 2, crc)
+
+        val parsed = BleFrame.parseFrame(frame)
+        assertNotNull(parsed)
+        assertTrue(parsed!!.isResponse)
+    }
+
+    // --- status ---------------------------------------------------------------
+
+    @Test
+    fun statusOffsetsMatchTheWireDocument() {
+        // The numbers below are the ones printed in BLE_Wire_v1.md section 4.
+        assertEquals(0, StatusOffset.VER)
+        assertEquals(1, StatusOffset.FLAGS)
+        assertEquals(2, StatusOffset.GNSS_STATE)
+        assertEquals(3, StatusOffset.FIX_TYPE)
+        assertEquals(4, StatusOffset.SATELLITES)
+        assertEquals(5, StatusOffset.KEY_LEVELS)
+        assertEquals(6, StatusOffset.SOC_PCT)
+        assertEquals(8, StatusOffset.PDOP_1E2)
+        assertEquals(10, StatusOffset.SPEED_CMS)
+        assertEquals(12, StatusOffset.HEADING_DDEG)
+        assertEquals(16, StatusOffset.LAT_E7)
+        assertEquals(20, StatusOffset.LON_E7)
+        assertEquals(24, StatusOffset.HMSL_MM)
+        assertEquals(28, StatusOffset.BAT_MV)
+        assertEquals(32, StatusOffset.UTC_EPOCH_S)
+        assertEquals(36, StatusOffset.UPTIME_MS)
+        assertEquals(40, StatusOffset.GNSS_AGE_MS)
+        assertEquals(44, StatusOffset.STEPS)
+        assertEquals(48, StatusOffset.ACC_LSB)
+        assertEquals(54, StatusOffset.GYRO_LSB)
+        assertEquals(60, StatusOffset.MAG_LSB)
+        assertEquals(66, StatusOffset.BARO_PRESS_RAW)
+        assertEquals(70, StatusOffset.BARO_TEMP_RAW)
+        assertEquals(74, StatusOffset.RING_SECTOR_SEQ)
+        assertEquals(78, StatusOffset.RING_RECORDS)
+        assertEquals(82, StatusOffset.SIZE)
+    }
+
+    @Test
+    fun parseStatusDecodesEveryFieldAtItsOffset() {
+        val raw = ByteArray(StatusOffset.SIZE)
+        raw[StatusOffset.VER] = 1
+        raw[StatusOffset.FLAGS] = (StatusFlags.GNSS_FIX_VALID or StatusFlags.CHARGING or
+            StatusFlags.ZUPT).toByte()
+        raw[StatusOffset.GNSS_STATE] = 2
+        raw[StatusOffset.FIX_TYPE] = 3
+        raw[StatusOffset.SATELLITES] = 11
+        raw[StatusOffset.KEY_LEVELS] = 1
+        raw[StatusOffset.SOC_PCT] = 0xFF.toByte()
+        writeU16(raw, StatusOffset.PDOP_1E2, 142)
+        writeU16(raw, StatusOffset.SPEED_CMS, 564)
+        writeU16(raw, StatusOffset.HEADING_DDEG, 1027)
+        writeU32(raw, StatusOffset.LAT_E7, 0x0A0B0C0DL)
+        writeU32(raw, StatusOffset.LON_E7, 0xFEFDFCFCL) // -0x01020304
+        writeU32(raw, StatusOffset.HMSL_MM, 0xFFFFFB2EL) // -1234
+        writeU32(raw, StatusOffset.BAT_MV, 4012)
+        writeU32(raw, StatusOffset.UTC_EPOCH_S, 0x11223344L)
+        writeU32(raw, StatusOffset.UPTIME_MS, 0x55667788L)
+        writeU32(raw, StatusOffset.GNSS_AGE_MS, 100)
+        writeU32(raw, StatusOffset.STEPS, 1000)
+        writeU16(raw, StatusOffset.ACC_LSB, 258)
+        writeU16(raw, StatusOffset.ACC_LSB + 2, 0xFFFE) // -2
+        writeU16(raw, StatusOffset.ACC_LSB + 4, 0x7FFF)
+        writeU16(raw, StatusOffset.GYRO_LSB, 0xFFFC) // -4
+        writeU16(raw, StatusOffset.MAG_LSB, 0x0506)
+        writeU32(raw, StatusOffset.BARO_PRESS_RAW, 0x00ABCDEFL)
+        writeU32(raw, StatusOffset.BARO_TEMP_RAW, 0x000FFFFFL)
+        writeU32(raw, StatusOffset.RING_SECTOR_SEQ, 7)
+        writeU32(raw, StatusOffset.RING_RECORDS, 0x1234)
+
+        val status = BleFrame.parseStatus(raw)
+        assertNotNull(status)
+        status!!
+
+        assertEquals(1, status.ver)
+        assertTrue(status.gnssFixValid)
+        assertTrue(status.charging)
+        assertTrue(status.zupt)
+        assertFalse(status.imuValid)
+        assertEquals(2, status.gnssState)
+        assertEquals("FIXED", BleFrame.gnssStateName(status.gnssState))
+        assertEquals(3, status.fixType)
+        assertEquals(11, status.satellites)
+        assertEquals(1, status.keyLevels)
+        assertEquals(0xFF, status.socPct)
+        assertEquals(142, status.pdop1e2)
+        assertEquals(1.42, status.pdop1e2 / 100.0, 1e-9)
+        assertEquals(564, status.speedCms)
+        assertEquals(1027, status.headingDdeg)
+        assertEquals(0x0A0B0C0D, status.latE7)
+        assertEquals(-0x01020304, status.lonE7)
+        assertEquals(-1234, status.hmslMm)
+        assertEquals(4012, status.batMv)
+        assertEquals(0x11223344L, status.utcEpochS)
+        assertEquals(0x55667788L, status.uptimeMs)
+        assertEquals(100L, status.gnssAgeMs)
+        assertEquals(1000L, status.steps)
+        assertEquals(listOf(258, -2, 0x7FFF), status.accLsb)
+        assertEquals(-4, status.gyroLsb[0])
+        assertEquals(0x0506, status.magLsb[0])
+        assertEquals(0x00ABCDEFL, status.baroPressRaw)
+        assertEquals(0x000FFFFFL, status.baroTempRaw)
+        assertEquals(7L, status.ringSectorSeq)
+        assertEquals(0x1234L, status.ringRecords)
+
+        // Anything shorter than the contract is "missing", never partially parsed.
+        assertNull(BleFrame.parseStatus(raw.copyOf(StatusOffset.SIZE - 1)))
+    }
+
+    // --- caps / flash info ----------------------------------------------------
+
+    @Test
+    fun parseCapsReadsTheDocumentedFields() {
+        val body = ByteArray(CapsOffset.SIZE)
+        body[CapsOffset.VER] = 1
+        body[CapsOffset.PROTO_MAJOR] = 0
+        body[CapsOffset.PROTO_MINOR] = 1
+        body[CapsOffset.PROTO_PATCH] = 0
+        body[CapsOffset.FW_MAJOR] = 0
+        body[CapsOffset.FW_MINOR] = 2
+        body[CapsOffset.FW_PATCH] = 0
+        writeU16(body, CapsOffset.ATT_MTU, 247)
+        writeU16(body, CapsOffset.MAX_CMD_PAYLOAD, 235)
+        writeU32(body, CapsOffset.CAPS, 0x3F)
+        writeU32(body, CapsOffset.TELEMETRY_MASK, 0)
+        writeU16(body, CapsOffset.STATUS_SIZE, 82)
+
+        val caps = BleFrame.parseCaps(body)
+        assertNotNull(caps)
+        caps!!
+        assertEquals(1, caps.ver)
+        assertEquals("0.1.0", caps.protocolText)
+        assertEquals("0.2.0", caps.firmwareText)
+        assertEquals(247, caps.attMtu)
+        assertEquals(235, caps.maxCmdPayload)
+        assertEquals(0x3FL, caps.caps)
+        assertEquals(0L, caps.telemetryMask)
+        assertEquals(82, caps.statusSize)
+
+        assertNull(BleFrame.parseCaps(body.copyOf(CapsOffset.SIZE - 1)))
+    }
+
+    @Test
+    fun parseFlashInfoReadsTheDocumentedFields() {
+        val body = ByteArray(FlashInfoOffset.SIZE)
+        writeU32(body, FlashInfoOffset.FLASH_BYTES, 0x04000000L)
+        writeU32(body, FlashInfoOffset.OTA_SLOT1_BYTES, 0x00100000L)
+        writeU32(body, FlashInfoOffset.TRAJ_BYTES, 0x03F00000L)
+        writeU32(body, FlashInfoOffset.SECTOR_SEQ, 3)
+        writeU32(body, FlashInfoOffset.RECORDS_WRITTEN, 400)
+        body[FlashInfoOffset.RECORDS_IN_SECTOR] = 17
+        body[FlashInfoOffset.ERASE_COUNT_MAX] = 2
+        body[FlashInfoOffset.SECTOR_COUNT] = 16
+
+        val info = BleFrame.parseFlashInfo(body)
+        assertNotNull(info)
+        info!!
+        assertEquals(64L * 1024 * 1024, info.flashBytes)
+        assertEquals(1024L * 1024, info.otaSlot1Bytes)
+        assertEquals(3L, info.sectorSeq)
+        assertEquals(400L, info.recordsWritten)
+        assertEquals(17, info.recordsInSector)
+        assertEquals(2, info.eraseCountMax)
+        assertEquals(16, info.sectorCount)
+    }
+
+    // --- log packets ----------------------------------------------------------
+
+    @Test
+    fun parseLogSplitsLevelSourceAndMessage() {
+        val source = "lgps_ble".toByteArray(Charsets.US_ASCII)
+        val message = "advertising as LGPS-3F2A".toByteArray(Charsets.UTF_8)
+        val packet = ByteArray(2 + source.size + message.size)
+        packet[0] = 2 // INFO
+        packet[1] = source.size.toByte()
+        source.copyInto(packet, 2)
+        message.copyInto(packet, 2 + source.size)
+
+        val parsed = BleFrame.parseLog(packet)
+        assertNotNull(parsed)
+        parsed!!
+        assertEquals(2, parsed.level)
+        assertEquals("lgps_ble", parsed.source)
+        assertEquals("advertising as LGPS-3F2A", parsed.message)
+
+        assertNull(BleFrame.parseLog(byteArrayOf(0x02)))
+        // src_len longer than the buffer must be rejected, not read past the end.
+        assertNull(BleFrame.parseLog(byteArrayOf(0x02, 0x7F)))
+    }
+
+    @Test
+    fun unknownOpcodesStayUnresolved() {
+        assertNull(Opcode.fromCode(0x7E))
+        assertNull(Opcode.fromName("NOT_A_COMMAND"))
+        assertEquals(Opcode.FLASH_INFO, Opcode.fromName("flash_info"))
+        assertEquals("NOT_SUPPORTED", StatusCode.labelOf(0x03))
+        assertEquals("UNKNOWN_STATUS", StatusCode.labelOf(0x7E))
+        assertEquals("UNKNOWN(9)", BleFrame.gnssStateName(9))
+    }
+}

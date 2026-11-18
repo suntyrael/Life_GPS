@@ -36,7 +36,7 @@ import com.lifegps.app.ui.theme.TextMain
 
 @Composable
 fun DeviceScanScreen(
-    repo: FakeDebugRepository,
+    repo: DebugRepository,
     onBack: () -> Unit,
 ) {
     val current by repo.device.collectAsStateWithLifecycle()
@@ -67,7 +67,11 @@ fun DeviceScanScreen(
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 18.sp,
                                 )
-                                Text(current.firmware, color = TextDim, fontSize = 12.sp)
+                                Text(
+                                    "${current.protocol}  ·  ${current.firmware}",
+                                    color = TextDim,
+                                    fontSize = 12.sp,
+                                )
                             }
                             StatusPill(
                                 text = if (current.connected) "已连接" else "未连接",
@@ -105,7 +109,7 @@ fun DeviceScanScreen(
                 item { EmptyHint("点击“扫描 BLE”查找 LGPS-XXXX 设备") }
             }
 
-            items(devices, key = { it.name }) { device ->
+            items(devices, key = { it.address }) { device ->
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -117,10 +121,14 @@ fun DeviceScanScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text(device.name, color = TextMain, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                device.name.ifBlank { "(广播名未到达)" },
+                                color = TextMain,
+                                fontWeight = FontWeight.SemiBold,
+                            )
                             Spacer(Modifier.height(2.dp))
                             Text(
-                                "${device.firmware}  ·  RSSI ${device.rssi} dBm",
+                                "${device.address}  ·  ${device.rssi} dBm",
                                 color = TextDim,
                                 fontSize = 12.sp,
                             )
@@ -132,7 +140,7 @@ fun DeviceScanScreen(
 
             item {
                 Text(
-                    "真实 BLE 接入后，这里会显示 Service UUID、广播数据、MTU/PHY 与 bond 状态。",
+                    "扫描按 Life_GPS Service UUID 过滤，4 s 无结果后回退为不过滤扫描，10 s 自动停止。连接后自动订阅 Status/Log/Control 并请求 MTU 247。",
                     color = TextDim,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(top = 8.dp, bottom = 20.dp),

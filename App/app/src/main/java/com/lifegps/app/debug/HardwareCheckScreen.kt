@@ -35,7 +35,7 @@ import com.lifegps.app.ui.theme.TextMain
 
 @Composable
 fun HardwareCheckScreen(
-    repo: FakeDebugRepository,
+    repo: DebugRepository,
     onBack: () -> Unit,
 ) {
     val checks by repo.checks.collectAsStateWithLifecycle()
@@ -62,7 +62,7 @@ fun HardwareCheckScreen(
                         Text("Bring-up Checklist", color = TextMain, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "读取 MCU / Flash / 传感器 / GNSS 的真实 ID 与状态。真实固件接入后由 SELFTEST 命令返回。",
+                            "检查项由 GET_CAPS / FLASH_INFO / Status 帧的真实字段推导；固件 v1 的 SELFTEST 返回 NOT_SUPPORTED。",
                             color = TextDim,
                             fontSize = 12.sp,
                         )
@@ -121,7 +121,8 @@ fun HardwareCheckScreen(
 
             item {
                 Text(
-                    "真实命令建议：SELFTEST(0x40) 一次返回所有 ID；FLASH_INFO(0x60) 返回扇区图；GET_FAULT_LOG(0x70) 返回复位原因。",
+                    "v1 可用：GET_CAPS(0x01)、GET_STATUS(0x02)、FLASH_INFO(0x60)、POI_MARK(0x12)、DEBUG_UNLOCK(0x7F)；" +
+                        "SELFTEST(0x40) 返回 03 NOT_SUPPORTED，因此检查项不会伪造 PASS。",
                     color = TextDim,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(top = 6.dp, bottom = 20.dp),

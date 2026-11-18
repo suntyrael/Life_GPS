@@ -116,10 +116,18 @@ data class ConsoleEntry(
     val response: String,
 )
 
-data class FakeDevice(
+/**
+ * A BLE peripheral seen during a scan.
+ *
+ * Only fields that Android actually reports are kept: the broadcast name (may
+ * be blank until the scan response arrives), the MAC address used to connect
+ * and the last RSSI. Firmware revision is not part of advertising, so it is not
+ * stored here.
+ */
+data class ScannedDevice(
     val name: String,
+    val address: String,
     val rssi: Int,
-    val firmware: String,
 )
 
 data class GeoPoint(

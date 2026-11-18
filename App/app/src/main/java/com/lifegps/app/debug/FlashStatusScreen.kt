@@ -44,11 +44,11 @@ import java.util.Locale
 
 @Composable
 fun FlashStatusScreen(
-    repo: FakeDebugRepository,
+    repo: DebugRepository,
     onBack: () -> Unit,
 ) {
     val flash by repo.flash.collectAsStateWithLifecycle()
-    val usage = (flash.usedMb / flash.totalMb).coerceIn(0f, 1f)
+    val usage = if (flash.totalMb > 0f) (flash.usedMb / flash.totalMb).coerceIn(0f, 1f) else 0f
 
     DebugScaffold(title = "Flash / Journal", onBack = onBack) { padding ->
         LazyColumn(
@@ -59,10 +59,17 @@ fun FlashStatusScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item {
-                CardBlock("外部 Flash · W25Q512NW") {
-                    MetricRow("JEDEC ID", flash.jedec, Green)
-                    MetricRow("容量", "${flash.totalMb.toInt()} MB（轨迹区 63MB + OTA slot1 1MB）")
-                    MetricRow("已用", "${fmtOne(flash.usedMb)} MB")
+                CardBlock("外部 Flash") {
+                    MetricRow(
+                        "JEDEC ID",
+                        flash.jedec.ifBlank { "固件 v1 未提供" },
+                        if (flash.jedec.isBlank()) TextDim else Green,
+                    )
+                    MetricRow(
+                        "容量",
+                        if (flash.totalMb > 0f) "${flash.totalMb.toInt()} MB（FLASH_INFO flash_bytes）" else "—",
+                    )
+                    MetricRow("已用", if (flash.usedMb > 0f) "${fmtOne(flash.usedMb)} MB" else "—")
                     Spacer(Modifier.height(4.dp))
                     LinearProgressIndicator(
                         progress = { usage },
@@ -70,45 +77,60 @@ fun FlashStatusScreen(
                         color = if (usage > 0.85f) Red else Cyan,
                     )
                     Spacer(Modifier.height(8.dp))
-                    MetricRow("轨迹记录", "${flash.recordCount}")
-                    MetricRow("Beacon 事件", "${flash.beaconCount}")
-                    MetricRow("Journal", flash.journal, if (flash.journal == "COMMITTED") Green else Amber)
-                    MetricRow("OTA slot1", "0x3F00000 / 1MB（MCUboot 独占）")
+                    MetricRow("轨迹记录", if (flash.totalMb > 0f) "${flash.recordCount}" else "—")
+                    MetricRow("Beacon 事件", "固件 v1 未提供", TextDim)
+                    MetricRow(
+                        "Journal",
+                        flash.journal.ifBlank { "固件 v1 未提供" },
+                        if (flash.journal == "COMMITTED") Green else TextDim,
+                    )
+                    MetricRow("OTA slot1", "固件 v1 未提供", TextDim)
                 }
             }
 
             item {
-                SectionHeader("暂存扇区图", "16 × 4KB 环形队列（模拟）")
+                SectionHeader("扇区图", "来自 FLASH_INFO(0x60)")
                 CardBlock {
-                    flash.sectors.chunked(4).forEachIndexed { rowIndex, row ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            row.forEachIndexed { colIndex, state ->
-                                val index = rowIndex * 4 + colIndex
-                                SectorCell(
-                                    index = index,
-                                    state = state,
-                                    modifier = Modifier.weight(1f),
-                                )
+                    if (flash.sectors.isEmpty()) {
+                        Text(
+                            "尚未收到 FLASH_INFO，点下方“刷新扇区图”发送 0x60。",
+                            color = TextDim,
+                            fontSize = 12.sp,
+                        )
+                    } else {
+                        val rows = flash.sectors.chunked(4)
+                        rows.forEachIndexed { rowIndex, row ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                row.forEachIndexed { colIndex, state ->
+                                    val index = rowIndex * 4 + colIndex
+                                    SectorCell(
+                                        index = index,
+                                        state = state,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                            }
+                            if (rowIndex < rows.lastIndex) {
+                                Spacer(Modifier.height(6.dp))
                             }
                         }
-                        if (rowIndex < 3) Spacer(Modifier.height(6.dp))
-                    }
-                    Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Legend("ARCHIVED", Green)
-                        Legend("WRITING", Amber)
-                        Legend("ERASED", TextDim)
+                        Spacer(Modifier.height(10.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Legend("ARCHIVED", Green)
+                            Legend("WRITING", Amber)
+                            Legend("ERASED", TextDim)
+                        }
                     }
                 }
             }
 
             item {
                 CardBlock("归档 / 掉电安全") {
-                    MetricRow("暂存区", "16 扇区 × 4KB = 64KB")
-                    MetricRow("归档区", "剩余 63MB（AES-CTR）")
+                    MetricRow("暂存区", "扇区数与 sector_seq 来自 FLASH_INFO")
+                    MetricRow("归档区", "Flash 总量来自 FLASH_INFO")
                     MetricRow("原子提交", "WRITE → VERIFY → COMMIT → ERASE")
                     MetricRow("掉电恢复", "Journal 未 COMMITTED 则回滚")
                 }
@@ -116,14 +138,14 @@ fun FlashStatusScreen(
 
             item {
                 Button(
-                    onClick = { repo.addLog(LogLevel.INFO, LogSource.BLE, "FLASH", "sector map refreshed（模拟）") },
+                    onClick = { repo.sendCommand("FLASH_INFO", "") },
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("刷新扇区图") }
             }
 
             item {
                 Text(
-                    "真实接入后：FLASH_INFO(0x60) 返回扇区图/擦除计数/Journal；FLASH_READ(0x61) 仅调试解锁态可用。",
+                    "FLASH_INFO(0x60) 返回 flash_bytes / traj_bytes / sector_seq / sector_count / records_written；JEDEC、已用字节、Beacon 数与 Journal 不在 v1 响应内，保持 “—”。",
                     color = TextDim,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(bottom = 20.dp),

@@ -10,6 +10,7 @@
 ## 当前状态
 
 - Gradle 工程已生成（单模块 `:app`，Compose，`devDebug`）。
-- 已包含硬件调试首页、串口/BLE 日志、传感器、GPS、硬件自检、Flash、命令终端（假数据）。
-- 下一步：真实 BLE / USB 串口接入；稳定后再拆 `core:*` / `feature:*`。
+- 已包含硬件调试首页、串口/BLE 日志、传感器、GPS、硬件自检、Flash、命令终端（真实 BLE 数据）。
+- 数据源为 `BleDebugRepository`；未连接或固件 v1 未提供的字段显示 “—”。
+- 下一步：同步引擎 / USB 串口；稳定后再拆 `core:*` / `feature:*`。
 - 编译统一走 GitHub Actions `app.yml`，本地不要求 Android SDK/Gradle。

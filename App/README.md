@@ -1,6 +1,6 @@
 # LIFE GPS App（Android 硬件调试工具 + 产品终端）
 
-> 状态：**Android 骨架已生成**。首版是单模块 Compose App，硬件调试界面使用假数据跑通；所有编译在 GitHub Actions 完成。
+> 状态：**Android 调试界面已接真实 BLE 数据**。单模块 Compose App，通过 GATT Status/Log/Control 特征读取设备；所有编译在 GitHub Actions 完成。
 
 ## 打开方式
 
@@ -13,17 +13,17 @@
 | 页面 | 内容 |
 | :--- | :--- |
 | 硬件调试首页 | 设备状态、电量、GNSS 星数/HDOP、步数、快捷操作、最近日志 |
-| 设备扫描/连接 | BLE 扫描列表、RSSI、连接/断开（当前为假设备） |
-| 串口日志 | BLE / USB 双来源、级别过滤、搜索、暂停、清空、导出 |
+| 设备扫描/连接 | BLE 扫描列表（MAC + RSSI）、按 Service UUID 过滤、连接/断开 |
+| 串口日志 | BLE 日志 + App 内部事件、级别过滤、搜索、暂停、清空、导出 |
 | 传感器状态 | IMU 加速度/角速度/四元数、磁力计、气压计、ZUPT |
-| GPS 状态 | 六状态机、星数、HDOP、经纬度、海拔、速度、航向、C/N0、TTFF |
+| GPS 状态 | 六状态机、星数、HDOP、经纬度、海拔、速度、航向（C/N0、TTFF 不在 v1 帧内，显示“—”） |
 | 硬件自检 | MCU/Flash/IMU/磁/气压/GNSS/天线/ADC/充电/按键/LED/BLE |
 | Flash 检查 | 63MB 轨迹区 + 1MB OTA slot1、16 扇区图、Journal |
 | 命令终端 | opcode 选择、hex payload、响应历史 |
 | 空间轨迹 | IMU/PDR 局部坐标 3D 轨迹、距离/采样点/ZUPT |
 | 地图实时轨迹 | GNSS 实时画线、当前位置、点击打点、POI 列表 |
 
-当前数据来自 `FakeDebugRepository`。真实 BLE / USB 串口接入后，替换数据源即可，页面不用重写。
+当前数据来自 `BleDebugRepository`（真实 GATT）。固件未提供的字段显示 “—”，不会用默认值代替。
 
 ## 当前结构（第一阶段单模块）
 
@@ -33,7 +33,8 @@ App/
 │   ├── MainActivity.kt
 │   ├── LifeGpsApp.kt              # NavHost + 仓库实例
 │   ├── navigation/Routes.kt
-│   ├── debug/                     # 硬件调试页面 + FakeDebugRepository
+│   ├── ble/                       # UUID、帧编解码、BleTransport、BleDebugRepository
+│   ├── debug/                     # 硬件调试页面 + DebugRepository 接口
 │   └── ui/                        # theme + 通用组件
 ├── app/src/test/                  # JVM 单测
 ├── docs/                          # 入门/架构
