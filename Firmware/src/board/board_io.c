@@ -70,6 +70,46 @@ static int configure_output(const struct gpio_dt_spec *spec, bool active, const 
 }
 
 /* Chip selects first: neither the NOR nor the IMU has an external pull-up. */
+/*
+ * Proof that reading a P1 pin through the GPIO driver actually follows the pad.
+ * GPS_WAKE (P1.09) is used because the GNSS rail is still off at this point, so a
+ * short pulse cannot reach the receiver. If the driver reports what we drive, the
+ * read path is sound and a low key reading must come from outside the MCU.
+ */
+static int p1_read_path_self_test(void)
+{
+	int high;
+	int low;
+	int ret;
+
+	ret = gpio_pin_configure_dt(&gnss_wake, GPIO_OUTPUT_ACTIVE);
+	if (ret < 0) {
+		LOG_ERR("P1 read-path self-test: drive high failed (%d)", ret);
+		return ret;
+	}
+
+	high = gpio_pin_get_dt(&gnss_wake);
+
+	ret = gpio_pin_set_dt(&gnss_wake, 0);
+	if (ret < 0) {
+		LOG_ERR("P1 read-path self-test: drive low failed (%d)", ret);
+		return ret;
+	}
+
+	low = gpio_pin_get_dt(&gnss_wake);
+
+	if ((high == 1) && (low == 0)) {
+		LOG_INF("P1 read path OK (GPS_WAKE driven 1 -> read 1, driven 0 -> read 0)");
+	} else {
+		LOG_ERR("P1 read path broken: driven 1 -> read %d, driven 0 -> read %d "
+			"(GPIO readback does not follow the pad)", high, low);
+	}
+
+	(void)gpio_pin_configure_dt(&gnss_wake, GPIO_OUTPUT_INACTIVE);
+
+	return 0;
+}
+
 static int configure_chip_selects(void)
 {
 	int ret;
@@ -128,6 +168,8 @@ int lgps_board_io_init(void)
 
 	LOG_INF("board IO ready: GPS_EN=P1.07(low) GPS_WAKE=P1.09(low) CHG_EN=P0.03(low,charging allowed) "
 		"CHG_STAT=P0.04(input,pull-up)");
+
+	(void)p1_read_path_self_test();
 
 	return 0;
 }

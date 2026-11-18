@@ -68,6 +68,8 @@ static int read_pin(const struct gpio_dt_spec *spec)
 
 static void diagnose_key_pin(const struct gpio_dt_spec *spec, const char *name)
 {
+	gpio_flags_t effective = 0U;
+	uint32_t port_in = 0U;
 	int as_dt;
 	int explicit_up;
 	int explicit_down;
@@ -105,8 +107,22 @@ static void diagnose_key_pin(const struct gpio_dt_spec *spec, const char *name)
 		LOG_ERR("%s: restore failed (%d)", name, ret);
 	}
 
-	LOG_WRN("%s self-test: dt_flags=0x%02x -> dt=%d explicit_pull_up=%d "
-		"explicit_pull_down=%d", name, spec->dt_flags, as_dt, explicit_up, explicit_down);
+	/*
+	 * What the driver thinks the pin is: a missing GPIO_INPUT or GPIO_PULL_UP here
+	 * means the configuration never reached the hardware, which is a completely
+	 * different fault from an externally driven pin.
+	 */
+	(void)gpio_pin_get_config(spec->port, spec->pin, &effective);
+	(void)gpio_port_get_raw(spec->port, &port_in);
+
+	LOG_WRN("%s self-test: dt_flags=0x%02x effective=0x%02x (input=%d pull_up=%d pull_down=%d)",
+		name, spec->dt_flags, effective,
+		((effective & GPIO_INPUT) != 0U) ? 1 : 0,
+		((effective & GPIO_PULL_UP) != 0U) ? 1 : 0,
+		((effective & GPIO_PULL_DOWN) != 0U) ? 1 : 0);
+	LOG_WRN("%s self-test: port %s IN=0x%08x -> bit%u=%u (dt=%d explicit_up=%d "
+		"explicit_down=%d)", name, spec->port->name, port_in, spec->pin,
+		(unsigned int)((port_in >> spec->pin) & 0x01U), as_dt, explicit_up, explicit_down);
 
 	if ((explicit_up == 0) && (explicit_down == 0)) {
 		LOG_WRN("%s: both pulls read 0 -> the pin is externally driven low "
