@@ -40,6 +40,50 @@ static struct lgps_key_state keys[LGPS_KEY_COUNT] = {
 
 static lgps_key_callback_t key_callback;
 
+/*
+ * Bench diagnostic: a pin that reads 0 with the internal pull-up enabled can mean
+ * either "held low externally" (button pressed / net shorted) or "the pull-up was
+ * not applied". Re-configuring the same pin with a pull-down and reading it again
+ * separates the two cases without a scope:
+ *
+ *   up=1 down=0 -> normal released key
+ *   up=0 down=0 -> externally driven low (pressed button, short, wrong net)
+ *   up=1 down=1 -> externally driven high
+ *   up=0 down=1 -> pull configuration has no effect (driver/DT problem)
+ */
+static void diagnose_key_pin(const struct gpio_dt_spec *spec, const char *name, int up_level)
+{
+	int down_level;
+	int ret;
+
+	ret = gpio_pin_configure(spec->port, spec->pin, GPIO_INPUT | GPIO_PULL_DOWN);
+	if (ret < 0) {
+		LOG_ERR("%s: pull-down self-test failed (%d)", name, ret);
+		return;
+	}
+
+	k_msleep(2);
+	down_level = gpio_pin_get(spec->port, spec->pin);
+
+	/* Restore the board configuration (internal pull-up from devicetree). */
+	ret = gpio_pin_configure_dt(spec, GPIO_INPUT);
+	if (ret < 0) {
+		LOG_ERR("%s: restore after self-test failed (%d)", name, ret);
+	}
+
+	if (up_level == 0 && down_level == 0) {
+		LOG_WRN("%s pin self-test: up=0 down=0 -> externally driven low "
+			"(button held, net shorted or wrong pin)", name);
+	} else if (up_level == 1 && down_level == 0) {
+		LOG_INF("%s pin self-test: up=1 down=0 -> pull-up works, key released", name);
+	} else if (up_level == 1 && down_level == 1) {
+		LOG_WRN("%s pin self-test: up=1 down=1 -> externally driven high", name);
+	} else {
+		LOG_ERR("%s pin self-test: up=0 down=1 -> pull configuration has no effect "
+			"(devicetree flags / driver)", name);
+	}
+}
+
 static void notify(enum lgps_key_id id, enum lgps_key_event_type event, uint32_t held_ms)
 {
 	if (key_callback != NULL) {
@@ -177,9 +221,9 @@ int lgps_keys_init(lgps_key_callback_t callback)
 		key->armed = (key->stable_pressed == 0U);
 
 		if (!key->armed) {
-			LOG_WRN("%s reads low at boot (%s): long press disarmed until it is "
-				"released once - check the net / the button",
-				key->name, key->spec->port->name);
+			LOG_WRN("%s reads low at boot: long press disarmed until it is released "
+				"once", key->name);
+			diagnose_key_pin(key->spec, key->name, level);
 		}
 	}
 

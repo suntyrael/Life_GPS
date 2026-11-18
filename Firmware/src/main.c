@@ -78,6 +78,14 @@ static int init_subsystems(void)
 	ret = lgps_battery_init();
 	if (ret < 0) {
 		LOG_ERR("battery sensing unavailable (%d)", ret);
+	} else {
+		int32_t millivolts = 0;
+
+		if (lgps_battery_read_mv(&millivolts) == 0) {
+			LOG_INF("battery: %d mV at boot (R25/R26 || R_in corrected)", millivolts);
+		} else {
+			LOG_ERR("battery: first conversion failed");
+		}
 	}
 
 	ret = lgps_gnss_init();
@@ -218,10 +226,15 @@ int main(void)
 		if ((uint32_t)(now_ms - last_battery_ms) >= BATTERY_PERIOD_MS) {
 			int32_t millivolts = 0;
 
+			int err;
+
 			last_battery_ms = now_ms;
-			bat_valid = (lgps_battery_read_mv(&millivolts) == 0);
+			err = lgps_battery_read_mv(&millivolts);
+			bat_valid = (err == 0);
 			if (bat_valid) {
 				bat_mv = millivolts;
+			} else {
+				LOG_WRN("battery read failed (%d)", err);
 			}
 		}
 

@@ -78,10 +78,13 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 #define BMP388_ODR_25HZ 0x03U
 #define BMP388_PWR_NORMAL 0x33U /* press_en | temp_en | mode = 11b (normal) */
 
-/* Sensor hub timing: SHUB_ODR is left at its 104 Hz default so the hub is not
- * the bottleneck for the 26 Hz IMU chain (table 373).
+/*
+ * Sensor hub timing: SHUB_ODR stays at its 104 Hz default (table 373), but with
+ * START_CONFIG = 0 the hub cycle is triggered by the accelerometer/gyro data-ready,
+ * which now runs at 26 Hz. Two trigger periods are 77 ms, so 150 ms guarantees at
+ * least two complete hub cycles before any register is sampled.
  */
-#define SHUB_SETTLE_MS 30
+#define SHUB_SETTLE_MS 150
 
 #define SPI_OP (SPI_OP_MODE_MASTER | SPI_WORD_SET(8) | SPI_TRANSFER_MSB)
 
@@ -89,6 +92,7 @@ static const struct spi_dt_spec imu_spi = SPI_DT_SPEC_GET(DT_NODELABEL(imu), SPI
 static K_MUTEX_DEFINE(imu_lock);
 static bool hub_streaming_configured;
 static uint8_t detected_who_am_i;
+static uint8_t bmp388_addr = LGPS_BMP388_I2C_ADDR;
 
 static int imu_read_buf(uint8_t reg, uint8_t *buf, size_t len_bytes)
 {
@@ -203,22 +207,14 @@ static int shub_write_byte(uint8_t i2c_addr, uint8_t reg, uint8_t value)
 	return shub_bank_enable(false);
 }
 
-int lgps_imu_probe_hub(struct lgps_imu_hub_ids *ids)
+static int hub_read_bytes(uint8_t i2c0_addr, uint8_t i2c0_reg, uint8_t i2c1_addr,
+			   uint8_t i2c1_reg, uint8_t *out, size_t len_bytes)
 {
-	uint8_t hub[2] = { 0U, 0U };
 	int ret;
-
-	if (ids == NULL) {
-		return -EINVAL;
-	}
-
-	memset(ids, 0, sizeof(*ids));
-
-	k_mutex_lock(&imu_lock, K_FOREVER);
 
 	ret = shub_bank_enable(true);
 	if (ret < 0) {
-		goto out;
+		return ret;
 	}
 
 	ret = imu_write(REG_MASTER_CONFIG, MASTER_RST_REGS);
@@ -231,29 +227,27 @@ int lgps_imu_probe_hub(struct lgps_imu_hub_ids *ids)
 		goto out;
 	}
 
-	/* Sensor 1: LIS2MDL WHO_AM_I (0x4F). */
-	ret = imu_write(REG_SLV0_ADD, (uint8_t)((LGPS_LIS2MDL_I2C_ADDR << 1) | SLV0_ADD_READ));
+	ret = imu_write(REG_SLV0_ADD, (uint8_t)((i2c0_addr << 1) | SLV0_ADD_READ));
 	if (ret < 0) {
 		goto out;
 	}
 
-	ret = imu_write(REG_SLV0_SUBADD, 0x4FU);
+	ret = imu_write(REG_SLV0_SUBADD, i2c0_reg);
 	if (ret < 0) {
 		goto out;
 	}
 
-	ret = imu_write(REG_SLV0_CONFIG, 0x00U);
+	ret = imu_write(REG_SLV0_CONFIG, 0x00U); /* numop = 0 -> one byte */
 	if (ret < 0) {
 		goto out;
 	}
 
-	/* Sensor 2: BMP388 CHIP_ID (0x00). */
-	ret = imu_write(REG_SLV1_ADD, (uint8_t)((LGPS_BMP388_I2C_ADDR << 1) | SLV0_ADD_READ));
+	ret = imu_write(REG_SLV1_ADD, (uint8_t)((i2c1_addr << 1) | SLV0_ADD_READ));
 	if (ret < 0) {
 		goto out;
 	}
 
-	ret = imu_write(REG_SLV1_SUBADD, (uint8_t)BMP388_CHIP_ID_REG);
+	ret = imu_write(REG_SLV1_SUBADD, i2c1_reg);
 	if (ret < 0) {
 		goto out;
 	}
@@ -271,26 +265,66 @@ int lgps_imu_probe_hub(struct lgps_imu_hub_ids *ids)
 
 	k_msleep(SHUB_SETTLE_MS);
 
-	ret = imu_read_buf(REG_SENSOR_HUB_1, hub, sizeof(hub));
-	if (ret < 0) {
-		goto out;
-	}
-
-	ret = shub_bank_enable(false);
-	if (ret < 0) {
-		goto out;
-	}
-
-	ids->lis2mdl_who_am_i = hub[0];
-	ids->bmp388_chip_id = hub[1];
-	ids->lis2mdl_ok = (hub[0] == LGPS_LIS2MDL_WHO_AM_I);
-	ids->bmp388_ok = (hub[1] == LGPS_BMP388_CHIP_ID);
-
-	LOG_INF("sensor hub probe: LIS2MDL WHO_AM_I=0x%02x (%s) BMP388 CHIP_ID=0x%02x (%s)", hub[0],
-		ids->lis2mdl_ok ? "ok" : "MISMATCH", hub[1], ids->bmp388_ok ? "ok" : "MISMATCH");
+	ret = imu_read_buf(REG_SENSOR_HUB_1, out, len_bytes);
 
 out:
+	(void)shub_bank_enable(false);
+	return ret;
+}
+
+int lgps_imu_probe_hub(struct lgps_imu_hub_ids *ids)
+{
+	uint8_t hub[2] = { 0U, 0U };
+	int ret = 0;
+
+	if (ids == NULL) {
+		return -EINVAL;
+	}
+
+	memset(ids, 0, sizeof(*ids));
+
+	k_mutex_lock(&imu_lock, K_FOREVER);
+
+	/*
+	 * The first hub cycle can be missed (trigger alignment), and BMP388 strapping
+	 * is only known from the netlist, so both addresses are tried. Four attempts of
+	 * 150 ms cover all of them.
+	 */
+	for (uint8_t attempt = 0U; attempt < 4U; attempt++) {
+		ret = hub_read_bytes(LGPS_LIS2MDL_I2C_ADDR, 0x4FU, bmp388_addr,
+				     (uint8_t)BMP388_CHIP_ID_REG, hub, sizeof(hub));
+		if (ret < 0) {
+			break;
+		}
+
+		ids->lis2mdl_who_am_i = hub[0];
+		ids->bmp388_chip_id = hub[1];
+		ids->lis2mdl_ok = (hub[0] == LGPS_LIS2MDL_WHO_AM_I);
+		ids->bmp388_ok = (hub[1] == LGPS_BMP388_CHIP_ID);
+
+		if (ids->lis2mdl_ok && ids->bmp388_ok) {
+			break;
+		}
+
+		if (!ids->bmp388_ok && (bmp388_addr == LGPS_BMP388_I2C_ADDR)) {
+			bmp388_addr = LGPS_BMP388_ALT_I2C_ADDR;
+			continue;
+		}
+
+		if (!ids->bmp388_ok && (bmp388_addr == LGPS_BMP388_ALT_I2C_ADDR)) {
+			bmp388_addr = LGPS_BMP388_I2C_ADDR;
+		}
+	}
+
+	if (ret == 0) {
+		LOG_INF("sensor hub probe: LIS2MDL WHO_AM_I=0x%02x (%s) BMP388 CHIP_ID=0x%02x @0x%02x "
+			"(%s)", hub[0], ids->lis2mdl_ok ? "ok" : "MISMATCH", hub[1], bmp388_addr,
+			ids->bmp388_ok ? "ok" : "MISMATCH");
+		LOG_DBG("sensor hub raw: 0x%02x 0x%02x", hub[0], hub[1]);
+	}
+
 	k_mutex_unlock(&imu_lock);
+
 	return ret;
 }
 
@@ -313,17 +347,17 @@ int lgps_imu_hub_configure(void)
 	}
 
 	/* BMP388: oversampling, 25 Hz, normal mode with pressure + temperature. */
-	ret = shub_write_byte(LGPS_BMP388_I2C_ADDR, BMP388_OSR, BMP388_OSR_P_X8_T_X2);
+	ret = shub_write_byte(bmp388_addr, BMP388_OSR, BMP388_OSR_P_X8_T_X2);
 	if (ret < 0) {
 		goto out;
 	}
 
-	ret = shub_write_byte(LGPS_BMP388_I2C_ADDR, BMP388_ODR, BMP388_ODR_25HZ);
+	ret = shub_write_byte(bmp388_addr, BMP388_ODR, BMP388_ODR_25HZ);
 	if (ret < 0) {
 		goto out;
 	}
 
-	ret = shub_write_byte(LGPS_BMP388_I2C_ADDR, BMP388_PWR_CTRL, BMP388_PWR_NORMAL);
+	ret = shub_write_byte(bmp388_addr, BMP388_PWR_CTRL, BMP388_PWR_NORMAL);
 	if (ret < 0) {
 		goto out;
 	}
@@ -360,7 +394,7 @@ int lgps_imu_hub_configure(void)
 		goto out;
 	}
 
-	ret = imu_write(REG_SLV1_ADD, (uint8_t)((LGPS_BMP388_I2C_ADDR << 1) | SLV0_ADD_READ));
+	ret = imu_write(REG_SLV1_ADD, (uint8_t)((bmp388_addr << 1) | SLV0_ADD_READ));
 	if (ret < 0) {
 		goto out;
 	}
@@ -382,7 +416,23 @@ int lgps_imu_hub_configure(void)
 
 	hub_streaming_configured = true;
 
-	LOG_INF("sensor hub streaming: LIS2MDL 6B @50Hz, BMP388 6B @25Hz, hub ODR 52Hz, 12 of 18 bytes used");
+	k_msleep(SHUB_SETTLE_MS);
+
+	uint8_t check[12] = { 0 };
+
+	if (imu_read_buf(REG_SENSOR_HUB_1, check, sizeof(check)) == 0) {
+		LOG_INF("sensor hub streaming: LIS2MDL 6B @50Hz, BMP388 6B @25Hz @0x%02x, "
+			"hub ODR 52Hz, 12 of 18 bytes used", bmp388_addr);
+		LOG_INF("sensor hub first burst: %02x %02x %02x %02x %02x %02x | "
+			"%02x %02x %02x %02x %02x %02x", check[0], check[1], check[2], check[3],
+			check[4], check[5], check[6], check[7], check[8], check[9], check[10],
+			check[11]);
+
+		if ((check[6] == 0U) && (check[7] == 0U) && (check[8] == 0U)) {
+			LOG_WRN("BMP388 pressure reads 0: check PWR_CTRL write path, SDO strapping "
+				"(0x76/0x77) and that U4 is populated");
+		}
+	}
 
 out:
 	(void)shub_bank_enable(false);

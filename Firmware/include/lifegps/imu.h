@@ -32,6 +32,11 @@
 /* 7-bit I2C addresses of the sensors on the auxiliary bus (netlist strapping). */
 #define LGPS_LIS2MDL_I2C_ADDR 0x1EU
 #define LGPS_BMP388_I2C_ADDR 0x76U
+/* BMP388 with SDO tied to VDDIO (datasheet 5.2: address LSB follows SDO). The
+ * netlist shows SDO on GND, but the probe tries both so a mis-populated or
+ * reworked board still reports which strapping is present.
+ */
+#define LGPS_BMP388_ALT_I2C_ADDR 0x77U
 
 /* Full-scale settings used by this firmware and their sensitivities. */
 #define LGPS_IMU_ACCEL_FS_G 4.0F       /* CTRL1_XL FS[1:0]_XL = 10b */

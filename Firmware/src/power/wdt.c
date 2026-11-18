@@ -18,6 +18,7 @@ LOG_MODULE_REGISTER(lgps_wdt, LOG_LEVEL_INF);
 static const struct device *const wdt = DEVICE_DT_GET(DT_NODELABEL(wdt30));
 static atomic_t checkin_mask;
 static int wdt_channel = -1;
+static uint32_t next_evaluation_ms;
 
 static const char *const task_names[LGPS_WDT_TASK_COUNT] = {
 	[LGPS_WDT_TASK_MAIN] = "main",
@@ -56,8 +57,12 @@ int lgps_wdt_init(void)
 		return ret;
 	}
 
-	LOG_INF("WDT30 armed: timeout %u ms, %u supervised tasks (layered feed)",
-		LGPS_WDT_TIMEOUT_MS, (unsigned int)LGPS_WDT_TASK_COUNT);
+	/* Do not judge the first window: the GNSS/IMU producers may not have started. */
+	next_evaluation_ms = k_uptime_get_32() + LGPS_WDT_FEED_WINDOW_MS;
+
+	LOG_INF("WDT30 armed: timeout %u ms, %u supervised tasks, %u ms supervision window "
+		"(layered feed)", LGPS_WDT_TIMEOUT_MS, (unsigned int)LGPS_WDT_TASK_COUNT,
+		LGPS_WDT_FEED_WINDOW_MS);
 
 	return 0;
 }
@@ -78,11 +83,21 @@ uint32_t lgps_wdt_missing(void)
 
 void lgps_wdt_feed(void)
 {
-	uint32_t missing = lgps_wdt_missing();
+	uint32_t now_ms = k_uptime_get_32();
+	uint32_t missing;
 	int ret;
 
+	/* Signed difference: correct across the 49 day tick wrap. */
+	if ((int32_t)(now_ms - next_evaluation_ms) < 0) {
+		return;
+	}
+
+	next_evaluation_ms = now_ms + LGPS_WDT_FEED_WINDOW_MS;
+
+	missing = lgps_wdt_missing();
 	if (missing != 0U) {
-		LOG_ERR("WDT feed withheld, missing: 0x%02x", missing);
+		LOG_ERR("WDT feed withheld: tasks missing in this %u ms window: 0x%02x",
+			LGPS_WDT_FEED_WINDOW_MS, missing);
 		return;
 	}
 

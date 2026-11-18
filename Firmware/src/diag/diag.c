@@ -71,7 +71,11 @@ static void decode_reset_cause(void)
 	}
 
 	if (reset_text[0] == '\0') {
-		(void)strncpy(reset_text, "none", sizeof(reset_text) - 1U);
+		/* RESETREAS came back empty: report "unreported" instead of claiming that
+		 * nothing happened, because it may also mean the cause was already cleared.
+		 */
+		(void)strncpy(reset_text, (reset_cause == 0U) ? "unreported" : "no-flag-matched",
+			      sizeof(reset_text) - 1U);
 	}
 }
 

@@ -16,6 +16,16 @@
 
 #define LGPS_WDT_TIMEOUT_MS 30000U
 
+/*
+ * Supervision window. Tasks run at very different rates (IMU 26 Hz data-ready,
+ * GNSS 50 Hz service loop, main 100 Hz), so "all tasks checked in since the last
+ * pet" can never be true at an arbitrary instant. The feed is therefore evaluated
+ * once per window: every task must have checked in at least once inside it.
+ * 5 s leaves six evaluation attempts before the 30 s timeout, and a dead task
+ * cannot satisfy the next window because the mask is cleared on a successful pet.
+ */
+#define LGPS_WDT_FEED_WINDOW_MS 5000U
+
 enum lgps_wdt_task {
 	LGPS_WDT_TASK_MAIN = 0,
 	LGPS_WDT_TASK_GNSS,
@@ -30,8 +40,9 @@ int lgps_wdt_init(void);
 void lgps_wdt_checkin(enum lgps_wdt_task task);
 
 /*
- * Pet the watchdog only when all tasks checked in; otherwise log which task is
- * missing and let the timeout expire.
+ * Called from the main loop at any rate; only acts once per
+ * LGPS_WDT_FEED_WINDOW_MS. Pets the watchdog when every task checked in inside the
+ * window, otherwise logs the missing bitmap and lets the timeout expire.
  */
 void lgps_wdt_feed(void);
 
