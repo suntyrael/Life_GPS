@@ -63,6 +63,16 @@ BUILD_ASSERT(LGPS_BLE_STATUS_SIZE <= LGPS_PROTO_MTU - 8,
 #define LGPS_BLE_THREAD_PRIO K_PRIO_PREEMPT(10)
 #define LGPS_BLE_LOG_DRAIN_MS 20
 #define LGPS_BLE_REBOOT_DELAY_MS 200
+/*
+ * Restart advertising *after* the disconnected callback returns, never inside it.
+ * Connectable advertising needs a struct bt_conn slot (adv.c: le_adv_start_add_conn
+ * -> bt_conn_add_le -> bt_conn_new over acl_conns[CONFIG_BT_MAX_CONN], default 1),
+ * and the dying connection still holds that slot while callbacks run. Starting it
+ * inline therefore fails with -ENOMEM (-12) and the device never becomes visible
+ * again - which is exactly what happened on the bench.
+ */
+#define LGPS_BLE_ADV_RESTART_MS 250U
+#define LGPS_BLE_ADV_RETRY_MS 1000U
 
 /* --- state ----------------------------------------------------------------- */
 
@@ -116,8 +126,10 @@ static bool control_subscribed;
 static bool log_subscribed;
 static bool debug_unlocked;
 static bool reboot_pending;
+static bool link_up;
 
 static struct k_work_delayable reboot_work;
+static struct k_work_delayable adv_restart_work;
 
 static void reboot_work_handler(struct k_work *work)
 {
@@ -155,8 +167,6 @@ static struct bt_data scan_rsp_data[] = {
 
 static int start_advertising(void)
 {
-	int err;
-
 	scan_rsp_data[0].data_len = (uint8_t)strlen(device_name);
 	/* BT_LE_ADV_CONN_FAST_1 is the GAP-recommended undirected connectable
 	 * parameter set in Zephyr 4.4 (the generic BT_LE_ADV_CONN macro no longer
@@ -164,13 +174,42 @@ static int start_advertising(void)
 	 * device must be discoverable in seconds, and the link is expected to be
 	 * up for the whole debug session.
 	 */
-	err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, adv_data, ARRAY_SIZE(adv_data), scan_rsp_data,
-			      ARRAY_SIZE(scan_rsp_data));
-	if (err != 0) {
-		LOG_ERR("advertising start failed (%d)", err);
+	return bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, adv_data, ARRAY_SIZE(adv_data), scan_rsp_data,
+			       ARRAY_SIZE(scan_rsp_data));
+}
+
+static void schedule_advertising(uint32_t delay_ms)
+{
+	(void)k_work_schedule(&adv_restart_work, K_MSEC(delay_ms));
+}
+
+static void adv_restart_handler(struct k_work *work)
+{
+	int err;
+
+	ARG_UNUSED(work);
+
+	if (link_up) {
+		/* A central won the race and is already connected; advertising now
+		 * would only fail with -EALREADY, and disconnected() will ask again
+		 * when the link really goes down.
+		 */
+		return;
 	}
 
-	return err;
+	err = start_advertising();
+	if (err == 0) {
+		LOG_INF("advertising as %s", device_name);
+
+		return;
+	}
+
+	/* Anything left here is a genuine failure: report it once per retry cycle
+	 * instead of spamming every connection attempt.
+	 */
+	LOG_WRN("advertising restart failed (%d), retrying in %u ms", err,
+		(unsigned int)LGPS_BLE_ADV_RETRY_MS);
+	schedule_advertising(LGPS_BLE_ADV_RETRY_MS);
 }
 
 /* --- notifications --------------------------------------------------------- */
@@ -740,11 +779,13 @@ static void connected(struct bt_conn *conn, uint8_t err)
 {
 	if (err != 0) {
 		LOG_ERR("connection failed (0x%02x)", err);
-		(void)start_advertising();
+		schedule_advertising(LGPS_BLE_ADV_RESTART_MS);
+
 		return;
 	}
 
 	LOG_INF("central connected");
+	link_up = true;
 
 #if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
 	{
@@ -756,33 +797,24 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	}
 #endif
 
-#if defined(CONFIG_BT_USER_PHY_UPDATE)
-	{
-		int ret = bt_conn_le_phy_update(conn, BT_CONN_LE_PHY_PARAM_2M);
-
-		if (ret != 0) {
-			LOG_WRN("2M PHY request failed (%d)", ret);
-		}
-	}
-#endif
+	/* The 2M PHY request is left to CONFIG_BT_AUTO_PHY_PERIPHERAL_2M. Asking for
+	 * it here as well made both requests land in the same few milliseconds and
+	 * the controller answered HCI 0x3A (Controller Busy), see the bench log.
+	 */
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
-	int err;
-
 	ARG_UNUSED(conn);
 
 	LOG_INF("central disconnected (0x%02x)", reason);
 
+	link_up = false;
 	status_subscribed = false;
 	control_subscribed = false;
 	log_subscribed = false;
 
-	err = start_advertising();
-	if (err != 0) {
-		LOG_ERR("could not resume advertising (%d)", err);
-	}
+	schedule_advertising(LGPS_BLE_ADV_RESTART_MS);
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
@@ -860,6 +892,7 @@ int lgps_ble_init(void)
 	}
 
 	k_work_init_delayable(&reboot_work, reboot_work_handler);
+	k_work_init_delayable(&adv_restart_work, adv_restart_handler);
 
 	err = bt_set_name(device_name);
 	if (err != 0) {
@@ -887,6 +920,8 @@ int lgps_ble_init(void)
 
 	err = start_advertising();
 	if (err != 0) {
+		LOG_ERR("advertising start failed (%d)", err);
+
 		return err;
 	}
 
