@@ -11,8 +11,11 @@
  *   4. watchdog, so a hang in any later stage is recoverable
  *   5. GNSS, IMU, storage
  *
- * The 50 ms loop samples the IMU at 20 Hz for the ZUPT/PDR chain defined in the
- * README (section 7.5), feeds the watchdog and publishes a 1 Hz status line.
+ * The loop polls the IMU every 10 ms but only consumes samples the chip reports as
+ * fresh (STATUS_REG XLDA|GDA), so the ZUPT/PDR chain runs at exactly the configured
+ * 26 Hz ODR with no sleep-drift. 26 samples therefore span exactly 1.000 s, the
+ * window README 7.5 specifies. The same loop feeds the watchdog and publishes a
+ * 1 Hz status line.
  */
 
 #include <zephyr/kernel.h>
@@ -31,7 +34,8 @@
 
 LOG_MODULE_REGISTER(lgps_main, LOG_LEVEL_INF);
 
-#define MAIN_LOOP_PERIOD_MS 50U        /* 20 Hz: ZUPT window N = 20 == 1.0 s */
+/* Poll faster than the 26 Hz ODR and let the data-ready bit do the pacing. */
+#define MAIN_LOOP_PERIOD_MS 10U
 #define STATUS_PERIOD_MS 1000U
 #define BATTERY_PERIOD_MS 60000U
 
@@ -142,7 +146,7 @@ int main(void)
 
 	for (;;) {
 		uint32_t now_ms = lgps_diag_uptime_ms();
-		int ret = lgps_imu_read_sample(&sample);
+		int ret = lgps_imu_read_sample_if_ready(&sample);
 
 		lgps_wdt_checkin(LGPS_WDT_TASK_MAIN);
 
@@ -164,6 +168,8 @@ int main(void)
 
 			lgps_zupt_update(&zupt, accel_body, gyro_rps, now_ms);
 			lgps_pdr_set_frozen(&pdr, lgps_zupt_locked(&zupt));
+		} else if (ret != -EAGAIN) {
+			LOG_ERR("IMU read failed (%d)", ret);
 		}
 
 		if ((uint32_t)(now_ms - last_status_ms) >= STATUS_PERIOD_MS) {

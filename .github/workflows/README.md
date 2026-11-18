@@ -7,13 +7,17 @@
 | `protocol.yml` | `protocol/**`、`tools/protocol-gen/**` | 校验协议 YAML：尺寸、偏移、UUID、opcode |
 | `docs.yml` | `**/*.md` | 检查相对 Markdown 链接 |
 | `app.yml` | `App/**`、`protocol/**` | 构建 `devDebug` APK、单测、lint，上传 artifact |
+| `firmware.yml` | `Firmware/**`、`protocol/**`、`tools/protocol-gen/**`、`versions.yaml` | 协议头漂移门禁 + NCS v3.4.2 工具链容器内构建 `lifegps/nrf54l15/cpuapp`、体积门禁（text+data ≤ 712 KB / data+bss ≤ 256 KB）、twister `native_sim` 单测、上传 hex/elf/map |
 
-待 Firmware 脚手架完成后加入：
+待加入：
 
 | 文件 | 触发 | 作用 |
 | :--- | :--- | :--- |
-| `firmware.yml` | `Firmware/**`、`protocol/**` | Zephyr 构建、native_sim 测试、MCUboot 体积/分区门禁 |
 | `release.yml` | tag `app-v*` / `fw-v*` / `hw-v*` | 签名 APK/AAB、固件 hex/bin/DFU、校验和、GitHub Release |
+
+> `firmware.yml` 使用官方镜像 `ghcr.io/nrfconnect/sdk-nrf-toolchain:v3.4.2`（与 `versions.yaml`
+> 的 `ncs-toolchain-v3.4.2` 对应），NCS 工作区按 revision 缓存；**MCUboot 体积/分区门禁**
+> 仍待 `Firmware/docs/PARTITIONS.md` 的 M1 重算表定稿后补入。
 
 ## 只使用 GitHub 编译
 

@@ -20,6 +20,7 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 /* --- LSM6DSR register map (datasheet table 20 / table 329) --------------- */
 #define REG_FUNC_CFG_ACCESS 0x01U
 #define REG_INT1_CTRL 0x0DU
+#define REG_STATUS_REG 0x1EU
 #define REG_WHO_AM_I 0x0FU
 #define REG_CTRL1_XL 0x10U
 #define REG_CTRL2_G 0x11U
@@ -50,11 +51,13 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 #define SLV0_ADD_READ BIT(0)            /* SLV0_ADD (0x15): addr[6:0] << 1 | rw */
 
 /* Control values picked for this firmware. */
-#define CTRL1_XL_ODR_104HZ 0x40U /* ODR_XL[3:0] = 0100b, table 50 */
+#define CTRL1_XL_ODR_26HZ 0x20U  /* ODR_XL[3:0] = 0010b, table 50 (26 Hz) */
 #define CTRL1_XL_FS_4G 0x08U     /* FS[1:0]_XL = 10b, table 49 */
-#define CTRL2_G_ODR_104HZ 0x40U  /* ODR_G[3:0] = 0100b, table 53 */
+#define CTRL2_G_ODR_26HZ 0x20U   /* ODR_G[3:0] = 0010b, table 53 (26 Hz) */
 #define CTRL2_G_FS_1000DPS 0x08U /* FS[1:0]_G = 10b, table 52 */
 #define CTRL9_XL_AXES_ON 0xE0U   /* datasheet reset value enables the three axes */
+#define STATUS_XLDA BIT(0)       /* STATUS_REG (0x1E), table 81 */
+#define STATUS_GDA BIT(1)
 #define INT1_DRDY_XL BIT(0)      /* INT1_CTRL (0x0D), table 43 */
 #define INT1_DRDY_G BIT(1)
 
@@ -75,7 +78,9 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 #define BMP388_ODR_25HZ 0x03U
 #define BMP388_PWR_NORMAL 0x33U /* press_en | temp_en | mode = 11b (normal) */
 
-/* Sensor hub timing: the master communicates at 104 Hz by default (table 373). */
+/* Sensor hub timing: SHUB_ODR is left at its 104 Hz default so the hub is not
+ * the bottleneck for the 26 Hz IMU chain (table 373).
+ */
 #define SHUB_SETTLE_MS 30
 
 #define SPI_OP (SPI_OP_MODE_MASTER | SPI_WORD_SET(8) | SPI_TRANSFER_MSB)
@@ -384,6 +389,19 @@ out:
 	return ret;
 }
 
+static void decode_sample(const uint8_t raw[12], struct lgps_imu_sample *out)
+{
+	/* Gyro first (0x22..0x27), then accelerometer (0x28..0x2D), little endian. */
+	for (uint8_t axis = 0U; axis < 3U; axis++) {
+		out->raw_gyro[axis] = (int16_t)((uint16_t)raw[2U * axis] |
+						((uint16_t)raw[2U * axis + 1U] << 8));
+		out->raw_accel[axis] = (int16_t)((uint16_t)raw[6U + 2U * axis] |
+						 ((uint16_t)raw[6U + 2U * axis + 1U] << 8));
+		out->gyro_dps[axis] = (float)out->raw_gyro[axis] * LGPS_IMU_GYRO_MDPS_LSB / 1000.0F;
+		out->accel_g[axis] = (float)out->raw_accel[axis] * LGPS_IMU_ACCEL_MG_LSB / 1000.0F;
+	}
+}
+
 int lgps_imu_read_sample(struct lgps_imu_sample *out)
 {
 	uint8_t raw[12];
@@ -401,15 +419,43 @@ int lgps_imu_read_sample(struct lgps_imu_sample *out)
 		return ret;
 	}
 
-	/* Gyro first (0x22..0x27), then accelerometer (0x28..0x2D), little endian. */
-	for (uint8_t axis = 0U; axis < 3U; axis++) {
-		out->raw_gyro[axis] = (int16_t)((uint16_t)raw[2U * axis] |
-						((uint16_t)raw[2U * axis + 1U] << 8));
-		out->raw_accel[axis] = (int16_t)((uint16_t)raw[6U + 2U * axis] |
-						 ((uint16_t)raw[6U + 2U * axis + 1U] << 8));
-		out->gyro_dps[axis] = (float)out->raw_gyro[axis] * LGPS_IMU_GYRO_MDPS_LSB / 1000.0F;
-		out->accel_g[axis] = (float)out->raw_accel[axis] * LGPS_IMU_ACCEL_MG_LSB / 1000.0F;
+	decode_sample(raw, out);
+
+	return 0;
+}
+
+int lgps_imu_read_sample_if_ready(struct lgps_imu_sample *out)
+{
+	uint8_t status = 0U;
+	uint8_t raw[12];
+	int ret;
+
+	if (out == NULL) {
+		return -EINVAL;
 	}
+
+	k_mutex_lock(&imu_lock, K_FOREVER);
+
+	ret = imu_read_buf(REG_STATUS_REG, &status, 1U);
+	if (ret < 0) {
+		k_mutex_unlock(&imu_lock);
+		return ret;
+	}
+
+	if ((status & (STATUS_XLDA | STATUS_GDA)) != (STATUS_XLDA | STATUS_GDA)) {
+		/* The pair is only complete when both chains have fresh data. */
+		k_mutex_unlock(&imu_lock);
+		return -EAGAIN;
+	}
+
+	ret = imu_read_buf(REG_OUTX_L_G, raw, sizeof(raw));
+	k_mutex_unlock(&imu_lock);
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	decode_sample(raw, out);
 
 	return 0;
 }
@@ -508,13 +554,13 @@ int lgps_imu_init(void)
 		goto out;
 	}
 
-	/* +/-4 g at 104 Hz high performance, +/-1000 dps at 104 Hz high performance. */
-	ret = imu_write(REG_CTRL1_XL, CTRL1_XL_ODR_104HZ | CTRL1_XL_FS_4G);
+	/* +/-4 g at 26 Hz high performance, +/-1000 dps at 26 Hz high performance. */
+	ret = imu_write(REG_CTRL1_XL, CTRL1_XL_ODR_26HZ | CTRL1_XL_FS_4G);
 	if (ret < 0) {
 		goto out;
 	}
 
-	ret = imu_write(REG_CTRL2_G, CTRL2_G_ODR_104HZ | CTRL2_G_FS_1000DPS);
+	ret = imu_write(REG_CTRL2_G, CTRL2_G_ODR_26HZ | CTRL2_G_FS_1000DPS);
 	if (ret < 0) {
 		goto out;
 	}

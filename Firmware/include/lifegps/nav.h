@@ -23,8 +23,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* ZUPT window length: 20 samples at 20 Hz = 1.0 s (README 7.5). */
-#define LGPS_ZUPT_WINDOW_SAMPLES 20U
+/*
+ * ZUPT window: the LSM6DSR ODR set is 12.5 / 26 / 52 / 104 / 208 Hz, so there is
+ * no 20 Hz channel. 26 Hz is the closest native rate; 26 samples cover
+ * 26 x (1 / 26 s) = 1.000 s using the same N / fs convention as README 7.5, so the
+ * variance thresholds stay valid without any decimation or window distortion.
+ */
+#define LGPS_ZUPT_WINDOW_SAMPLES 26U
 
 /* Stationary thresholds and dwell time (README 7.5). */
 #define LGPS_ZUPT_ACCEL_VARIANCE_MAX_G2 0.005F
@@ -58,7 +63,7 @@ struct lgps_zupt {
 void lgps_zupt_reset(struct lgps_zupt *zupt, uint32_t now_ms);
 
 /*
- * Push one sample (window is 1.0 s at 20 Hz). @p accel_g and @p gyro_rps are
+ * Push one sample (window is exactly 1.0 s at the 26 Hz ODR). @p accel_g and @p gyro_rps are
  * body-frame vectors. Call at the configured IMU sample rate.
  */
 void lgps_zupt_update(struct lgps_zupt *zupt, const float accel_g[3], const float gyro_rps[3],

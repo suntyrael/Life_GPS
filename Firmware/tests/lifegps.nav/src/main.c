@@ -13,7 +13,12 @@
 #include <stdint.h>
 
 #define TEST_TOLERANCE 1e-6F
-#define TEST_SAMPLE_PERIOD_MS 50U /* 20 Hz, README 7.5 */
+/*
+ * 26 Hz is the LSM6DSR ODR the firmware programs (1000 / 26 = 38.46 ms, rounded
+ * down here); together with LGPS_ZUPT_WINDOW_SAMPLES == 26 it makes the window
+ * exactly 1.000 s. Tests therefore pace their samples like the real device.
+ */
+#define TEST_SAMPLE_PERIOD_MS 38U
 #define TEST_HALF_PI_RAD 1.57079632679F
 #define TEST_ORIGIN_TOLERANCE_M 1e-6F
 
@@ -149,9 +154,10 @@ ZTEST(lifegps_nav, test_zupt_motion_clears_lock)
 	uint32_t now_ms;
 
 	lgps_zupt_reset(&zupt, 0U);
-	for (now_ms = 0U; now_ms <= LGPS_ZUPT_DWELL_TIME_MS; now_ms += TEST_SAMPLE_PERIOD_MS) {
+	for (now_ms = 0U; now_ms < LGPS_ZUPT_DWELL_TIME_MS; now_ms += TEST_SAMPLE_PERIOD_MS) {
 		feed_stationary(&zupt, now_ms);
 	}
+	feed_stationary(&zupt, LGPS_ZUPT_DWELL_TIME_MS);
 	zassert_true(lgps_zupt_locked(&zupt), "not locked before the disturbance");
 
 	lgps_zupt_update(&zupt, spike_g, gyro_rps, now_ms);

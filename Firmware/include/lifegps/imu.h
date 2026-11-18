@@ -39,8 +39,12 @@
 #define LGPS_IMU_GYRO_FS_DPS 1000.0F   /* CTRL2_G FS[1:0]_G = 10b */
 #define LGPS_IMU_GYRO_MDPS_LSB 35.0F   /* datasheet G_So, FS = +/-1000 dps */
 
-/* ODR actually programmed: 104 Hz high-performance for both chains. */
-#define LGPS_IMU_ODR_HZ 104.0F
+/*
+ * ODR programmed for both chains: 26 Hz high-performance. It is the native rate
+ * closest to the 20 Hz the PDR design assumes, and 26 samples of it make the ZUPT
+ * window exactly 1.000 s (see lifegps/nav.h).
+ */
+#define LGPS_IMU_ODR_HZ 26.0F
 
 struct lgps_imu_sample {
 	int16_t raw_accel[3];
@@ -68,7 +72,7 @@ struct lgps_imu_baro {
 };
 
 /*
- * Reset and configure the IMU: BDU + IF_INC, +/-4 g, +/-1000 dps, 104 Hz
+ * Reset and configure the IMU: BDU + IF_INC, +/-4 g, +/-1000 dps, 26 Hz
  * high-performance, data-ready on INT1. Returns 0 on success, -ENODEV if
  * WHO_AM_I does not match (wrong part or dead bus), negative errno otherwise.
  */
@@ -87,8 +91,16 @@ int lgps_imu_probe_hub(struct lgps_imu_hub_ids *ids);
  */
 int lgps_imu_hub_configure(void);
 
-/* Read one acceleration/gyro pair (also used by the 20 Hz PDR loop). */
+/* Read one acceleration/gyro pair unconditionally (diagnostics, self test). */
 int lgps_imu_read_sample(struct lgps_imu_sample *out);
+
+/*
+ * Read a sample only when the chip reports new data (STATUS_REG XLDA | GDA).
+ * Returns -EAGAIN when no new sample is available, 0 on success. Polling this at
+ * a rate above the ODR gives the ZUPT chain exact 26 Hz pacing with no drift,
+ * because the pacing comes from the sensor and not from a sleep period.
+ */
+int lgps_imu_read_sample_if_ready(struct lgps_imu_sample *out);
 
 /*
  * Read the 12 bytes produced by the hub (6 magnetometer + 6 barometer).
