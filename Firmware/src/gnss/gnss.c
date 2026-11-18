@@ -345,7 +345,6 @@ static void gnss_process_rx(void)
 static void gnss_power_down(void)
 {
 	uint8_t frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_RXM_PMREQ_PAYLOAD_LEN + LGPS_UBX_TRAILER_LEN];
-	int rx_disable_ret;
 	int ret;
 
 	/* 1. Ask the receiver to enter software backup (flags: backup | force). */
@@ -360,15 +359,15 @@ static void gnss_power_down(void)
 	k_msleep(100);
 
 	/* 2. Stop the receive interrupts, then 3. drop the rail (pinmap power-down
-	 * order). Note: uart_irq_rx_disable() only masks the RX interrupt; it does NOT
-	 * tri-state the pins. Nothing needs to: the receiver is unpowered after step 3,
-	 * so no current can flow into its RX/TX through the 100 ohm series resistors.
+	 * order).
+	 *
+	 * uart_irq_rx_disable() returns void (only update/rx_ready/tx_ready/
+	 * is_pending report errors), so there is no status to check here. It also only
+	 * masks the RX interrupt - it does NOT tri-state the pins. Nothing needs to:
+	 * the receiver is unpowered after step 3, so no current can flow into its RX/TX
+	 * through the 100 ohm series resistors.
 	 */
-	rx_disable_ret = uart_irq_rx_disable(gnss_uart);
-
-	if (rx_disable_ret < 0) {
-		LOG_WRN("uart_irq_rx_disable failed (%d)", rx_disable_ret);
-	}
+	uart_irq_rx_disable(gnss_uart);
 
 	(void)lgps_gnss_rail_set(false);
 }
@@ -394,14 +393,13 @@ static void gnss_power_up(void)
 	ring_buf_reset(&gnss_rx_ring);
 	lgps_ubx_parser_reset(&parser);
 
-	ret = uart_irq_rx_enable(gnss_uart);
-	if (ret < 0) {
-		/* Three-valued return: negative means the driver refused (e.g. -ENOTSUP
-		 * without CONFIG_UART_INTERRUPT_DRIVEN). Silently ignoring it produced a
-		 * "rail on, no data ever" state with no hint in the log.
-		 */
-		LOG_ERR("uart_irq_rx_enable failed (%d): no GNSS data can arrive", ret);
-	}
+	/*
+	 * uart_irq_rx_enable() returns void: a driver that cannot do interrupt-driven
+	 * RX is caught earlier, by uart_irq_callback_user_data_set() returning
+	 * -ENOTSUP in lgps_gnss_init(). A receive path that is silently dead still
+	 * shows up in the counters logged below (rx_bytes stays 0).
+	 */
+	uart_irq_rx_enable(gnss_uart);
 
 	next_reconfig_ms = 0U;
 	baud_probe_base_bytes = rx_bytes_total();

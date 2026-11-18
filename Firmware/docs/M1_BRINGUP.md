@@ -275,7 +275,7 @@ grep 'lgps_tele: GNSS' log.txt | sed -n 's/.*fix=\([0-9]*\).*/\1/p'
 | 模块 | 修复 |
 | :--- | :--- |
 | keys | 删除重复的 `read_pin()`；`gpio_pin_get_config()` / `gpio_port_get_raw()` 返回值判错；自检恢复后补注释说明 `dt_flags` 会重新 OR 回 invert 位；线程栈 1 KiB → 2 KiB（立即模式日志在调用者栈上格式化） |
-| GNSS | `uart_irq_update/rx_ready/rx_enable/rx_disable` 按三值返回处理（含 `-ENOTSUP`）；`uart_fifo_read()` 改为 drain 循环（契约要求读到返回 0 为止）；上电 `ring_buf_reset()`；计数器按“ISR 写 / 线程写”拆分并原子化，去掉线程回写 ISR 计数器；`uart_irq_rx_disable()` 不会把引脚置高阻（注释按事实改写）；波特率回退改用基线差值 |
+| GNSS | `uart_irq_update` / `uart_irq_rx_ready` 按三值返回处理（1 / 0 / 负值含 `-ENOTSUP`）；`uart_irq_rx_enable` / `rx_disable` 在 Zephyr 里是 **void**（第一次 CI 就红在这：把 void 赋给 int）；`uart_fifo_read()` 改为 drain 循环（契约要求读到返回 0 为止）；上电 `ring_buf_reset()`；计数器按“ISR 写 / 线程写”拆分并原子化，去掉线程回写 ISR 计数器；`uart_irq_rx_disable()` 不会把引脚置高阻（注释按事实改写）；波特率回退改用基线差值 |
 | LED/电源 | `lgps_led_off_all()` 现在真的取消运行中的序列并清空队列（生成号 + 50 ms 切片打断）；关机前先 `off_all()`，关机灯语不会再排在 9 s 开机灯语后面；`lgps_led_set()` 先转 `unsigned int` 再判越界（负值曾可越界） |
 | diag/telemetry | `reset_text[48]` → `[128]`（十二个名字全拼是 119 字符）；`hwinfo_clear_reset_cause()` 读完即清；`var_mg2` 的 float→int32 加 NaN/上下限钳位；复位原因表注明 nRF 驱动只产生其中一部分标志 |
 | battery | 改用 `adc_raw_to_millivolts_dt()`（增益/参考/分辨率全从 DT 取），去掉硬编码 `2 * vref` 与 `resolution == 0` 除零隐患 |
