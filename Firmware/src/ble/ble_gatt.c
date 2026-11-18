@@ -158,7 +158,13 @@ static int start_advertising(void)
 	int err;
 
 	scan_rsp_data[0].data_len = (uint8_t)strlen(device_name);
-	err = bt_le_adv_start(BT_LE_ADV_CONN, adv_data, ARRAY_SIZE(adv_data), scan_rsp_data,
+	/* BT_LE_ADV_CONN_FAST_1 is the GAP-recommended undirected connectable
+	 * parameter set in Zephyr 4.4 (the generic BT_LE_ADV_CONN macro no longer
+	 * exists there). The interval is the fast one on purpose: a screenless
+	 * device must be discoverable in seconds, and the link is expected to be
+	 * up for the whole debug session.
+	 */
+	err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, adv_data, ARRAY_SIZE(adv_data), scan_rsp_data,
 			      ARRAY_SIZE(scan_rsp_data));
 	if (err != 0) {
 		LOG_ERR("advertising start failed (%d)", err);
@@ -199,9 +205,6 @@ static ssize_t status_read(struct bt_conn *conn, const struct bt_gatt_attr *attr
 	k_spinlock_key_t key;
 	ssize_t result;
 
-	ARG_UNUSED(conn);
-	ARG_UNUSED(attr);
-
 	key = k_spin_lock(&status_lock);
 	memcpy(copy, status_frame, sizeof(copy));
 	result = (ssize_t)status_frame_valid;
@@ -238,7 +241,7 @@ static void status_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 	k_spin_unlock(&status_lock, key);
 
 	if (valid) {
-		notify_guarded(status_attr, copy, sizeof(copy));
+		notify_guarded(status_attr, copy, (uint16_t)sizeof(copy));
 	}
 }
 
@@ -863,10 +866,12 @@ int lgps_ble_init(void)
 		LOG_WRN("device name not set (%d)", err);
 	}
 
-	status_attr = bt_gatt_find_by_uuid(lgps_svc.attrs, lgps_svc.attr_count, &status_uuid.uuid);
-	control_attr =
-		bt_gatt_find_by_uuid(lgps_svc.attrs, lgps_svc.attr_count, &control_uuid.uuid);
-	log_attr = bt_gatt_find_by_uuid(lgps_svc.attrs, lgps_svc.attr_count, &log_uuid.uuid);
+	status_attr = bt_gatt_find_by_uuid(lgps_svc.attrs, (uint16_t)lgps_svc.attr_count,
+					   &status_uuid.uuid);
+	control_attr = bt_gatt_find_by_uuid(lgps_svc.attrs, (uint16_t)lgps_svc.attr_count,
+					    &control_uuid.uuid);
+	log_attr = bt_gatt_find_by_uuid(lgps_svc.attrs, (uint16_t)lgps_svc.attr_count,
+					&log_uuid.uuid);
 	if ((status_attr == NULL) || (control_attr == NULL) || (log_attr == NULL)) {
 		LOG_ERR("GATT attribute lookup failed, notifications disabled");
 		return -ENOENT;
