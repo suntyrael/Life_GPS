@@ -165,6 +165,18 @@ grep 'lgps_tele: GNSS' log.txt | sed -n 's/.*fix=\([0-9]*\).*/\1/p'
 | `sensor hub probe 0x00/0x00` 但 MAG 有数据 | ✅ 观察正确，待定位 | 12 字节 burst `35 ff 07 ff 27 00 | 00 00 00 00 00 00` 说明 **LIS2MDL 确实在出数（-203/-249/39 LSB ≈ -30 µT）**，BMP388 三个压力字节全 0。1 字节探测路径仍返回 0，需下一版日志确认是否为读时序问题；BMP388 更像 U4 未贴件或地址/焊接问题 |
 | `reset: software (0x00000002)` | ℹ️ 正常 | 上一轮 `sys_poweroff()` 之后的复位路径 |
 
+### 3.7 按键上拉：配置在哪里、如何自证
+
+| 环节 | 内容 |
+| :--- | :--- |
+| 设备树 | `gpios = <&gpio1 6 (GPIO_ACTIVE_LOW \| GPIO_PULL_UP)>;`（KEY1 P1.06）、`<&gpio1 8 (...)>`（KEY2 P1.08） |
+| 驱动调用 | `gpio_pin_configure_dt(spec, GPIO_INPUT)` → `gpio_pin_configure(port, pin, spec->dt_flags \| GPIO_INPUT)`，即 `dt_flags` 里的 `GPIO_PULL_UP` 会原样进驱动 |
+| 编译期自证 | `BUILD_ASSERT((DT_GPIO_FLAGS(DT_NODELABEL(key_poi), gpios) & GPIO_PULL_UP) != 0, ...)`，两个按键各一条。若设备树丢了这个标志，**CI 直接编译失败**，不会带着浮空输入出厂 |
+| 运行期自证 | 启动自检打印 `dt_flags=0x11`（= `GPIO_ACTIVE_LOW \| GPIO_PULL_UP`），并分别用**显式**上拉、显式下拉各读一次：`explicit_pull_up=1` 说明驱动确实能上拉；若 `explicit_pull_up=0 且 explicit_pull_down=0` 则是外部被硬拉低（与网表的"信号脚与地同一组触点"一致） |
+
+> 结论：上拉**已配置**，并且从"注释里的承诺"升级为"编译期强制 + 运行期可观测"。
+> 但 100 Ω 串阻 + 开关内部短接到地的情况下，12–16 kΩ 的片内上拉在电气上赢不了：这两条同时成立时读数只能是 0。
+
 **需要你在硬件侧确认/修订的两项**：
 
 1. **按键接线**（这是真 bug，必须改板或改 BOM）：信号脚与接地脚落在轻触开关的同一侧触点对上，等于常闭到地。

@@ -105,8 +105,8 @@ int lgps_battery_read_mv(int32_t *millivolts)
 
 		if (!warned) {
 			warned = true;
-			LOG_WRN("battery: %d mV is below any Li-ion pack (raw=%u): pack absent, "
-				"divider open or wrong ADC channel - check before trusting this value",
+			LOG_INF("battery: %d mV (raw=%u) is below any Li-ion pack - expected on a "
+				"build without the divider/pack fitted, so treat bat_mv as invalid",
 				*millivolts, raw);
 		}
 	}

@@ -33,6 +33,18 @@ struct lgps_key_state {
 static const struct gpio_dt_spec key_poi = GPIO_DT_SPEC_GET(DT_NODELABEL(key_poi), gpios);
 static const struct gpio_dt_spec key_mode = GPIO_DT_SPEC_GET(DT_NODELABEL(key_mode), gpios);
 
+/*
+ * The board has no external pull-up on either key, so the internal one is not
+ * optional: without it an open button leaves the pin floating. Enforce the
+ * devicetree flag at build time instead of trusting a comment.
+ * gpio_pin_configure_dt() ORs spec->dt_flags into the configuration, so a flag
+ * that is present here is a flag that reaches the driver.
+ */
+BUILD_ASSERT((DT_GPIO_FLAGS(DT_NODELABEL(key_poi), gpios) & GPIO_PULL_UP) != 0,
+	     "KEY1_POI (P1.06) must carry GPIO_PULL_UP in devicetree: no external pull-up");
+BUILD_ASSERT((DT_GPIO_FLAGS(DT_NODELABEL(key_mode), gpios) & GPIO_PULL_UP) != 0,
+	     "KEY2_MODE (P1.08) must carry GPIO_PULL_UP in devicetree: no external pull-up");
+
 static struct lgps_key_state keys[LGPS_KEY_COUNT] = {
 	[LGPS_KEY_POI] = { .spec = &key_poi, .name = "KEY1_POI" },
 	[LGPS_KEY_MODE] = { .spec = &key_mode, .name = "KEY2_MODE" },
