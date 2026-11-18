@@ -380,4 +380,212 @@ ZTEST(lifegps_nav, test_magnetic_anomaly)
 	zassert_false(lgps_nav_mag_anomaly(65.5F, 0.0F), "zero reference must not flag");
 }
 
+/* --- attitude ------------------------------------------------------------- */
+
+/* World +Z expressed in the body frame: the third row of R(q). At rest this must
+ * equal the normalised accelerometer vector, which is what the filter corrects
+ * against.
+ */
+static void up_in_body(const float q[4], float out[3])
+{
+	float w = q[0];
+	float x = q[1];
+	float y = q[2];
+	float z = q[3];
+
+	out[0] = 2.0F * ((x * z) - (w * y));
+	out[1] = 2.0F * ((y * z) + (w * x));
+	out[2] = 1.0F - (2.0F * ((x * x) + (y * y)));
+}
+
+ZTEST(lifegps_nav, test_attitude_reset_reproduces_gravity)
+{
+	const float accel[3] = { 0.5F, 0.0F, 0.8660254F };
+	struct lgps_attitude att;
+	float up[3];
+
+	lgps_attitude_reset(&att, accel);
+	zassert_true(att.valid, "a 1 g sample must make the estimate valid");
+
+	up_in_body(att.q, up);
+	zassert_within(up[0], 0.5F, 0.01F, "up.x must match the measured direction");
+	zassert_within(up[1], 0.0F, 0.01F, "up.y must match the measured direction");
+	zassert_within(up[2], 0.8660254F, 0.01F, "up.z must match the measured direction");
+}
+
+ZTEST(lifegps_nav, test_attitude_level_stays_level)
+{
+	const float accel[3] = { 0.0F, 0.0F, 1.0F };
+	const float gyro[3] = { 0.0F, 0.0F, 0.0F };
+	struct lgps_attitude att;
+	float euler[3];
+
+	lgps_attitude_reset(&att, accel);
+	for (int sample = 0; sample < 100; sample++) {
+		lgps_attitude_update(&att, accel, gyro, 1.0F / 26.0F);
+	}
+
+	lgps_attitude_euler_deg(&att, euler);
+	zassert_within(euler[0], 0.0F, 0.1F, "roll of a level device");
+	zassert_within(euler[1], 0.0F, 0.1F, "pitch of a level device");
+	zassert_within(euler[2], 0.0F, 0.1F, "heading of a level device");
+}
+
+ZTEST(lifegps_nav, test_attitude_gyro_signs_match_the_documented_frame)
+{
+	const float yaw_rate[3] = { 0.0F, 0.0F, 1.0F };
+	const float pitch_rate[3] = { 1.0F, 0.0F, 0.0F };
+	struct lgps_attitude att;
+	float euler[3];
+
+	/* A positive rate about +Z_body turns the device towards the west, and the
+	 * compass heading grows clockwise, so the heading must decrease by 1 rad.
+	 */
+	lgps_attitude_reset(&att, NULL);
+	for (int sample = 0; sample < 26; sample++) {
+		lgps_attitude_update(&att, NULL, yaw_rate, 1.0F / 26.0F);
+	}
+	zassert_within(lgps_attitude_heading_rad(&att), -1.0F, 0.02F,
+		       "+Z gyro must decrease the compass heading");
+
+	/* A positive rate about +X_body lifts the nose. */
+	lgps_attitude_reset(&att, NULL);
+	for (int sample = 0; sample < 26; sample++) {
+		lgps_attitude_update(&att, NULL, pitch_rate, 1.0F / 26.0F);
+	}
+	lgps_attitude_euler_deg(&att, euler);
+	zassert_within(euler[1], 57.2957795F, 1.0F, "+X gyro must give nose-up pitch");
+}
+
+ZTEST(lifegps_nav, test_attitude_heading_alignment_wraps)
+{
+	struct lgps_attitude att;
+	float euler[3];
+
+	lgps_attitude_reset(&att, NULL);
+	lgps_attitude_align_heading(&att, 1.5707963F);
+	zassert_within(lgps_attitude_heading_rad(&att), 1.5707963F, 0.001F, "align to 90 deg");
+
+	lgps_attitude_euler_deg(&att, euler);
+	zassert_within(euler[2], 90.0F, 0.1F, "euler heading follows the alignment");
+
+	lgps_attitude_align_heading(&att, -3.0F);
+	zassert_within(lgps_attitude_heading_rad(&att), -3.0F, 0.001F, "align across the wrap");
+}
+
+ZTEST(lifegps_nav, test_attitude_quat_q15_identity)
+{
+	struct lgps_attitude att;
+	int16_t q15[4];
+
+	lgps_attitude_reset(&att, NULL);
+	lgps_attitude_quat_q15(&att, q15);
+
+	zassert_equal(q15[0], 32767, "w of the identity quaternion in Q15");
+	zassert_equal(q15[1], 0, "x of the identity quaternion");
+	zassert_equal(q15[2], 0, "y of the identity quaternion");
+	zassert_equal(q15[3], 0, "z of the identity quaternion");
+}
+
+ZTEST(lifegps_nav, test_attitude_mag_pulls_yaw_and_learns_offset)
+{
+	/* The device really points north, the estimate is 20 deg off, so the sensor
+	 * (aligned with the true body frame) measures the north field directly.
+	 */
+	const float body_field[3] = { 0.0F, 20.0F, -40.0F };
+	struct lgps_attitude att;
+
+	lgps_attitude_reset(&att, NULL);
+	lgps_attitude_align_heading(&att, 0.34906585F);
+	for (int sample = 0; sample < 300; sample++) {
+		lgps_attitude_correct_from_mag(&att, body_field, 0.1F);
+	}
+	zassert_within(lgps_attitude_heading_rad(&att), 0.0F, 0.02F,
+		       "mag correction must converge to magnetic north");
+
+	/* An uncalibrated sensor rotates the field by 30 deg; after learning that
+	 * rotation the same field must stop moving the estimate.
+	 */
+	const float rotated_field[3] = { 10.0F, 17.3205081F, -40.0F };
+
+	for (int sample = 0; sample < 400; sample++) {
+		lgps_attitude_learn_mag_offset(&att, rotated_field, 0.05F);
+	}
+	zassert_within(att.mag_yaw_offset_rad, 0.5235988F, 0.02F,
+		       "the learned offset must match the sensor rotation");
+
+	for (int sample = 0; sample < 100; sample++) {
+		lgps_attitude_correct_from_mag(&att, rotated_field, 0.1F);
+	}
+	zassert_within(lgps_attitude_heading_rad(&att), 0.0F, 0.02F,
+		       "the learned offset must cancel the sensor rotation");
+}
+
+/* --- step detection ------------------------------------------------------- */
+
+ZTEST(lifegps_nav, test_step_detector_counts_a_walking_cadence)
+{
+	struct lgps_step step;
+	float last_delta = 0.0F;
+	int steps = 0;
+	const float sample_rate = 26.0F;
+
+	lgps_step_reset(&step, 0U);
+
+	/* 1.8 Hz, 0.5 g peak-to-peak above/below 1 g: an ordinary walk. */
+	for (int sample = 0; sample < (int)(sample_rate * 5.0F); sample++) {
+		float t = (float)sample / sample_rate;
+		float accel = 1.0F + (0.5F * sinf(2.0F * 3.14159265F * 1.8F * t));
+
+		if (lgps_step_update(&step, accel, (uint32_t)(t * 1000.0F), &last_delta)) {
+			steps++;
+		}
+	}
+
+	/* 1.8 Hz over 5 s is 9 steps; the detector starts mid-phase, hence 7..10. */
+	zassert_true(steps >= 7, "expected at least 7 steps, got %d", steps);
+	zassert_true(steps <= 10, "expected at most 10 steps, got %d", steps);
+	zassert_true(last_delta > 0.5F, "Weinberg delta_a too small: %d", (int)(last_delta * 100));
+	zassert_true(last_delta < 1.2F, "Weinberg delta_a too large: %d", (int)(last_delta * 100));
+}
+
+ZTEST(lifegps_nav, test_step_detector_ignores_a_static_device)
+{
+	struct lgps_step step;
+	int steps = 0;
+
+	lgps_step_reset(&step, 0U);
+
+	for (int sample = 0; sample < 260; sample++) {
+		if (lgps_step_update(&step, 1.0F, (uint32_t)(sample * 38), NULL)) {
+			steps++;
+		}
+	}
+
+	zassert_equal(steps, 0, "a still device must not report steps");
+}
+
+ZTEST(lifegps_nav, test_step_detector_enforces_the_minimum_interval)
+{
+	struct lgps_step step;
+	int steps = 0;
+
+	lgps_step_reset(&step, 0U);
+
+	/* 4 Hz oscillation: faster than a human walk, so the 260 ms limiter has to
+	 * throw steps away instead of reporting every bounce.
+	 */
+	for (int sample = 0; sample < 60; sample++) {
+		float t = (float)sample * 20.0F;
+		float accel = 1.0F + (0.6F * sinf(2.0F * 3.14159265F * 4.0F * (t / 1000.0F)));
+
+		if (lgps_step_update(&step, accel, (uint32_t)t, NULL)) {
+			steps++;
+		}
+	}
+
+	zassert_true(steps >= 2, "expected at least 2 steps in 1.2 s, got %d", steps);
+	zassert_true(steps <= 4, "the 260 ms limiter must cap 4 Hz at 4 steps, got %d", steps);
+}
+
 ZTEST_SUITE(lifegps_nav, NULL, NULL, NULL, NULL, NULL);

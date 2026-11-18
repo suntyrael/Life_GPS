@@ -6,5 +6,6 @@ project(lifegps_nav)
 target_sources(app PRIVATE
   src/main.c
   ${CMAKE_CURRENT_SOURCE_DIR}/../../src/nav/nav.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/nav/attitude.c
 )
 target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
