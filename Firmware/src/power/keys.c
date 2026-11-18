@@ -53,6 +53,21 @@ static struct lgps_key_state keys[LGPS_KEY_COUNT] = {
 
 static lgps_key_callback_t key_callback;
 
+/*
+ * Read the PHYSICAL pad level.
+ *
+ * The keys are declared GPIO_ACTIVE_LOW, and gpio_pin_get()/gpio_pin_get_dt()
+ * return the *logical* level: the driver inverts it for pins marked ACTIVE_LOW.
+ * Using those here inverted the state machine - "released" looked pressed and the
+ * first real press looked like a release - which is exactly the behaviour seen on
+ * the bench. gpio_pin_get_raw() ignores GPIO_ACTIVE_LOW, so 0 always means "the
+ * button is pulling the pad to ground".
+ */
+static int read_level(const struct gpio_dt_spec *spec)
+{
+	return gpio_pin_get_raw(spec->port, spec->pin);
+}
+
 /* The thread is created by K_THREAD_DEFINE, which starts it during kernel init,
  * i.e. before lgps_keys_init() runs. It must not sample unconfigured pins. */
 static K_SEM_DEFINE(keys_ready_sem, 0, 1);
@@ -68,7 +83,7 @@ static K_SEM_DEFINE(keys_ready_sem, 0, 1);
  */
 static int read_pin(const struct gpio_dt_spec *spec)
 {
-	return gpio_pin_get(spec->port, spec->pin);
+	return gpio_pin_get_raw(spec->port, spec->pin);
 }
 
 static void diagnose_key_pin(const struct gpio_dt_spec *spec, const char *name)
@@ -163,7 +178,7 @@ static void notify(enum lgps_key_id id, enum lgps_key_event_type event, uint32_t
 static void update_key(enum lgps_key_id id, uint32_t now_ms)
 {
 	struct lgps_key_state *key = &keys[id];
-	int value = gpio_pin_get_dt(key->spec);
+	int value = read_level(key->spec);
 	uint8_t pressed;
 
 	if (value < 0) {
@@ -203,7 +218,8 @@ static void update_key(enum lgps_key_id id, uint32_t now_ms)
 			return;
 		}
 
-		LOG_DBG("%s pressed", key->name);
+		/* Immediate feedback: the user must see the press before releasing. */
+		LOG_INF("%s pressed", key->name);
 		notify(id, LGPS_KEY_EVENT_PRESS, 0U);
 		return;
 	}
@@ -288,7 +304,7 @@ int lgps_keys_init(lgps_key_callback_t callback)
 		 */
 		k_msleep(KEY_SETTLE_MS);
 
-		int level = gpio_pin_get_dt(key->spec);
+		int level = read_level(key->spec);
 
 		if (level < 0) {
 			LOG_ERR("%s: initial read failed (%d)", key->name, level);
@@ -301,7 +317,7 @@ int lgps_keys_init(lgps_key_callback_t callback)
 			diagnose_key_pin(key->spec, key->name);
 
 			/* Use the settled value the diagnostic left behind. */
-			level = gpio_pin_get_dt(key->spec);
+			level = read_level(key->spec);
 			if (level < 0) {
 				LOG_ERR("%s: read after self-test failed (%d)", key->name, level);
 				return level;

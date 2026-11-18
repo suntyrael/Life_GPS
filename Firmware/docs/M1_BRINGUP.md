@@ -216,6 +216,29 @@ grep 'lgps_tele: GNSS' log.txt | sed -n 's/.*fix=\([0-9]*\).*/\1/p'
 修正后：监督对象 = **主循环线程** + **GNSS 线程**；签到含义 = "该线程仍在运行"；传感器故障走日志与遥测（`IMU` 行显示 `---`），不再触发复位。
 日志也改为点名：`WDT feed withheld: gnss did not check in during the last 5000 ms window`。
 
+### 3.10 按键"卡住/响应滞后"的最终根因：用了逻辑电平 API
+
+`gpio_pin_get()` / `gpio_pin_get_dt()` 返回的是**逻辑电平**：驱动把端口值 XOR 上由 `GPIO_ACTIVE_LOW`
+生成的 invert 掩码（见 `include/zephyr/drivers/gpio.h` 中 `z_impl_gpio_port_get()` 与
+`z_impl_gpio_pin_get()`）。我们的按键在设备树里正是 `GPIO_ACTIVE_LOW`，于是：
+
+| 实际状态 | 引脚 | `gpio_pin_get()` | 旧代码判定 |
+| :--- | :--- | :--- | :--- |
+| 松开 | 1.9 V | **0** | 按下 ❌ |
+| 按下 | 0.3 V | **1** | 松开 ❌ |
+
+这解释了现场日志的全部现象：开机"读到低"（其实是松开）、首次真实按下时打印
+`released after boot, key armed`（50 s / 88 s 正是用户第一次按各键的时刻）、POI/模式切换要等到**松手**才打印（滞后一个动作）。
+自检数据也一致：`effective=0x10010`（input+pull_up）、`port IN` bit6=1（物理高）、
+显式上拉（未带 ACTIVE_LOW）读到 1。
+
+修正：
+
+* 全部采样改用 `gpio_pin_get_raw()`（物理电平，忽略 ACTIVE_LOW），0 恒等于"被拉到地"；
+* 消抖后的**按下瞬间**立即 `LOG_INF`，用户按下就能看到反馈；
+* POI 改为**按下即打点**（打的就是按下时所在位置）；KEY2 的模式切换仍在松手时执行，
+  避免"按着走向 8 s 关机"途中误翻转模式。
+
 **需要你在硬件侧确认/修订的两项**：
 
 1. **按键接线**（这是真 bug，必须改板或改 BOM）：信号脚与接地脚落在轻触开关的同一侧触点对上，等于常闭到地。

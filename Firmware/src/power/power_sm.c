@@ -46,11 +46,20 @@ static void on_key(enum lgps_key_id key, enum lgps_key_event_type event, uint32_
 		enter_system_off();
 		break;
 
-	case LGPS_KEY_EVENT_SHORT_PRESS:
+	case LGPS_KEY_EVENT_PRESS:
+		/*
+		 * POI is marked the moment the press is debounced: the waypoint belongs to
+		 * where the user stood when pressing, and the feedback must not wait for the
+		 * release.
+		 */
 		if (key == LGPS_KEY_POI) {
-			LOG_INF("POI mark requested (KEY1_POI, held %u ms)", held_ms);
+			LOG_INF("POI mark (KEY1_POI pressed)");
 			(void)lgps_led_play(LGPS_LED_PATTERN_FIX);
-		} else {
+		}
+		break;
+
+	case LGPS_KEY_EVENT_SHORT_PRESS:
+		if (key == LGPS_KEY_MODE) {
 			precision_requested = !precision_requested;
 			LOG_INF("high precision continuous mode %s (KEY2_MODE, held %u ms)",
 				precision_requested ? "requested" : "cancelled", held_ms);
@@ -60,7 +69,6 @@ static void on_key(enum lgps_key_id key, enum lgps_key_event_type event, uint32_
 		}
 		break;
 
-	case LGPS_KEY_EVENT_PRESS:
 	case LGPS_KEY_EVENT_RELEASE:
 	default:
 		break;
