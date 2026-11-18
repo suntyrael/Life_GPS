@@ -58,9 +58,11 @@ void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 	}
 
 	LOG_INF("GNSS st=%s fix=%u sats=%u pdop_e2=%s lat_e7=%s lon_e7=%s hmsl_mm=%s "
-		"spd_cms=%s hdg_ddeg=%s utc_s=%s age_ms=%u",
+		"spd_cms=%s hdg_ddeg=%s utc_s=%s age_ms=%u rx=%u ubx=%u ckerr=%u nmea=%u",
 		lgps_gnss_state_name(snap->gnss_state), snap->fix.fix_type, snap->fix.satellites,
-		pdop, lat, lon, hmsl, spd, hdg, utc, snap->gnss_age_ms);
+		pdop, lat, lon, hmsl, spd, hdg, utc, snap->gnss_age_ms,
+		snap->gnss_counters.rx_bytes, snap->gnss_counters.ubx_frames,
+		snap->gnss_counters.ubx_bad_checksum, snap->gnss_counters.nmea_starts);
 
 	if (snap->imu_valid) {
 		LOG_INF("IMU id=0x%02x acc_lsb=%d,%d,%d gyro_lsb=%d,%d,%d acc_g=%.3f,%.3f,%.3f "

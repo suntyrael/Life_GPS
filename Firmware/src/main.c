@@ -135,6 +135,7 @@ static void emit_telemetry(uint32_t now_ms, const struct lgps_imu_sample *sample
 	memset(&snap, 0, sizeof(snap));
 
 	lgps_gnss_get_fix(&snap.fix);
+	lgps_gnss_get_counters(&snap.gnss_counters);
 	snap.gnss_state = lgps_gnss_get_state();
 	if (snap.fix.last_pvt_uptime_ms != 0U) {
 		snap.gnss_age_ms = now_ms - snap.fix.last_pvt_uptime_ms;

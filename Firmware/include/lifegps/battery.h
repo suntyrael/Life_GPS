@@ -17,6 +17,9 @@
 #define LGPS_BATT_R_BOTTOM_OHM 330000U /* R26 */
 #define LGPS_BATT_SAADC_RIN_OHM 735000U
 
+/* A Li-ion pack cannot sit below this; used to flag an absent pack / open divider. */
+#define LGPS_BATT_MV_PLAUSIBLE_MIN 2500
+
 /* Configure the SAADC channel. */
 int lgps_battery_init(void);
 

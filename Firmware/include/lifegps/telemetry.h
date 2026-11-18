@@ -35,6 +35,7 @@ struct lgps_telemetry_snapshot {
 	enum lgps_gnss_state gnss_state;
 	struct lgps_gnss_fix fix;
 	uint32_t gnss_age_ms;
+	struct lgps_gnss_counters gnss_counters;
 
 	/* IMU (sensor frame, exact LSB counts plus the datasheet-scaled values) */
 	bool imu_valid;

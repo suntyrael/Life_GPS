@@ -92,5 +92,24 @@ int lgps_battery_read_mv(int32_t *millivolts)
 	/* vbat = vpin * (R_top + R_bottom_eff) / R_bottom_eff */
 	*millivolts = (int32_t)((int64_t)vpin_mv * (LGPS_BATT_R_TOP_OHM + bottom_ohm) / bottom_ohm);
 
+	/*
+	 * Raw numbers in the log: a wrong gain / reference / pin shows up here as a
+	 * mismatch between raw and the expected divider voltage, and a missing pack
+	 * shows up as a plausible raw with ~0 V at the pin.
+	 */
+	LOG_DBG("battery: raw=%u vref=%u mV gain=1/2 -> vpin=%d mV vbat=%d mV", raw, vref_mv,
+		vpin_mv, *millivolts);
+
+	if (*millivolts < LGPS_BATT_MV_PLAUSIBLE_MIN) {
+		static bool warned;
+
+		if (!warned) {
+			warned = true;
+			LOG_WRN("battery: %d mV is below any Li-ion pack (raw=%u): pack absent, "
+				"divider open or wrong ADC channel - check before trusting this value",
+				*millivolts, raw);
+		}
+	}
+
 	return 0;
 }

@@ -41,46 +41,73 @@ static struct lgps_key_state keys[LGPS_KEY_COUNT] = {
 static lgps_key_callback_t key_callback;
 
 /*
- * Bench diagnostic: a pin that reads 0 with the internal pull-up enabled can mean
- * either "held low externally" (button pressed / net shorted) or "the pull-up was
- * not applied". Re-configuring the same pin with a pull-down and reading it again
- * separates the two cases without a scope:
- *
- *   up=1 down=0 -> normal released key
- *   up=0 down=0 -> externally driven low (pressed button, short, wrong net)
- *   up=1 down=1 -> externally driven high
- *   up=0 down=1 -> pull configuration has no effect (driver/DT problem)
+ * Bench diagnostic for a pin that reads low at boot. A low reading has three very
+ * different causes and they must not be confused:
+ *   (a) the button really is held / the net is shorted to ground,
+ *   (b) the devicetree pull flags never reached the driver, so the pin floats,
+ *   (c) the driver ignores the pull configuration.
+ * Reading the pin after each explicit configuration separates them, and the
+ * devicetree flag value is printed so a lost GPIO_PULL_UP is visible.
  */
-static void diagnose_key_pin(const struct gpio_dt_spec *spec, const char *name, int up_level)
+static int read_pin(const struct gpio_dt_spec *spec)
 {
-	int down_level;
+	return gpio_pin_get(spec->port, spec->pin);
+}
+
+static void diagnose_key_pin(const struct gpio_dt_spec *spec, const char *name)
+{
+	int as_dt;
+	int explicit_up;
+	int explicit_down;
 	int ret;
+
+	/* Configuration exactly as the devicetree asks (pull-up | active low). */
+	ret = gpio_pin_configure_dt(spec, GPIO_INPUT);
+	if (ret < 0) {
+		LOG_ERR("%s: configure from devicetree failed (%d)", name, ret);
+		return;
+	}
+	k_msleep(2);
+	as_dt = read_pin(spec);
+
+	/* Ignore devicetree flags: request the pull directly. */
+	ret = gpio_pin_configure(spec->port, spec->pin, GPIO_INPUT | GPIO_PULL_UP);
+	if (ret < 0) {
+		LOG_ERR("%s: explicit pull-up failed (%d)", name, ret);
+		return;
+	}
+	k_msleep(2);
+	explicit_up = read_pin(spec);
 
 	ret = gpio_pin_configure(spec->port, spec->pin, GPIO_INPUT | GPIO_PULL_DOWN);
 	if (ret < 0) {
-		LOG_ERR("%s: pull-down self-test failed (%d)", name, ret);
+		LOG_ERR("%s: explicit pull-down failed (%d)", name, ret);
 		return;
 	}
-
 	k_msleep(2);
-	down_level = gpio_pin_get(spec->port, spec->pin);
+	explicit_down = read_pin(spec);
 
-	/* Restore the board configuration (internal pull-up from devicetree). */
+	/* Restore the board configuration. */
 	ret = gpio_pin_configure_dt(spec, GPIO_INPUT);
 	if (ret < 0) {
-		LOG_ERR("%s: restore after self-test failed (%d)", name, ret);
+		LOG_ERR("%s: restore failed (%d)", name, ret);
 	}
 
-	if (up_level == 0 && down_level == 0) {
-		LOG_WRN("%s pin self-test: up=0 down=0 -> externally driven low "
-			"(button held, net shorted or wrong pin)", name);
-	} else if (up_level == 1 && down_level == 0) {
-		LOG_INF("%s pin self-test: up=1 down=0 -> pull-up works, key released", name);
-	} else if (up_level == 1 && down_level == 1) {
-		LOG_WRN("%s pin self-test: up=1 down=1 -> externally driven high", name);
+	LOG_WRN("%s self-test: dt_flags=0x%02x -> dt=%d explicit_pull_up=%d "
+		"explicit_pull_down=%d", name, spec->dt_flags, as_dt, explicit_up, explicit_down);
+
+	if ((explicit_up == 0) && (explicit_down == 0)) {
+		LOG_WRN("%s: both pulls read 0 -> the pin is externally driven low "
+			"(held button, net shorted to GND, or the wrong pin)", name);
+	} else if ((explicit_up == 0) && (explicit_down == 1)) {
+		LOG_ERR("%s: pull configuration has no effect on the pin (driver / pin mux)", name);
+	} else if ((explicit_up == 1) && (explicit_down == 1)) {
+		LOG_WRN("%s: both pulls read 1 -> the pin is externally driven high", name);
+	} else if (as_dt == 0) {
+		LOG_ERR("%s: devicetree flags (0x%02x) lost GPIO_PULL_UP - pin floats when the "
+			"button is open", name, spec->dt_flags);
 	} else {
-		LOG_ERR("%s pin self-test: up=0 down=1 -> pull configuration has no effect "
-			"(devicetree flags / driver)", name);
+		LOG_INF("%s: pull-up works, key is released", name);
 	}
 }
 
@@ -223,7 +250,7 @@ int lgps_keys_init(lgps_key_callback_t callback)
 		if (!key->armed) {
 			LOG_WRN("%s reads low at boot: long press disarmed until it is released "
 				"once", key->name);
-			diagnose_key_pin(key->spec, key->name, level);
+			diagnose_key_pin(key->spec, key->name);
 		}
 	}
 

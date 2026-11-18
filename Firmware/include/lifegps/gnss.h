@@ -49,6 +49,19 @@ struct lgps_gnss_fix {
 /* Open the UART, register the interrupt handler and start the state machine. */
 int lgps_gnss_init(void);
 
+struct lgps_gnss_counters {
+	uint32_t rx_bytes;        /* bytes read from UARTE20 since boot */
+	uint32_t ubx_frames;      /* complete UBX frames with a valid checksum */
+	uint32_t ubx_bad_checksum;
+	uint32_t nmea_starts;     /* '$' characters: proves the module is talking NMEA */
+};
+
+/*
+ * Receive-path counters. They answer the question the fix log cannot: is the
+ * receiver silent (rx_bytes == 0), talking NMEA only, or sending corrupt UBX?
+ */
+void lgps_gnss_get_counters(struct lgps_gnss_counters *out);
+
 /* Latest decoded solution (copy, safe to call from any thread). */
 void lgps_gnss_get_fix(struct lgps_gnss_fix *out);
 

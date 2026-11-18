@@ -38,6 +38,8 @@ static struct lgps_gnss_fix current_fix;
 static enum lgps_gnss_state gnss_state = LGPS_GNSS_STATE_OFF;
 static uint32_t state_since_ms;
 static uint32_t last_pvt_log_ms;
+static struct lgps_gnss_counters counters;
+static uint32_t next_reconfig_ms;
 
 /* Given by lgps_gnss_init() only after the UART and its IRQ handler are live,
  * so the state machine can never power the rail before the receive path exists.
@@ -51,6 +53,15 @@ static const char *const state_names[] = {
 	[LGPS_GNSS_STATE_EPHEMERIS_HOLD] = "EPHEMERIS_HOLD",
 	[LGPS_GNSS_STATE_BACKOFF] = "BACKOFF",
 };
+
+void lgps_gnss_get_counters(struct lgps_gnss_counters *out)
+{
+	if (out == NULL) {
+		return;
+	}
+
+	*out = counters;
+}
 
 const char *lgps_gnss_state_name(enum lgps_gnss_state state)
 {
@@ -98,6 +109,14 @@ static void gnss_uart_isr(const struct device *dev, void *user_data)
 
 		if (read <= 0) {
 			continue;
+		}
+
+		counters.rx_bytes += (uint32_t)read;
+
+		for (int i = 0; i < read; i++) {
+			if (chunk[i] == (uint8_t)'$') {
+				counters.nmea_starts++;
+			}
 		}
 
 		/* Drop on overflow; the parser resynchronises on the next sync pair. */
@@ -208,13 +227,17 @@ static void gnss_process_rx(void)
 		enum lgps_ubx_status status = lgps_ubx_parser_feed(&parser, byte);
 
 		if (status == LGPS_UBX_STATUS_BAD_CHECKSUM) {
-			LOG_WRN("UBX checksum error, frame dropped");
+			counters.ubx_bad_checksum++;
+			LOG_WRN("UBX checksum error, frame dropped (total %u)",
+				counters.ubx_bad_checksum);
 			continue;
 		}
 
 		if (status != LGPS_UBX_STATUS_MSG_READY) {
 			continue;
 		}
+
+		counters.ubx_frames++;
 
 		if (parser.msg_class == LGPS_UBX_CLASS_NAV && parser.msg_id == LGPS_UBX_ID_NAV_PVT) {
 			struct lgps_nav_pvt pvt;
@@ -267,7 +290,11 @@ static void gnss_power_up(void)
 
 	lgps_ubx_parser_reset(&parser);
 	uart_irq_rx_enable(gnss_uart);
+	next_reconfig_ms = 0U;
 	(void)gnss_configure_output();
+
+	LOG_INF("GNSS RX counters: rx_bytes=%u ubx=%u ckerr=%u nmea=%u", counters.rx_bytes,
+		counters.ubx_frames, counters.ubx_bad_checksum, counters.nmea_starts);
 }
 
 static uint32_t backoff_duration_ms(enum lgps_gnss_state previous, uint32_t previous_ms)
@@ -307,7 +334,18 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 		uint32_t elapsed = lgps_diag_uptime_ms() - state_since_ms;
 
 		switch (gnss_state) {
-		case LGPS_GNSS_STATE_COLD_START:
+		case LGPS_GNSS_STATE_COLD_START: {
+			/*
+			 * A receiver that finished booting after our first CFG-MSG ignores it
+			 * and keeps streaming NMEA only. Re-send every 2 s for the first 10 s
+			 * until any UBX frame arrives, then stop.
+			 */
+			if ((counters.ubx_frames == 0U) && (elapsed < 10000U) &&
+			    (lgps_diag_uptime_ms() >= next_reconfig_ms)) {
+				next_reconfig_ms = lgps_diag_uptime_ms() + 2000U;
+				(void)gnss_configure_output();
+			}
+
 			if (elapsed >= LGPS_GNSS_COLD_START_TIMEOUT_MS) {
 				LOG_WRN("no 3D fix within %u s, cutting the GNSS rail",
 					LGPS_GNSS_COLD_START_TIMEOUT_MS / 1000U);
@@ -316,6 +354,7 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 				set_state(LGPS_GNSS_STATE_BACKOFF, backoff_ms);
 			}
 			break;
+		}
 
 		case LGPS_GNSS_STATE_FIXED:
 			set_state(LGPS_GNSS_STATE_EPHEMERIS_HOLD, LGPS_GNSS_EPHEMERIS_HOLD_MS);
