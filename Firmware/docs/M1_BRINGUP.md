@@ -18,17 +18,17 @@
 | 串口诊断 | `src/diag/diag.c` | 上电横幅：复位原因（hwinfo）、协议版本、总线/引脚摘要、晶振偏差告警；日志 = `时间戳 级别 模块: 内容` |
 | 板级 IO | `src/board/board_io.c` | CS 先置高（Flash P2.05 / IMU P1.14，均无外部上拉）、GPS_EN 低、CHG_EN 低（允许充电）、CHG_STAT 上拉输入、未用脚 P2.00/03/06/08/09/10 断开输入缓冲 |
 | LED 灯语 | `src/power/led.c` | README §9.1 全部图案（开机红→蓝→绿 3 次、关机绿→蓝→红 3 次、定位双闪绿、BLE 单闪蓝、同步快闪蓝、高精蓝绿交替、PDR 黄闪、低电快闪红） |
-| 按键 | `src/power/keys.c` | 10 ms 轮询 + 20 ms 软件消抖（板上无 RC）、8 s 长按、短按事件 |
+| 按键 | `src/power/keys.c` | 10 ms 轮询 + 100 ms 软件消抖（板上无 RC，`LGPS_KEY_DEBOUNCE_MS`）、8 s 长按、短按事件；`gpio_pin_get_raw()` 采样物理电平 |
 | 电源状态机 | `src/power/power_sm.c` | 长按 8 s → 关机灯语 → `sys_poweroff()`；KEY1 短按 = POI 打点请求；KEY2 短按 = 高精模式标志 |
-| 看门狗 | `src/power/wdt.c` | WDT30 30 s，分层喂狗（main / gnss / imu 各任务签到齐才喂） |
+| 看门狗 | `src/power/wdt.c` | WDT30 30 s，分层喂狗（主循环线程 + GNSS 线程，每个 5 s 窗口各签到至少一次才喂；窗口结束即清掩码） |
 | 电池 | `src/power/battery.c` | SAADC AIN4（P1.11），按 R25/R26∥R_in 修正分压比；**不输出百分比**（放电曲线未实测） |
-| GNSS | `src/gnss/gnss.c`, `src/gnss/ubx.c` | UARTE20 115200、UBX-CFG-MSG 打开 NAV-PVT、解析 NAV-PVT、冷启动 60 s → 首定 → 星历保持 35 s → PMREQ 备份 + 断电 → 退避 120/300/900 s |
+| GNSS | `src/gnss/gnss.c`, `src/gnss/ubx.c` | UARTE20 38400（M10 出厂默认，与设备树 `current-speed` 一致）、UBX-CFG-MSG 打开 NAV-PVT、解析 NAV-PVT、冷启动 60 s → 首定 → 星历保持 35 s → PMREQ 备份 + 断电 → 退避 120/300/900 s |
 | IMU | `src/imu/lsm6dsr.c` | LSM6DSR 软复位、WHO_AM_I=0x6B 校验、±4 g/±1000 dps @26 Hz 高性能（数据就绪位驱动采样）、INT1=DRDY；sensor hub 探测 LIS2MDL/BMP388 并配置 12 字节串流 |
 | 导航数学 | `src/nav/nav.c` | 机体坐标旋转、ZUPT 双判据（σ²<0.005 g²、‖ω‖<0.08 rad/s、持续 10 s）、Weinberg 步长、磁异常判据 |
 | 存储 | `src/storage/flash_ring.c` | W25Q512 暂存环形：16×4 KB 扇区、16 B 扇头（magic/seq/erase_count/commit_flags/CRC16）、127 条 32 B 记录/扇区、写满轮转 + 擦除 |
 | 记录编解码 | `src/storage/traj.c` | 由 `protocol/lifegps_protocol.yaml` 生成的结构体 + 逐字节小端序列化 + CRC-8 |
 | 协议生成 | `tools/protocol-gen/gen_c.py` | YAML → `Firmware/include/generated/lifegps_protocol.h`；`--check` 供 CI 防漂移 |
-| 单测 | `Firmware/tests/lifegps.*` | CRC/时间、UBX、导航数学、记录编解码、生成头契约（native_sim + ztest） |
+| 单测 | `Firmware/tests/lifegps.*` | CRC/时间、UBX、导航数学、记录编解码、扇区格式（`lifegps.ring`）、生成头契约（native_sim + ztest） |
 
 **不在 M1**：BLE/GATT、MCUboot OTA、heatshrink 归档、CRACEN 加密、气压高程解算、SFLP 姿态融合。
 
@@ -203,7 +203,7 @@ grep 'lgps_tele: GNSS' log.txt | sed -n 's/.*fix=\([0-9]*\).*/\1/p'
 | 轨迹区 | `容量 − 1 MiB`（OTA slot1 置顶），32 MB 料 → 31 MiB，64 MB 料 → 63 MiB |
 | 暂存环 | 固定占用前 64 KiB（16×4 KiB），两种料都够；容量不足时 `-ENOSPC` 明确报错 |
 | 告警 | 不是 64 MB 时打印 `WRN`，提示归档年限预算按真实密度缩放 |
-| 设备树 `size` | 只作声明用途；`CONFIG_SPI_NOR_SFDP_RUNTIME=y` 时以 SFDP 为准 |
+| 设备树 `size` | 单位是 **bit**（`dts/bindings/mtd/jedec,jesd216.yaml`："flash capacity in bits"）；W25Q512NW = 512 Mbit = `536870912`。`CONFIG_SPI_NOR_SFDP_RUNTIME=y` 时实际容量由 SFDP 决定，本行只是声明（旧值 `67108864` 声明的是 8 MiB 的器件） |
 
 也就是说：**32 MB 与 64 MB 的差别只体现在"轨迹区容量"上，固件、分区逻辑、暂存环、掉电原子提交全部通用**；
 需要改的只是 README 里"7~14 年归档"的推算基数（文档改动待批准）。
@@ -245,6 +245,51 @@ grep 'lgps_tele: GNSS' log.txt | sed -n 's/.*fix=\([0-9]*\).*/\1/p'
    正确做法：信号接 1 脚、地接 **3 或 4 脚**（另一侧触点对），或直接换 2 脚开关。
 2. **BMP388 是否贴件**：`0x76`/`0x77` 两个地址都读不到 CHIP_ID（期望 0x50），压力/温度寄存器全 0。如果 U4 是 DNP，固件这条告警应视为正常，需要在配置里显式排除。
 
+### 3.11 第五轮：只读审计发现的 P0/P1 缺陷与修复（未在硬件上复测）
+
+审计依据（三条外部事实，先核对后动手）：
+
+1. `gpio_pin_get()` / `gpio_pin_get_dt()` 返回**逻辑电平**（`include/zephyr/drivers/gpio.h`：`z_impl_gpio_pin_get()` 把端口值 XOR 上由 `GPIO_ACTIVE_LOW` 生成的 invert 掩码）；
+2. `SPI_CONFIG_DT` 的 CPOL/CPHA **只**来自设备树（`spi-cpol` / `spi-cpha`），没有 DT 属性就是模式 0；
+3. `snprintk()` 返回“本该写入的长度”，不是实际写入的字节数。
+
+#### P0（影响功能/数据）
+
+| # | 位置 | 根因 | 修复 |
+| :--- | :--- | :--- | :--- |
+| 1 | `board_io.c:lgps_charger_charging()` | `CHG_STAT` 在 DT 里是 `GPIO_ACTIVE_LOW`，用 `gpio_pin_get_dt()` 取逻辑电平后又按 `value == 0` 判“充电中”，结论正好颠倒（与第四轮按键 bug 同一类） | 改用 `gpio_pin_get_raw()`：0 恒等于“/CHG 拉到地”，与 DT 标志无关 |
+| 2 | DTS `imu@0` | 审计认为器件要求 SPI 模式 3 | **不成立，未改**：DS11976 §5.1 原文 “the device is compatible with SPI modes 0 and 3”，模式 0 是台架已验证的模式（WHO_AM_I=0x6B、hub 有真实数据）；已在 DTS 写明出处，避免下一轮重复报 |
+| 3 | `flash_ring.c:lgps_ring_init()` | `records_in_sector` 只在 RAM，复位后为 0 → 第一条 append 直接写进已编程区（NOR 只能 1→0，旧记录被静默破坏） | 挂载时扫描扇区记录区，第一个“全 0xFF”槽位即写游标（`count_used_records()`，256 B 静态块 × 16 次读） |
+| 4 | `flash_ring.c:sector_rotate()` | 封存扇区时就地重算 header CRC；NOR 无法把 0 位改回 1 → 下次挂载 CRC 不匹配 → 整个环被重新格式化 | CRC 覆盖范围改为 `magic/sector_seq/erase_count`（前 12 字节），`commit_flags` 移出 CRC；封存变成纯 1→0 更新（0xFFFF→0x55AA） |
+| 5 | `gnss.c:gnss_uart_isr()` | ISR 里 `LOG_WRN`；`LOG_MODE_IMMEDIATE` 会逐字符 `poll_out` 并持锁（毫秒级），正好在 RX 溢出时丢数据 | ISR 只累加 `isr_rx_dropped`（atomic），由 GNSS 线程打印 |
+| 6 | `gnss.c:handle_nav_pvt()` | 航向平移量写成 `+1800000`（1e-5° 单位下只有 18°），每个航向差 162° | `+18000000`（180°），单位换算仍是 `/1000`（1e-5°→1e-2°） |
+| 7 | `gnss.c:handle_nav_pvt()` | `fix_type >= 3` 把 **5（time-only，无位置）** 也当成有效定位 | 只接受 3（3D）/ 4（GNSS+DR）且 `gnssFixOK` |
+| 8 | `gnss.h` 字段名 | `hdop_1e2` 里装的其实是 NAV-PVT 的 **pDOP**（NAV-PVT 没有 hDOP） | 更名 `pdop_1e2`（gnss.h / gnss.c / telemetry.c），与遥测键 `pdop_e2` 一致 |
+| 9 | `gnss.c:lgps_gnss_init()` | 启动日志写死 `115200`，链路实际 38400 | 用 `uart_config_get()` 读实际速率写入 `current_baud`，日志打印真实值（同时消除“常量假设”导致的 `set_baud()` 短路） |
+| 10 | `wdt.c:lgps_wdt_feed()` | `snprintk()` 返回值累加进 `used` 后可超出缓冲 → `sizeof - used` 下溢为巨大 `size_t` → 越界写；另缺 `<zephyr/kernel.h>` | `format_missing()` 截断即返回，不再做减法下溢；补 `kernel.h` |
+| 11 | `wdt.c:lgps_wdt_feed()` | 掩码只在“喂成功”后清零 → 死掉的任务可凭上一窗口的陈旧位蒙混过关（与 `wdt.h` 的设计自述矛盾） | 每个窗口结束即 `atomic_clear()`（返回旧值 = 原子 test-and-clear），喂不喂都消费本窗口签到 |
+| 12 | DTS `flash@0: size` | `jedec,jesd216.yaml` 写明 `size` 是 **bits**；`<67108864>` 声明的是 8 MiB 器件 | 改为 `536870912`（512 Mbit = 64 MiB），并注明 SFDP 才是运行时容量来源 |
+
+#### P1（语义/健壮性，已一并修）
+
+| 模块 | 修复 |
+| :--- | :--- |
+| keys | 删除重复的 `read_pin()`；`gpio_pin_get_config()` / `gpio_port_get_raw()` 返回值判错；自检恢复后补注释说明 `dt_flags` 会重新 OR 回 invert 位；线程栈 1 KiB → 2 KiB（立即模式日志在调用者栈上格式化） |
+| GNSS | `uart_irq_update/rx_ready/rx_enable/rx_disable` 按三值返回处理（含 `-ENOTSUP`）；`uart_fifo_read()` 改为 drain 循环（契约要求读到返回 0 为止）；上电 `ring_buf_reset()`；计数器按“ISR 写 / 线程写”拆分并原子化，去掉线程回写 ISR 计数器；`uart_irq_rx_disable()` 不会把引脚置高阻（注释按事实改写）；波特率回退改用基线差值 |
+| LED/电源 | `lgps_led_off_all()` 现在真的取消运行中的序列并清空队列（生成号 + 50 ms 切片打断）；关机前先 `off_all()`，关机灯语不会再排在 9 s 开机灯语后面；`lgps_led_set()` 先转 `unsigned int` 再判越界（负值曾可越界） |
+| diag/telemetry | `reset_text[48]` → `[128]`（十二个名字全拼是 119 字符）；`hwinfo_clear_reset_cause()` 读完即清；`var_mg2` 的 float→int32 加 NaN/上下限钳位；复位原因表注明 nRF 驱动只产生其中一部分标志 |
+| battery | 改用 `adc_raw_to_millivolts_dt()`（增益/参考/分辨率全从 DT 取），去掉硬编码 `2 * vref` 与 `resolution == 0` 除零隐患 |
+| board_io | P1 读路径自检改用 `gpio_pin_get_raw()`（旧版驱动的是 ACTIVE_HIGH 引脚，理论上发现不了刚犯的那类颠倒；注释已写清它能证什么/不能证什么）；CS 注释与日志改为事实描述——CS 由 SPI 驱动在 `main()` 之前配置，此处只补 DT 未要求的内上拉 |
+| DTS/CMake | 删掉在 `CONFIG_INPUT` 未开启时无效的 `debounce-interval-ms`；`oversampling` 8 → 2（该属性是 log2：8 = 256 次平均）；CMake 注释改为“单镜像免 `-DBOARD_ROOT`，sysbuild 子镜像仍需显式传” |
+
+#### 覆盖缺口（已补）
+
+`lsm6dsr.c` / `flash_ring.c` / `telemetry.c` 原先只被板级构建编译，没有单测，所以第 3、4 号缺陷 twister 发现不了。本轮把扇区格式（表头编解码 + 记录区扫描）抽成无驱动依赖的 `lifegps/sector_format.h`，新增 `Firmware/tests/lifegps.ring`（native_sim）：表头往返/CRC 覆盖范围、封存后 CRC 仍有效、封存只会清位、记录区扫描的 0 / 5 / 126 / 127 条与分块边界。
+
+> ⚠️ 环表头格式已变（CRC 覆盖范围）。旧固件写下的扇区会在下一次挂载时判为无效 → **一次性重新格式化前 64 KiB**。暂存环本身可丢数据，但归档内容会被清掉。
+
+> RAM 增量（HW-04）：固件侧新增 256 B 扫描缓冲 + keys 栈 +1 KiB + `reset_text` +80 B ≈ **+1.3 KiB**；flash 增量仅注释与少量判断逻辑（<1 KB），以 CI size gate 为准。
+
 ## 4. 构建与测试（只在 GitHub）
 
 ```text
@@ -258,7 +303,7 @@ push -> firmware.yml
                 artifact: zephyr.hex / .elf / .map
 ```
 
-## 4.1 待闭环：机体坐标系旋转矩阵（M2 阻塞项）
+## 4.1 已闭环：机体坐标系旋转矩阵（实测定案）
 
 `README.md:708/725/731` 冻结的矩阵
 
@@ -277,6 +322,45 @@ R_IMU = [ 1  0  0 ]     X_body = -Y_sensor, Y_body = +X_sensor, Z_body = -Z_sens
 | 三条式子自相矛盾 | `X_body × Y_body = (−Y)×(+X) = +Z_IMU`，而文中 `Z_body = −Z_IMU` ⇒ 定义出左手系 |
 | 任何刚体贴装都无法实现 | 刚体安装必为 `det = +1` |
 
+### 4.1.1 定案（Main_V0.2 台架静态实测）
+
+判据：静止时加速度计读的是**指向天顶的那根轴为正 +1 g**。四组手扶（≤12° 倾角）静态数据，
+`acc_g` 是传感器系（遥测 `IMU` 行原样输出，未经 R 变换）：
+
+| 放置 | `acc_g` 实测 | 传感器系里"上"方向 |
+| :--- | :--- | :--- |
+| 正面平放 | `(-0.010, 0.187, -0.954)` | `(0, 0, -1)` ⇒ 传感器 **+Z 朝下** |
+| 顶部/前端抬 ~33° | `(-0.528, -0.147, -0.811)` | 前方朝上且 x 为负 ⇒ **前方 = -X_s** |
+| 垂直（顶部朝上） | `(-0.995, -0.023, 0.048)` | `(-1, 0, 0)` ⇒ 传感器 **+X 朝下** |
+| 横向（左侧朝上） | `(-0.008, 0.990, -0.021)` | `(0, +1, 0)` ⇒ 传感器 **+Y 朝上** |
+
+三重积检验（反射会把符号翻掉）：传感器系 `u1·(u2×u3) = +1`，而用旧矩阵换算出的 body 向量
+三重积为 `−1` ⇒ **旧矩阵在实测面前被证伪为镜像**，不再需要靠文档推理。
+
+定案矩阵（`det = +1`，与 `README.md:660-682` 的机体定义 X 右 / Y 机头 / Z 正面朝外一致）：
+
+```
+        [ 0 -1  0 ]   X_body = -Y_sensor   (机身向右)
+R_IMU = [-1  0  0 ]   Y_body = -X_sensor   (机头/行进方向)
+        [ 0  0 -1 ]   Z_body = -Z_sensor   (正面法线向外)
+```
+
+与 README 的三条映射逐条比对：**Z 行、Y 行与实测一致，只有"传感器 +X 指向 PCB 背面向上"
+这一条反了**（实际指向背面下方 / USB 端），而正是这一条把 `det` 从 `+1` 变成 `−1`。
+根因基本可定位为 `README.md:701` 对 U12 Pin1 圆点与长/短边对应关系的判读，而不是芯片贴反。
+
+陀螺仪：R 为 proper 后**共用同一矩阵**（轴上/伪矢量在 `det = +1` 下不需要额外 −1 因子），
+`src/main.c` 的调用点不变。待台架验收（右手指向）：俯视顺时针转 90° ⇒ `gyro_body.z < 0`；
+抬头 ⇒ `gyro_body.x > 0`。
+
+改动范围（已执行）：`src/nav/nav.c` 一行（`out[1] = -in[0]`）+ `nav.h` 坐标系契约注释 +
+`tests/lifegps.nav` 四处（basis 期望、`det = +1` 回归、`R² = I`、**四组实测数据回归**）。
+
+> 影响面修正：M1 的 PDR 航向**并不受影响** ——`lgps_pdr_step()` 的 `heading_rad` 由外部传入，
+> `gyro_body` 只用于 ZUPT 的 `‖ω‖`（模长对镜像不敏感）。本次是 M2（陀螺偏航积分、倾角补偿、
+> App 姿态显示）的前置契约修正，不改变任何现有遥测输出。
+> 遗留：`README.md` §1.3/1.4 的矩阵与推导文字仍是旧的 improper 版本（需批准后同步，见 §5）。
+
 两种自洽的修法（互斥，取决于哪条前提是错的）：
 
 * 若"芯片 Z 与机体 Z 反向"成立 → 前两行必须换，右手系解只有 4 组（`det` 均为 +1）：
@@ -284,13 +368,9 @@ R_IMU = [ 1  0  0 ]     X_body = -Y_sensor, Y_body = +X_sensor, Z_body = -Z_sens
 * 若"`X_body = −Y_sensor`、`Y_body = +X_sensor`"成立 → 第三行改为 `Z_body = +Z_sensor`，
   即 `R = [[0,−1,0],[1,0,0],[0,0,+1]]`（`det = +1`，`R² = diag(−1,−1,+1)`，`R⁴ = I`）
 
-究竟哪一组正确，取决于 `U12` 在 PCB 上的 Pin1 实际朝向（DS11976 Figure 3 轴向图 + 装配/坐标文件），
-或台架实测（绕各轴转动看 gyro 符号），**无法由数学单独定夺**。
+> 上表保留作为历史推理记录；实测给出的答案是候选组中的 `(−Y,−X,−Z)`，
+> 既不是"第三行改为 `+Z`"，也不是任何"前两行成立"的解 —— 可见只靠数学确实无法定夺。
 
-> 现状：`src/nav/nav.c` 仍按 README 的矩阵实现（`out = {-in[1], in[0], -in[2]}`），
-> 因此 PDR 的航向符号在这一项闭环前是错的；ZUPT、步长、磁异常判据不受影响
-> （IMU 与磁力计共用同一矩阵，§1.5 的"1:1 同向"结论仍然成立）。
-> 定案后需改 `nav.c` 一处 + `Firmware/tests/lifegps.nav` 的期望向量。
 
 ## 5. 需要你批准的既有文档同步（我未擅自修改）
 
@@ -298,3 +378,7 @@ R_IMU = [ 1  0  0 ]     X_body = -Y_sensor, Y_body = +X_sensor, Z_body = -Z_sens
 2. `Doc/Hardware/Pinmap_Main_V0.2.md`：`U12` 型号与 INT1/CS 描述同步为 LSM6DSR；IMU 采样率由 20 Hz 改为「104 Hz 采样 → 20 Hz 抽取」。
 3. `Hardware/Schematic` 网表/BOM：`U12` 料号改为 LSM6DSRTR（硬件侧动作）。
 4. `.github/workflows/README.md`：把 `firmware.yml` 从「待加」移到「已启用」。
+5. `Firmware/docs/PARTITIONS.md`：DTS 参考段里 `size = <0x4000000>` 按 binding 是 **bit**（= 8 MiB），按注释意图是 64 MiB，二者矛盾；且 `slot1` 写死 `0x3F00000` 只对 64 MB 料成立，32 MB 料不存在该地址。建议改为“不写 `size`、slot1 偏移 = `容量 − 1 MiB` 运行时计算”，需要你确认后我再改这份契约文档（硬件/App 都在引用它）。
+6. `README.md` §1.3/1.4：旋转矩阵改为 `[[0,−1,0],[−1,0,0],[0,0,−1]]`（det=+1），并把
+   “X_IMU 在 PCB 背面垂直向上”改为“垂直**向下**（USB 端）”——只这一条判读反了，它正是 det=−1 的来源。
+   依据见 §4.1.1 的四组实测数据。
