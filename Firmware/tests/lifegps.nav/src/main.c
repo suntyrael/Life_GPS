@@ -10,9 +10,20 @@
 
 #include <lifegps/nav.h>
 
+#include <math.h>
 #include <stdint.h>
 
 #define TEST_TOLERANCE 1e-6F
+/*
+ * Judging the bench sample below: the dominant body component must exceed 0.90
+ * and the cross components stay below 0.25. The recorded samples were hand-held
+ * (up to ~12 degrees of tilt), the smallest dominant value is 0.954 and the
+ * largest cross value is 0.187, so both thresholds keep margin while a mapping
+ * that is 90 degrees off (dominant component near 0) or has a wrong sign
+ * (negative instead of positive) fails immediately.
+ */
+#define BENCH_DOMINANT_MIN 0.90F
+#define BENCH_CROSS_MAX 0.25F
 /*
  * 26 Hz is the LSM6DSR ODR the firmware programs (1000 / 26 = 38.46 ms, rounded
  * down here); together with LGPS_ZUPT_WINDOW_SAMPLES == 26 it makes the window
@@ -47,12 +58,12 @@ ZTEST(lifegps_nav, test_body_frame_rotation_basis)
 	const float sensor_x[3] = {1.0F, 0.0F, 0.0F};
 	const float sensor_y[3] = {0.0F, 1.0F, 0.0F};
 	const float sensor_z[3] = {0.0F, 0.0F, 1.0F};
-	const float body_pos_y[3] = {0.0F, 1.0F, 0.0F};
+	const float body_neg_y[3] = {0.0F, -1.0F, 0.0F};
 	const float body_neg_x[3] = {-1.0F, 0.0F, 0.0F};
 	const float body_neg_z[3] = {0.0F, 0.0F, -1.0F};
 
-	/* X_body = -Y_sensor, Y_body = +X_sensor, Z_body = -Z_sensor. */
-	assert_body_from_imu(sensor_x, body_pos_y);
+	/* X_body = -Y_sensor, Y_body = -X_sensor, Z_body = -Z_sensor (det = +1). */
+	assert_body_from_imu(sensor_x, body_neg_y);
 	assert_body_from_imu(sensor_y, body_neg_x);
 	assert_body_from_imu(sensor_z, body_neg_z);
 }
@@ -73,37 +84,128 @@ ZTEST(lifegps_nav, test_body_frame_mag_matches_imu)
 	}
 }
 
-ZTEST(lifegps_nav, test_body_frame_rotation_signed_basis_cycle)
+/*
+ * det(R) = +1. This is the assertion that would have caught the frozen matrix:
+ * a reflection (det = -1) cannot come from a rigid mount and makes the gyroscope
+ * rotate the wrong way relative to gravity. R * e_i is the i-th column of R, so the
+ * determinant of the three images laid out as rows is det(R^T) = det(R).
+ */
+ZTEST(lifegps_nav, test_body_frame_rotation_is_proper)
 {
 	const float basis[3][3] = {
 		{1.0F, 0.0F, 0.0F},
 		{0.0F, 1.0F, 0.0F},
 		{0.0F, 0.0F, 1.0F},
 	};
-	/* R * R = diag(-1, -1, +1), so R^4 restores the basis exactly. */
-	const float square_scale[3] = {-1.0F, -1.0F, 1.0F};
-	float first[3] = {0.0F};
-	float second[3] = {0.0F};
-	float third[3] = {0.0F};
-	float fourth[3] = {0.0F};
+	float image[3][3] = { { 0.0F } };
+	float cross[3];
+	float determinant;
+	uint8_t index;
+
+	for (index = 0U; index < 3U; index++) {
+		lgps_nav_body_from_imu(basis[index], image[index]);
+
+		/* Orthonormal rows: the rotation may not stretch or skew. */
+		zassert_within(sqrtf((image[index][0] * image[index][0]) +
+				      (image[index][1] * image[index][1]) +
+				      (image[index][2] * image[index][2])),
+			       1.0F, TEST_TOLERANCE, "row %u is not a unit vector",
+			       (uint32_t)index);
+	}
+
+	for (index = 0U; index + 1U < 3U; index++) {
+		zassert_within((image[index][0] * image[index + 1U][0]) +
+				      (image[index][1] * image[index + 1U][1]) +
+				      (image[index][2] * image[index + 1U][2]),
+			       0.0F, TEST_TOLERANCE, "rows %u/%u are not orthogonal",
+			       (uint32_t)index, (uint32_t)(index + 1U));
+	}
+
+	cross[0] = (image[0][1] * image[1][2]) - (image[0][2] * image[1][1]);
+	cross[1] = (image[0][2] * image[1][0]) - (image[0][0] * image[1][2]);
+	cross[2] = (image[0][0] * image[1][1]) - (image[0][1] * image[1][0]);
+	determinant = (cross[0] * image[2][0]) + (cross[1] * image[2][1]) +
+		      (cross[2] * image[2][2]);
+
+	zassert_within(determinant, 1.0F, TEST_TOLERANCE,
+		       "det(R) must be +1 (proper rotation), got %.6f", (double)determinant);
+}
+
+/*
+ * The measured mapping is a 180 degree rotation about (1, -1, 0) / sqrt(2), so it
+ * is its own inverse: applying it twice restores every vector. (The previous
+ * matrix instead satisfied R^2 = diag(-1, -1, +1), which is a reflection property.)
+ */
+ZTEST(lifegps_nav, test_body_frame_rotation_double_apply_is_identity)
+{
+	const float basis[3][3] = {
+		{1.0F, 0.0F, 0.0F},
+		{0.0F, 1.0F, 0.0F},
+		{0.0F, 0.0F, 1.0F},
+	};
+	float once[3] = { 0.0F };
+	float twice[3] = { 0.0F };
 	uint8_t axis;
 	uint8_t index;
 
 	for (index = 0U; index < 3U; index++) {
-		lgps_nav_body_from_imu(basis[index], first);
-		lgps_nav_body_from_imu(first, second);
-		lgps_nav_body_from_imu(second, third);
-		lgps_nav_body_from_imu(third, fourth);
+		lgps_nav_body_from_imu(basis[index], once);
+		lgps_nav_body_from_imu(once, twice);
 
 		for (axis = 0U; axis < 3U; axis++) {
-			zassert_within(second[axis], square_scale[axis] * basis[index][axis],
-				       TEST_TOLERANCE, "R^2 axis %u of basis %u",
-				       (uint32_t)axis, (uint32_t)index);
-			zassert_within(fourth[axis], basis[index][axis], TEST_TOLERANCE,
-				       "R^4 axis %u of basis %u",
-				       (uint32_t)axis, (uint32_t)index);
+			zassert_within(twice[axis], basis[index][axis], TEST_TOLERANCE,
+				       "R^2 != I on axis %u of basis %u", (uint32_t)axis,
+				       (uint32_t)index);
 		}
 	}
+}
+
+/*
+ * Bench data from Main_V0.2 (2026-11, static placements, sensor frame): every
+ * placement must put gravity on the body axis that physically points up. This is
+ * the case that turns the frozen-matrix bug into a red test instead of a field
+ * surprise; the cross-axis tolerance absorbs hand-held tilt (up to ~12 degrees in
+ * the recorded samples).
+ */
+ZTEST(lifegps_nav, test_body_frame_matches_bench_data)
+{
+	/* Flat, front face up: gravity must read +Z_body. */
+	const float bench_flat_s[3] = {-0.010F, 0.187F, -0.954F};
+	/* Same, front (top) edge raised ~33 deg: +Y_body and +Z_body share gravity. */
+	const float bench_tilted_s[3] = {-0.528F, -0.147F, -0.811F};
+	/* Upright, top up: +Y_body. */
+	const float bench_upright_s[3] = {-0.995F, -0.023F, 0.048F};
+	/* Lying on its side, left side up: -X_body. */
+	const float bench_lateral_s[3] = {-0.008F, 0.990F, -0.021F};
+	float flat_b[3] = { 0.0F };
+	float tilted_b[3] = { 0.0F };
+	float upright_b[3] = { 0.0F };
+	float lateral_b[3] = { 0.0F };
+
+	lgps_nav_body_from_imu(bench_flat_s, flat_b);
+	zassert_true(flat_b[2] > BENCH_DOMINANT_MIN,
+		     "face up must put gravity on +Z_body, got %.3f", (double)flat_b[2]);
+	zassert_true(fabsf(flat_b[0]) < BENCH_CROSS_MAX, "face up, |X| = %.3f",
+		     (double)fabsf(flat_b[0]));
+	zassert_true(fabsf(flat_b[1]) < BENCH_CROSS_MAX, "face up, |Y| = %.3f",
+		     (double)fabsf(flat_b[1]));
+
+	lgps_nav_body_from_imu(bench_tilted_s, tilted_b);
+	zassert_true(tilted_b[1] > 0.40F,
+		     "raising the front edge must make +Y_body positive, got %.3f",
+		     (double)tilted_b[1]);
+	zassert_true(tilted_b[2] > 0.60F, "raised front edge, +Z_body = %.3f",
+		     (double)tilted_b[2]);
+
+	lgps_nav_body_from_imu(bench_upright_s, upright_b);
+	zassert_true(upright_b[1] > BENCH_DOMINANT_MIN,
+		     "upright (top up) must put gravity on +Y_body, got %.3f",
+		     (double)upright_b[1]);
+
+	lgps_nav_body_from_imu(bench_lateral_s, lateral_b);
+	zassert_true(lateral_b[0] < -BENCH_DOMINANT_MIN,
+		     "left side up must put gravity on -X_body, got %.3f",
+		     (double)lateral_b[0]);
 }
 
 ZTEST(lifegps_nav, test_zupt_lock_after_dwell)

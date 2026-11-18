@@ -30,9 +30,24 @@ void lgps_nav_body_from_imu(const float in[3], float out[3])
 		return;
 	}
 
-	/* X_body = -Y_sensor, Y_body = +X_sensor, Z_body = -Z_sensor. */
+	/*
+	 * Body frame (right handed, det = +1):
+	 *   X_body = -Y_sensor, Y_body = -X_sensor, Z_body = -Z_sensor
+	 *
+	 * Measured on Main_V0.2 (four static placements, sensor frame as reported by
+	 * the LSM6DSR, gravity on the axis pointing up):
+	 *   flat, face up      (-0.010,  0.187, -0.954)  -> +Z_body
+	 *   front edge +33 deg (-0.528, -0.147, -0.811)  -> +Y_body and +Z_body
+	 *   upright, top up    (-0.995, -0.023,  0.048)  -> +Y_body
+	 *   lying, left up     (-0.008,  0.990, -0.021)  -> -X_body
+	 *
+	 * The previously frozen matrix (-Y, +X, -Z) had det = -1: a reflection, which no
+	 * rigid mount can produce, and it made the accelerometer and the gyroscope
+	 * disagree about the handedness of the frame. Because this matrix is now proper,
+	 * the gyroscope uses it unchanged - no det() factor is needed for an axial vector.
+	 */
 	out[0] = -in[1];
-	out[1] = in[0];
+	out[1] = -in[0];
 	out[2] = -in[2];
 }
 

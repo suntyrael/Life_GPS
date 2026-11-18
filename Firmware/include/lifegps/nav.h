@@ -5,13 +5,20 @@
  * Inputs and outputs are plain floats in SI/engineering units so the module is
  * testable on native_sim without any device tree or driver.
  *
- * Rotation matrices are the ones frozen in README section 1.3 / 1.4 (the PCB
- * places LSM6DSV16X sideways and LIS2MDL rotated by 90 degrees, which makes both
- * matrices identical):
+ * Sensor-to-body alignment (measured on Main_V0.2, see lgps_nav_body_from_imu()):
  *
- *     [ 0 -1  0 ]   X_body = -Y_sensor
- *     [ 1  0  0 ]   Y_body = +X_sensor
- *     [ 0  0 -1 ]   Z_body = -Z_sensor
+ *     [ 0 -1  0 ]   X_body = -Y_sensor      X_body: device right side
+ *     [-1  0  0 ]   Y_body = -X_sensor      Y_body: device front / top, direction of travel
+ *     [ 0  0 -1 ]   Z_body = -Z_sensor      Z_body: front-face normal, pointing out
+ *
+ * The frame is right handed: X x Y = Z, and det(R) = +1 is a hard requirement -
+ * a rigid sensor mount can only produce a proper rotation, and only a proper one
+ * transforms vectors (accelerometer, magnetometer) and axial vectors (gyroscope
+ * angular rate) with the same matrix. A matrix with det = -1 silently inverts the
+ * gyroscope's sense of rotation relative to gravity; that is what the earlier
+ * (README 1.3/1.4) matrix did, and a three-placement bench test exposed it.
+ *
+ * Heading is measured from +Y_body, clockwise seen from +Z_body (compass style).
  *
  * Thresholds are the ones frozen in README section 7.5 (ZUPT) and 7.4 (magnetic
  * anomaly rejection); they are not tunable constants of this module.
@@ -43,7 +50,13 @@
 #define LGPS_WEINBERG_EXPONENT 0.25F
 #define LGPS_WEINBERG_K_PRIOR 0.415F
 
-/* Rotate a sensor-frame vector into the body frame (README 1.3 / 1.4). */
+/*
+ * Rotate a sensor-frame vector into the body frame.
+ *
+ * Accepts any 3-vector: the accelerometer and the magnetometer (true vectors) and
+ * the gyroscope angular rate (axial vector) all use this same proper rotation.
+ * The gyroscope must be fed deg/s -> rad/s by the caller.
+ */
 void lgps_nav_body_from_imu(const float in[3], float out[3]);
 
 /* Same matrix for the magnetometer (hardware is aligned 1:1 with the IMU). */
