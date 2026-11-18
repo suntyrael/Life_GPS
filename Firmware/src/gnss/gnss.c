@@ -59,6 +59,12 @@ static uint32_t ubx_bad_checksum;
 /* rx_bytes seen when the current baud-probe window started. */
 static uint32_t baud_probe_base_bytes;
 
+/* Cross-thread control flags (main thread -> GNSS thread); protected by atomic_t. */
+static atomic_t gnss_wake_requested;
+static atomic_t gnss_continuous_mode;
+static atomic_t gnss_stationary_locked;
+static bool ephemeris_collected;
+
 /* Given by lgps_gnss_init() only after the UART and its IRQ handler are live,
  * so the state machine can never power the rail before the receive path exists.
  */
@@ -69,6 +75,8 @@ static const char *const state_names[] = {
 	[LGPS_GNSS_STATE_COLD_START] = "COLD_START",
 	[LGPS_GNSS_STATE_FIXED] = "FIXED",
 	[LGPS_GNSS_STATE_EPHEMERIS_HOLD] = "EPHEMERIS_HOLD",
+	[LGPS_GNSS_STATE_SLEEP_NOMINAL] = "SLEEP_NOMINAL",
+	[LGPS_GNSS_STATE_HOT_PULSE] = "HOT_PULSE",
 	[LGPS_GNSS_STATE_BACKOFF] = "BACKOFF",
 };
 
@@ -118,6 +126,21 @@ void lgps_gnss_get_fix(struct lgps_gnss_fix *out)
 enum lgps_gnss_state lgps_gnss_get_state(void)
 {
 	return gnss_state;
+}
+
+void lgps_gnss_request_immediate(void)
+{
+	(void)atomic_set(&gnss_wake_requested, 1);
+}
+
+void lgps_gnss_set_continuous(bool enable)
+{
+	(void)atomic_set(&gnss_continuous_mode, enable ? 1 : 0);
+}
+
+void lgps_gnss_set_stationary(bool stationary)
+{
+	(void)atomic_set(&gnss_stationary_locked, stationary ? 1 : 0);
 }
 
 static void gnss_uart_isr(const struct device *dev, void *user_data)
@@ -293,8 +316,9 @@ static void handle_nav_pvt(const struct lgps_nav_pvt *pvt)
 	current_fix.utc_epoch_s = epoch_s;
 	current_fix.last_pvt_uptime_ms = now_ms;
 
-	/* The cold-start window must end on the first real 3D fix. */
-	if (fix_valid && gnss_state == LGPS_GNSS_STATE_COLD_START) {
+	/* Cold-start or hot-pulse acquisition completes on the first real 3D fix. */
+	if (fix_valid && ((gnss_state == LGPS_GNSS_STATE_COLD_START) ||
+			  (gnss_state == LGPS_GNSS_STATE_HOT_PULSE))) {
 		set_state(LGPS_GNSS_STATE_FIXED, 0U);
 	}
 
@@ -329,7 +353,8 @@ static void gnss_process_rx(void)
 
 		ubx_frames++;
 
-		if (parser.msg_class == LGPS_UBX_CLASS_NAV && parser.msg_id == LGPS_UBX_ID_NAV_PVT) {
+		if ((parser.msg_class == LGPS_UBX_CLASS_NAV) &&
+		    (parser.msg_id == LGPS_UBX_ID_NAV_PVT)) {
 			struct lgps_nav_pvt pvt;
 
 			if (lgps_ubx_decode_nav_pvt(&parser, &pvt) == 0) {
@@ -338,6 +363,8 @@ static void gnss_process_rx(void)
 		} else if (parser.msg_class == LGPS_UBX_CLASS_ACK) {
 			LOG_DBG("UBX-ACK id 0x%02x for class 0x%02x", parser.msg_id,
 				parser.payload_len > 0U ? parser.payload[0] : 0U);
+		} else {
+			/* Ignore other UBX frames. */
 		}
 	}
 }
@@ -444,6 +471,9 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 
 	for (;;) {
 		uint32_t dropped;
+		bool continuous_on = (atomic_get(&gnss_continuous_mode) != 0);
+		bool stationary_on = (atomic_get(&gnss_stationary_locked) != 0);
+		bool wake_now = atomic_cas(&gnss_wake_requested, 1, 0);
 
 		gnss_process_rx();
 		lgps_wdt_checkin(LGPS_WDT_TASK_GNSS);
@@ -471,11 +501,12 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 			 * line rate is wrong (framing garbage), not that the module is silent.
 			 * Try the other common factory rate once, then report clearly.
 			 */
-			if (!baud_fallback_done && (rx_bytes_total() - baud_probe_base_bytes > 200U) &&
-			    ((uint32_t)atomic_get(&isr_nmea_starts) == 0U) && (ubx_frames == 0U) &&
-			    (elapsed > 3000U)) {
+			if (!baud_fallback_done &&
+			    (rx_bytes_total() - baud_probe_base_bytes > 200U) &&
+			    ((uint32_t)atomic_get(&isr_nmea_starts) == 0U) &&
+			    (ubx_frames == 0U) && (elapsed > 3000U)) {
 				baud_fallback_done = true;
-				LOG_WRN("GNSS: %u bytes received at %u baud without any '$' or UBX sync - "
+				LOG_WRN("GNSS: %u bytes at %u baud without '$' or UBX sync - "
 					"assuming a line-rate mismatch",
 					rx_bytes_total() - baud_probe_base_bytes, current_baud);
 				(void)gnss_uart_set_baud(LGPS_GNSS_BAUD_FALLBACK);
@@ -497,31 +528,83 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 				LOG_WRN("no 3D fix within %u s, cutting the GNSS rail",
 					LGPS_GNSS_COLD_START_TIMEOUT_MS / 1000U);
 				gnss_power_down();
-				backoff_ms = backoff_duration_ms(gnss_state, backoff_ms);
 				set_state(LGPS_GNSS_STATE_BACKOFF, backoff_ms);
+				backoff_ms = backoff_duration_ms(gnss_state, backoff_ms);
 			}
 			break;
 		}
 
 		case LGPS_GNSS_STATE_FIXED:
-			set_state(LGPS_GNSS_STATE_EPHEMERIS_HOLD, LGPS_GNSS_EPHEMERIS_HOLD_MS);
+			backoff_ms = LGPS_GNSS_BACKOFF_STEP1_MS;
+			if (!ephemeris_collected) {
+				set_state(LGPS_GNSS_STATE_EPHEMERIS_HOLD,
+					  LGPS_GNSS_EPHEMERIS_HOLD_MS);
+			} else if (!continuous_on) {
+				LOG_INF("hot-pulse fix acquired, entering nominal sleep (%u ms)",
+					LGPS_GNSS_NOMINAL_PERIOD_MS);
+				gnss_power_down();
+				set_state(LGPS_GNSS_STATE_SLEEP_NOMINAL,
+					  LGPS_GNSS_NOMINAL_PERIOD_MS);
+			} else {
+				/* Continuous precision mode stays powered in FIXED. */
+			}
 			break;
 
 		case LGPS_GNSS_STATE_EPHEMERIS_HOLD:
 			if (elapsed >= LGPS_GNSS_EPHEMERIS_HOLD_MS) {
-				LOG_INF("ephemeris hold done, powering the GNSS rail down");
+				ephemeris_collected = true;
+				backoff_ms = LGPS_GNSS_BACKOFF_STEP1_MS;
+				if (continuous_on) {
+					LOG_INF("ephemeris hold done, staying in FIXED "
+						"(continuous mode)");
+					set_state(LGPS_GNSS_STATE_FIXED, 0U);
+				} else {
+					LOG_INF("ephemeris hold done, entering nominal sleep");
+					gnss_power_down();
+					set_state(LGPS_GNSS_STATE_SLEEP_NOMINAL,
+						  LGPS_GNSS_NOMINAL_PERIOD_MS);
+				}
+			}
+			break;
+
+		case LGPS_GNSS_STATE_SLEEP_NOMINAL:
+			if (wake_now || continuous_on ||
+			    ((elapsed >= LGPS_GNSS_NOMINAL_PERIOD_MS) && !stationary_on)) {
+				LOG_INF("waking GNSS for hot-pulse fix (wake=%d cont=%d)",
+					wake_now ? 1 : 0, continuous_on ? 1 : 0);
+				gnss_power_up();
+				set_state(LGPS_GNSS_STATE_HOT_PULSE, LGPS_GNSS_HOT_TIMEOUT_MS);
+			}
+			break;
+
+		case LGPS_GNSS_STATE_HOT_PULSE:
+			if ((ubx_frames == 0U) && (elapsed < 6000U) &&
+			    (lgps_diag_uptime_ms() >= next_reconfig_ms)) {
+				next_reconfig_ms = lgps_diag_uptime_ms() + 2000U;
+				(void)gnss_configure_output();
+			}
+
+			if (elapsed >= LGPS_GNSS_HOT_TIMEOUT_MS) {
+				LOG_WRN("no 3D fix within %u s hot-pulse window, entering backoff",
+					LGPS_GNSS_HOT_TIMEOUT_MS / 1000U);
 				gnss_power_down();
 				set_state(LGPS_GNSS_STATE_BACKOFF, backoff_ms);
+				backoff_ms = backoff_duration_ms(gnss_state, backoff_ms);
 			}
 			break;
 
 		case LGPS_GNSS_STATE_BACKOFF:
-			if (elapsed >= backoff_ms) {
-				LOG_INF("backoff expired (%u ms), retrying GNSS", backoff_ms);
+			if (wake_now || continuous_on ||
+			    ((elapsed >= backoff_ms) && !stationary_on)) {
+				LOG_INF("backoff expired or wake requested, retrying GNSS");
 				gnss_power_up();
-				backoff_ms = backoff_duration_ms(gnss_state, backoff_ms);
-				set_state(LGPS_GNSS_STATE_COLD_START,
-					  LGPS_GNSS_COLD_START_TIMEOUT_MS);
+				if (ephemeris_collected) {
+					set_state(LGPS_GNSS_STATE_HOT_PULSE,
+						  LGPS_GNSS_HOT_TIMEOUT_MS);
+				} else {
+					set_state(LGPS_GNSS_STATE_COLD_START,
+						  LGPS_GNSS_COLD_START_TIMEOUT_MS);
+				}
 			}
 			break;
 

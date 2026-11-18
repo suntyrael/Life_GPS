@@ -123,4 +123,31 @@ void lgps_pdr_set_frozen(struct lgps_pdr *pdr, bool frozen);
 
 bool lgps_pdr_is_frozen(const struct lgps_pdr *pdr);
 
+/* Step detector thresholds and cadence bounds at 26 Hz (README 7.2). */
+#define LGPS_STEP_DELTA_ACCEL_MIN_G 0.18F
+#define LGPS_STEP_PEAK_THRESHOLD_G 1.08F
+#define LGPS_STEP_VALLEY_THRESHOLD_G 0.94F
+#define LGPS_STEP_MIN_INTERVAL_MS 300U
+#define LGPS_STEP_MAX_INTERVAL_MS 2000U
+
+struct lgps_step_detector {
+	float peak_norm_g;
+	float valley_norm_g;
+	uint32_t peak_ms;
+	uint32_t last_step_ms;
+	bool have_peak;
+	bool have_step;
+};
+
+/* Reset the step detector state. */
+void lgps_step_detector_reset(struct lgps_step_detector *det);
+
+/*
+ * Feed one 3-axis acceleration sample (in g) at @p now_ms.
+ * Returns true when a valid step peak-to-valley swing completes outside the
+ * refractory window, and writes the peak-to-peak amplitude (in g) to @p delta_accel_g.
+ */
+bool lgps_step_detector_update(struct lgps_step_detector *det, const float accel_g[3],
+			       uint32_t now_ms, float *delta_accel_g);
+
 #endif /* LIFEGPS_NAV_H_ */

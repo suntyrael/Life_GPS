@@ -380,4 +380,44 @@ ZTEST(lifegps_nav, test_magnetic_anomaly)
 	zassert_false(lgps_nav_mag_anomaly(65.5F, 0.0F), "zero reference must not flag");
 }
 
+ZTEST(lifegps_nav, test_step_detector_and_pdr_chain)
+{
+	struct lgps_step_detector det;
+	struct lgps_pdr pdr;
+	const float idle_g[3] = {0.0F, 0.0F, 1.00F};
+	const float peak_g[3] = {0.0F, 0.0F, 1.32F};
+	const float valley_g[3] = {0.0F, 0.0F, 0.78F};
+	float delta_g = 0.0F;
+	bool detected;
+
+	lgps_step_detector_reset(&det);
+	lgps_pdr_init(&pdr);
+
+	/* Stationary 1 g sample must not trigger a step. */
+	detected = lgps_step_detector_update(&det, idle_g, 100U, &delta_g);
+	zassert_false(detected, "idle 1 g must not trigger a step");
+
+	/* First step cycle: peak at 200 ms, valley at 350 ms. */
+	detected = lgps_step_detector_update(&det, peak_g, 200U, &delta_g);
+	zassert_false(detected, "peak alone must not trigger before valley");
+	detected = lgps_step_detector_update(&det, valley_g, 350U, &delta_g);
+	zassert_true(detected, "peak-to-valley swing must trigger a step");
+	zassert_within(delta_g, 0.54F, TEST_TOLERANCE, "delta_accel_g mismatch");
+
+	(void)lgps_pdr_step(&pdr, delta_g, 0.0F);
+	zassert_equal(pdr.steps_total, 1U, "first step must increment PDR step count");
+
+	/* Refractory check: another swing within 150 ms (< 300 ms) must be rejected. */
+	(void)lgps_step_detector_update(&det, peak_g, 420U, &delta_g);
+	detected = lgps_step_detector_update(&det, valley_g, 500U, &delta_g);
+	zassert_false(detected, "swing inside 300 ms refractory window must be ignored");
+
+	/* Second valid step at 900 ms (>= 300 ms after 350 ms). */
+	(void)lgps_step_detector_update(&det, peak_g, 800U, &delta_g);
+	detected = lgps_step_detector_update(&det, valley_g, 900U, &delta_g);
+	zassert_true(detected, "second step after refractory window must trigger");
+	(void)lgps_pdr_step(&pdr, delta_g, 0.0F);
+	zassert_equal(pdr.steps_total, 2U, "second step must increment PDR step count");
+}
+
 ZTEST_SUITE(lifegps_nav, NULL, NULL, NULL, NULL, NULL);

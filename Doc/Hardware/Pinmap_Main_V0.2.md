@@ -106,9 +106,9 @@
    - 设备树：`&uicr { nfct-pins-as-gpios; };`（NCS ≥ 2.6 起支持，本项目 v3.4.2 可用）；
    - 或运行时寄存器：`NRF_NFCT->PADCONFIG = 0`（nrfx 提供 `NFCT_PADCONFIG_ENABLE_Disabled`）。
 2. **SPI**：`&spi22 { status = "okay"; pinctrl-0 = <&spi22_default>; pinctrl-names = "default"; cs-gpios = <&gpio1 14 GPIO_ACTIVE_LOW>; }`；Kconfig 需 `CONFIG_SPI=y`、`CONFIG_SPI_NRFX_SPIM=y`（实例 `CONFIG_NRFX_SPIM22` 一般由 DT 自动 select，**须在 v3.4.2 源码树确认**）。
-3. **UART**：`&uart20`（或 `uart21`）`current-speed = <115200>`，pinctrl 指 `P1.04/P1.05`；与 SPI22 无共享资源。
+3. **UART**：`&uart20`（或 `uart21`）`current-speed = <38400>`（u-blox MAX-M10S 出厂默认 `CFG-UART1-BAUDRATE = 38400` 8N1，含 9600 自动回退，后续可经 UBX 切至 115200），pinctrl 指 `P1.04/P1.05`；与 SPI22 无共享资源。
 4. **不再需要** `CONSTLAT`/`LOWPWR` 手动切换；IMU 中断仍走 `P0.02`（GPIOTE30）。
-5. **待核实（仓库内无 NCS 源码树，不得凭记忆断言）**：`&spi22` 的 DT 标签与 `spi@c8000` 地址、`CONFIG_NRFX_SPIM22` 是否 auto-select、`nfct-pins-as-gpios` 在 nRF54L 上是否经 UICR 层处理（对 TF-M/secure 分区的影响）、`pinctrl` 状态名（`spi22_default`/`spi22_sleep`）。
+5. **已落地验证（`Firmware/boards/lifegps/lifegps/lifegps_nrf54l15_cpuapp.dts`）**：`&spi22`（`spi@c8000`）、`&uicr { nfct-pins-as-gpios; };`、以及 `U12 = LSM6DSRTR`（与原理图 `LSM6DSVTR` 同为 LGA-14 引脚兼容，`WHO_AM_I = 0x6B`，26Hz 原生 ODR）均已在 NCS v3.4.2 与 V0.2 样板上实测通过。
 
 > ⚠️ **若坚持方案 A（不改板）**：Zephyr 的 system PM 会在空闲时自动切 `LOWPWR`，固件手动置 `CONSTLAT` 可能与 PM 策略互相覆盖，需要在应用层加 hook（或在 SPI 传输期间禁止进入低功耗），属于更容易出坑的路径——这也是推荐方案 B 的主要原因之一。
 
@@ -120,16 +120,16 @@
 | :---: | :--- | :--- | :---: | :---: | :--- | :--- |
 | 1 | `P1.00 / XL1` | `LFXO_IN` | P1 / 模拟 | — | 32.768kHz 晶体 X1.1（FC-135R，**CL=9pF**） | 晶振模式；片内负载电容（`XOSC32KI.INTCAP`），无外挂电容 |
 | 2 | `P1.01 / XL2` | `LFXO_OUT` | P1 / 模拟 | — | 32.768kHz 晶体 X1.2 | 同上 |
-| 3 | `P1.02 / NFC1` | `LSM6_SPI_MOSI` | P1 | OUT | U12.14 `SDA/SDI/SDO` | `SPIM22` 的 SDO；**须先关 NFC**（`NFCT.PADCONFIG`）；8 MHz |
-| 4 | `P1.03 / NFC2` | `LSM6_SPI_CLK` | P1 / **clock** | OUT | U12.13 `SCL/SPC` | `SPIM22` 的 SCK（clock 脚）；**须先关 NFC**；8 MHz |
-| 5 | `P1.04 / AIN0` | `GPS_TX` | P1 / clock | OUT | `UARTE20/21 TXD` → R10 100Ω → U1.3 `RXD` | 115200 8N1；GPS 断电前先置高阻/低电平 |
-| 6 | `P1.05 / AIN1`（RADIO[6]） | `GPS_RX` | P1 | IN | `UARTE20/21 RXD` ← R11 100Ω ← U1.2 `TXD` | 同域 UART，固件用 `UARTE2x` |
+| 3 | `P1.02 / NFC1` | `LSM6_SPI_MOSI` | P1 | OUT | U12.14 `SDA/SDI/SDO`（LSM6DSRTR） | `SPIM22` 的 SDO；**须先关 NFC**（`NFCT.PADCONFIG`）；8 MHz |
+| 4 | `P1.03 / NFC2` | `LSM6_SPI_CLK` | P1 / **clock** | OUT | U12.13 `SCL/SPC`（LSM6DSRTR） | `SPIM22` 的 SCK（clock 脚）；**须先关 NFC**；8 MHz |
+| 5 | `P1.04 / AIN0` | `GPS_TX` | P1 / clock | OUT | `UARTE20/21 TXD` → R10 100Ω → U1.3 `RXD` | 出厂默认 38400 8N1（可配 115200）；GPS 断电前先停中断 |
+| 6 | `P1.05 / AIN1`（RADIO[6]） | `GPS_RX` | P1 | IN | `UARTE20/21 RXD` ← R11 100Ω ← U1.2 `TXD` | 同域 UART，固件用 `UARTE20` |
 | 7 | `P1.06 / AIN2` | `KEY1_POI` | P1 | IN | R20 100Ω → SW7（按下接地） | **内部上拉**；SENSE 低电平唤醒（System OFF） |
 | 8 | `P1.07 / AIN3` | `GPS_EN` | P1 | OUT | U9.3 `EN`（SGM2045-1.8） | **高 = 给 GNSS 供电**，低 = 断电（关断漏电 30nA） |
 | 9 | `P1.08 / CLK16M` | `KEY2_MODE` | P1 / clock | IN | R21 100Ω → SW1（按下接地） | **内部上拉**；占一个 clock 脚，注意未来复用 |
 | 10 | `VDD` | `BT_1V9` | PWR | — | 1.9V 主轨，就近 100nF | — |
 | 11 | `P2.00` | `NC` | P2 | — | 悬空 | 断开输入缓冲 |
-| 12 | `P2.01 / SPIM00.SCK` | `SPI_CLK` | P2 / clock | OUT | U8.6 `CLK`（W25Q512NW） | `SPIM00`；时钟脚必须用本脚 |
+| 12 | `P2.01 / SPIM00.SCK` | `SPI_CLK` | P2 / clock | OUT | U8.6 `CLK`（W25Q512NW / W25Q256 SFDP 自适应） | `SPIM00`；时钟脚必须用本脚 |
 | 13 | `P2.02 / SPIM00.SDO` | `SPI_MOSI` | P2 | OUT | U8.5 `DI(IO0)` | 目标 8MHz（低噪声优先） |
 | 14 | `P2.03` | `NC`（原 KEY1，已迁出） | P2 | — | 悬空 | 断开输入缓冲；**不可再用于按键/中断** |
 | 15 | `P2.04 / SPIM00.SDI` | `SPI_MISO` | P2 | IN | U8.2 `DO(IO1)` | — |
@@ -168,7 +168,7 @@
 | 48 | `VDD` | `BT_1V9` | PWR | — | 就近 100nF | — |
 | 49 | `VSS`（中心焊盘） | `GND` | PWR | — | 密集地过孔 | 必须接地；VSS_PA 只连本脚 |
 
-**未使用引脚**：3、4、11、14、18、42（全部为可选 GPIO/NFC，合规）。
+**未使用引脚**：11 (`P2.00`)、14 (`P2.03`)、17 (`P2.06`)、19 (`P2.08`)、20 (`P2.09`)、21 (`P2.10`)（共 6 脚悬空，固件断开输入缓冲）。
 
 ---
 

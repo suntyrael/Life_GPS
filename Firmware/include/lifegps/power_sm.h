@@ -7,9 +7,9 @@
  *   power-on   -> red, blue, green: three 1 Hz blinks each
  *   8 s press  -> green, blue, red: three 1 Hz blinks each, then System OFF
  *
- * A short press on KEY1 marks a POI (the record is produced by the storage
- * layer), a short press on KEY2 toggles the high-precision request flag and is
- * only logged until the continuous-recording pipeline exists.
+ * A short press on KEY1 latches a POI request consumed by the trajectory
+ * recording pipeline; a short press on KEY2 toggles the high-precision
+ * continuous-mode request flag consumed by the GNSS state machine.
  */
 
 #ifndef LIFEGPS_POWER_SM_H_
@@ -22,5 +22,8 @@ int lgps_power_sm_init(void);
 
 /* True when the user requested the high precision continuous mode. */
 bool lgps_power_precision_requested(void);
+
+/* Atomically consume a pending KEY1 POI request (returns true once per press). */
+bool lgps_power_consume_poi_request(void);
 
 #endif /* LIFEGPS_POWER_SM_H_ */

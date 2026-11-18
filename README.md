@@ -3,18 +3,19 @@
 [![License: Hardware CERN-OHL-S / Software MIT](https://img.shields.io/badge/License-Hardware%20CERN--OHL--S%20%7C%20Software%20MIT-blue.svg)](LICENSE)
 [![MCU: nRF54L15 QFN48](https://img.shields.io/badge/MCU-nRF54L15%20(QFN48%20QFAA)-red.svg)](Doc/Hardware/Datasheets/nRF54L15_nRF54L10_nRF54L05_Datasheet_v1.0.pdf)
 [![GNSS: u-blox MAX-M10S](https://img.shields.io/badge/GNSS-u--blox%20MAX--M10S%20(Ultra--Low%20Power)-green.svg)](Doc/Hardware/README.md)
-[![IMU: LSM6DSVTR](https://img.shields.io/badge/IMU-LSM6DSVTR%20(Standard)-orange.svg)](Doc/Hardware/README.md)
-[![Flash: Winbond 64MB NOR](https://img.shields.io/badge/Flash-Winbond%2064MB%20(W25Q512NW)-yellow.svg)](Doc/Hardware/README.md)
+[![IMU: LSM6DSRTR](https://img.shields.io/badge/IMU-LSM6DSRTR%20(6--Axis%20%2B%20Sensor%20Hub)-orange.svg)](Doc/Hardware/README.md)
+[![Flash: Winbond 32/64MB NOR](https://img.shields.io/badge/Flash-Winbond%2032%2F64MB%20(SFDP%20Adaptive)-yellow.svg)](Doc/Hardware/README.md)
 [![PMIC: SGMICRO](https://img.shields.io/badge/Power-SGMICRO%20(SGM6040A%2BSGM2045--1.8%2BSGM4056)-purple.svg)](Doc/Hardware/README.md)
 [![Status: Architecture Baseline Frozen](https://img.shields.io/badge/Status-Architecture%20Baseline%20Frozen%20(v1.0--RC)-green.svg)](#11-开发路线图与三阶段整改实施路径-roadmap)
+[![firmware](https://github.com/suntyrael/Life_GPS/actions/workflows/firmware.yml/badge.svg)](https://github.com/suntyrael/Life_GPS/actions/workflows/firmware.yml)
 [![app](https://github.com/suntyrael/Life_GPS/actions/workflows/app.yml/badge.svg)](https://github.com/suntyrael/Life_GPS/actions/workflows/app.yml)
 [![protocol](https://github.com/suntyrael/Life_GPS/actions/workflows/protocol.yml/badge.svg)](https://github.com/suntyrael/Life_GPS/actions/workflows/protocol.yml)
 [![docs](https://github.com/suntyrael/Life_GPS/actions/workflows/docs.yml/badge.svg)](https://github.com/suntyrael/Life_GPS/actions/workflows/docs.yml)
 
-> 🔒 **【重要基线提示 · 原理图 v0.2 与网表闭环 · SSOT 权威真相源 (Architecture Baseline Frozen - SSOT)】**  
-> 经与最新硬件原理图 **`Main_V0.2`（2026-11-10 更新）** 及网表 `Hardware/Schematic/Netlist_Main_V0.2_2026-11-11.tel`（已与原理图同步）深度工程评审与闭环整改，硬件配置基线正式锁定：主控升级为 **Nordic nRF54L15-QFAA（QFN48）**，全系统沿用 **常通主电 1.9V (SGM6040A) + GNSS 受控洁净电 1.8V (SGM2045-1.8)** 极低功耗分层拓扑；**GNSS 默认选型为 u-blox MAX-M10S-00B（唯一默认装配料，固件默认 UBX 协议）**，`Quectel LC79H` 仅作**可选兼容位、默认不装配**（同尺寸 18-LCC、VCC 1.75~1.98V，切换需改 R13/R28 并增补 Pin15 跳线）；GNSS 射频前端**量产只贴直通版**（`C47=22pF` 隔直 + `C46=0Ω` 跳线；`U5/Q1/C24/C27/C31` 全 NC），LNA+SAW 增强路径仅保留焊盘且与直通版**互斥**；6 轴 IMU 选用 **LSM6DSVTR**（INT1 唤醒）；电池分压沿用 **1MΩ + 330kΩ**（接受 3.2µA 漏电，固件须做输入阻抗修正）。
+> 🔒 **【重要基线提示 · 原理图 v0.2 与台架实测闭环 · SSOT 权威真相源 (Architecture Baseline Frozen - SSOT)】**  
+> 经与最新硬件原理图 **`Main_V0.2`（2026-11-10 更新）**、网表 `Hardware/Schematic/Netlist_Main_V0.2_2026-11-11.tel` 及 M1 台架实测（[`Firmware/docs/M1_BRINGUP.md`](Firmware/docs/M1_BRINGUP.md)）深度评审与闭环整改，软硬件配置基线正式锁定：主控升级为 **Nordic nRF54L15-QFAA（QFN48）**，全系统沿用 **常通主电 1.9V (SGM6040A) + GNSS 受控洁净电 1.8V (SGM2045-1.8)** 极低功耗分层拓扑；**GNSS 默认选型为 u-blox MAX-M10S-00B（唯一默认装配料，出厂默认 38400 bps，固件跑 UBX 协议）**，`Quectel LC79H` 仅作**可选兼容位、默认不装配**；GNSS 射频前端**量产只贴直通版**（`C47=22pF` 隔直 + `C46=0Ω` 跳线；`U5/Q1/C24/C27/C31` 全 NC）；6 轴 IMU 实贴选型锁定为 **LSM6DSRTR**（与原理图 `LSM6DSVTR` LGA-14 封装引脚完全兼容，`WHO_AM_I=0x6B`，26Hz 原生 ODR，内置硬件计步器/FSM + MCU 姿态融合）；外部 SPI NOR Flash 运行时按 **SFDP 自适应 32MB (`W25Q256`) / 64MB (`W25Q512NW`)**（OTA `slot1` 固定置于 `容量 - 1MiB`）；电池分压沿用 **1MΩ + 330kΩ**（接受 3.2µA 漏电，固件已做输入阻抗修正）。
 > **⚠️ 本次变更的 4 处引脚级要点**：① `KEY1_POI` 由 `P2.03` 迁至 **`P1.06`**（P2 域无 GPIOTE/SENSE，不能做唤醒源）；② `GPS_EN` = **`P1.07`**、`GPS_WAKE` = **`P1.09`**；③ Flash=`SPIM00`（P2 专用脚）；**IMU=`SPIM22`（P1 同域，`P1.03/02/13/14`），已无跨域、无需 Constant Latency**；④ **`KEY1/KEY2/CHG_STAT/SPI_CS/LSM6_CS` 五处无外部上拉电阻，必须由固件配置片内上拉**（12~16kΩ），`CHG_EN` 为**低有效**。  
-> **引脚唯一真相源**：[`Doc/Hardware/Pinmap_Main_V0.2.md`](Doc/Hardware/Pinmap_Main_V0.2.md)（本文档所有引脚表以其为准）。本项目正式进入**第二阶段（Phase 2）PCB Layout 与固件驱动闭环阶段**，打样后用 Nordic PPK2 做全工况实测闭环。
+> **引脚唯一真相源**：[`Doc/Hardware/Pinmap_Main_V0.2.md`](Doc/Hardware/Pinmap_Main_V0.2.md)（本文档所有引脚表以其为准）。本项目正式进入**第二阶段（Phase 2）固件单机闭环与 BLE 联调阶段**。
 
 - [1. 核心设计亮点与相比手机的优势](#1-核心设计亮点与相比手机的优势)
 - [2. 关键元器件选型与全项目唯一硬件配置基线表](#2-关键元器件选型与全项目唯一硬件配置基线表)
@@ -22,9 +23,9 @@
   - [2.1 主控 SoC：Nordic nRF54L15 (QFN48 封装)](#21-主控-socnordic-nrf54l15-qfn48-封装-料号-nrf54l15-qfaa)
   - [2.2 ⚠️ nRF54L15 三段 GPIO 域限制与硬件避坑重点](#22--nrf54l15-三段-gpio-域限制与硬件避坑重点)
   - [2.3 GNSS 卫星定位模组：u-blox MAX-M10S (MAX-M10S-00B 原生超低功耗旗舰)](#23-gnss-卫星定位模组u-blox-max-m10s-max-m10s-00b-原生超低功耗旗舰)
-  - [2.4 6轴惯性测量单元 (IMU)：STMicroelectronics LSM6DSVTR](#24-6轴惯性测量单元-imustmicroelectronics-lsm6dsvtr)
-  - [2.5 板载 64MB (512Mb) SPI NOR Flash：Winbond W25Q512NW](#25-板载-64mb-512mb-spi-nor-flashwinbond-w25q512nw-18v-宽压旗舰)
-  - [2.6 全套圣邦微 (SGMICRO) 高效电源管理与保护方案](#26-全套圣邦微-sgmicro-高效电源管理与传感器供电评估)
+  - [2.4 6轴惯性测量单元 (IMU)：STMicroelectronics LSM6DSRTR](#24-6轴惯性测量单元-imustmicroelectronics-lsm6dsrtr)
+  - [2.5 板载 32/64MB SPI NOR Flash：Winbond W25Q512NW / W25Q256 (SFDP 自适应)](#25-板载-64mb-512mb-spi-nor-flashwinbond-w25q512nw-18v-宽压旗舰)
+  - [2.6 全套圣邦微 (SGMICRO) 高效电源管理与传感器供电评估](#26-全套圣邦微-sgmicro-高效电源管理与传感器供电评估)
 - [3. 系统硬件架构：双域物理隔离 Mermaid 拓扑图与对比矩阵](#3-系统硬件架构双域物理隔离-mermaid-拓扑图与对比矩阵)
 - [4. 双按键多功能交互定义 (蓝牙配对 / POI打点 / 高精度模式)](#4-双按键多功能交互与长按8秒开关机设计-开关机--蓝牙配对--poi打点--高精度模式)
 - [5. 时钟源调试串口与引脚分配 (QFN48 真实物理引脚)](#5-时钟源调试串口与引脚分配-qfn48-真实物理引脚)
@@ -34,7 +35,7 @@
   - [6.3 典型用户 24 小时生活画像与 GNSS 阶梯搜星/超时指数退避策略](#63-典型用户-24-小时生活画像与-gnss-阶梯搜星超时指数退避策略)
 - [7. GNSS 分层电源状态机与丢星后惯导(PDR)推算体系](#7-gnss-分层电源状态机与丢星后惯导pdr推算体系)
   - [7.1 GNSS 六状态分层有限状态机与冷/热启动防死循环设计](#71-gnss-六状态分层有限状态机与冷热启动防死循环设计)
-  - [7.2 LSM6DSVTR 姿态解耦三层融合与固件级磁异常抑制](#72-lsm6dsvtr-姿态解耦三层融合与固件级磁异常抑制)
+  - [7.2 LSM6DSRTR 姿态解耦三层融合与固件级磁异常抑制](#72-lsm6dsrtr-姿态解耦三层融合与固件级磁异常抑制)
   - [7.3 客观限定 PDR 佩戴方式与特殊场景自适应](#73-客观限定-pdr-佩戴方式与特殊场景自适应)
   - [7.4 基于 BMP388 气压计的垂直高程解算与室内楼层识别模型](#74-基于-bmp388-气压计的垂直高程解算与室内楼层识别模型)
   - [7.5 PDR 零速更新 (ZUPT) 定量标定双判据](#75-pdr-零速更新-zupt-定量标定双判据与绝对锁死)
@@ -55,10 +56,10 @@
 | 评估维度 | 智能手机 (App 后台记录) | Life_GPS 专用记录仪 (设计目标) | 核心技术优势剖析 |
 | :--- | :--- | :--- | :--- |
 | **全天工作续航** | 开启高精度定位+蓝牙扫描仅支撑 **4 ~ 8 小时** | 1000mAh 电池目标续航 **15 ~ 30 天**（一次充电支持整月记录） | 专用超低功耗架构，无屏幕无安卓/iOS高负荷操作系统底噪 |
-| **生命周期存储** | 手机内部日志零散膨胀，受限于系统缓存清理 | **板载 64MB 超大 NOR Flash**，夜间自动截断压缩归档 | 32B 定长紧凑结构体，单颗芯片直接封存 **7 ~ 14 年全生命周期轨迹** |
+| **生命周期存储** | 手机内部日志零散膨胀，受限于系统缓存清理 | **板载 32/64MB SPI NOR Flash（SFDP 自适应）**，夜间自动截断压缩归档 | 32B 定长紧凑结构体，单颗芯片直接封存 **数年至十余年全生命周期轨迹** |
 | **电源转换能效** | 手机内部多路电源转换复杂，发热严重 | **圣邦微 SGM6040A 纳安级 DCDC**（60nA静态电流，750mA输出能力，设定1.9V） | 告别传统线性 LDO 在 4.2V 下浪费 50% 压差发热的弊端，全周期高效稳压 |
 | **系统稳定性** | 操作系统频繁杀后台省电策略干预导致断轨丢点 | 专用 RTOS 固件驱动，硬件看门狗保障，**全天候永不断轨** | 硬件级连续守护，状态机自闭环 |
-| **遮挡与丢星处理**| 室内地下商场直接失去定位或发生数百米跳变漂移 | **LSM6DSVTR 硬件融合 + PDR 航位推算**（刚性佩戴下接管） | 基于步长自适应模型与四元数航向，低频地磁融合约束发散，推算误差受控可预测 |
+| **遮挡与丢星处理**| 室内地下商场直接失去定位或发生数百米跳变漂移 | **LSM6DSRTR 惯性传感 + PDR 航位推算**（刚性佩戴下接管） | 基于步长自适应模型与姿态航向，低频地磁融合约束发散，推算误差受控可预测 |
 | **环境感知能力** | 手机系统出于权限与隐私严格封锁底层 BLE 原始广播 | 全频段微占空比扫描，抓取周边固定 Beacon 基站短 ID 与 RSSI | 形成包含“地理位置 + 空间射频环境”的多维离线环境时空轨迹 |
 | **设备体积与便携性**| 笨重发热严重需随身携带充电宝 | 仅钥匙扣/卡片尺寸（约 52×36×9mm），整机重量 < 35g，随身挂载 | 适合腰带夹固定背包外侧挂载或放置于车钥匙扣上 |
 | **数据安全性与隐私**| 轨迹频繁实时上传云端，面临第三方追踪与商业分析 | **纯离线存储于板载 NOR Flash**，仅由用户物理导出或自主同步 | 真正的数据主权归属个人，物理隔离离线“一生轨迹”底库 |
@@ -73,15 +74,15 @@
 | 模块类别 | 选定器件完整型号 | 原厂品牌 | 封装规格 | 工作电压域 | 关键总线 / 目标时钟 | 上电 / 控制方式 | 归档官方规格书 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **主控 SoC** | **nRF54L15-QFAA** | Nordic Semi | QFN48<br>*(6×6mm, 0.4mm pitch, 49 脚含 EP)* | 稳定 1.9V<br>*(VDD 1.7~3.6V, POR 1.75V)* | 128MHz Cortex-M33 + RISC-V FLPR<br>HFXO 32MHz (CL=8pF) / LFXO 32.768kHz (CL=9pF)<br>RRAM 1524KB / RAM 256KB | 全天候常通供电 (Always-On)<br>31 个 GPIO，分 **P0(LP)/P1(PERI)/P2(MCU)** 三域<br>**启用片上硬件看门狗 (WDT 30s)** | `Doc/Hardware/Datasheets/nRF54L15_nRF54L10_nRF54L05_Datasheet_v1.0.pdf` |
-| **GNSS 模组（默认装配 · 唯一默认料）** | **MAX-M10S-00B** | u-blox | 18-LCC<br>*(10.1×9.7mm)* | 主电 1.8V (Pin8 VCC, 1.76~3.6V)<br>IO 1.8V (Pin7 V_IO, VIO_SEL=GND)<br>后备 1.9V (Pin6 V_BCKP, 1.65~3.6V) | UART 115200bps (UBX / NMEA)<br>多星并发 (GPS+BDS+GAL+GLO) | Pin8 VCC 经 SGM2045-1.8 受控通断（`GPS_EN`=**P1.07**）<br>Pin15 `VIO_SEL` **必须接 GND**（1.8V IO 模式）<br>**【M10S 装配】R13=0Ω 贴 / R28=100Ω 贴 / R27=NC** | `Doc/Hardware/Datasheets/UBLOX/MAX-M10S_DataSheet_UBX-20035208.pdf` |
+| **GNSS 模组（默认装配 · 唯一默认料）** | **MAX-M10S-00B** | u-blox | 18-LCC<br>*(10.1×9.7mm)* | 主电 1.8V (Pin8 VCC, 1.76~3.6V)<br>IO 1.8V (Pin7 V_IO, VIO_SEL=GND)<br>后备 1.9V (Pin6 V_BCKP, 1.65~3.6V) | UART 出厂默认 38400bps（可配 115200bps，UBX / NMEA）<br>多星并发 (GPS+BDS+GAL+GLO) | Pin8 VCC 经 SGM2045-1.8 受控通断（`GPS_EN`=**P1.07**）<br>Pin15 `VIO_SEL` **必须接 GND**（1.8V IO 模式）<br>**【M10S 装配】R13=0Ω 贴 / R28=100Ω 贴 / R27=NC** | `Doc/Hardware/Datasheets/UBLOX/MAX-M10S_DataSheet_UBX-20035208.pdf` |
 | **GNSS 备份料（兼容位 · 默认不采购/不装配）** | **LC79H 系列** | Quectel (移远) | 18-LCC + 10-LGA<br>*(10.1×9.7×2.4mm，1~18 脚同构)* | 主电 1.8V (Pin8 VCC, **1.75~1.98V**)<br>IO 跟随 VCC<br>后备 1.9V (Pin6 V_BCKP, 1.62~1.98V) | UART 115200bps (NMEA / PAIR)<br>L1+L5 双频 | **【LC79H 装配】R13=NC、R28=NC（Pin5/Pin7 为 RESERVED，禁止外接），且 Pin15 对地跳线必须 NC**；用 WAKEUP 唤醒时贴 R27=100Ω(Pin18)<br>固件自适应协议识别 | `Doc/Hardware/Datasheets/LC79H/quectel_lc79h_series_hardware_design_v1-6.pdf` |
 | **GNSS 射频天线** | **`BWGNSCNX25-25W4`（U7）** | 待补原厂手册 | `ANT-TH_L250-W250`<br>*(25×25mm)* | 无源器件 | 50Ω 馈电 + 预留 π 调谐位 | **纯无源、零直流偏置**；`Pin14 VCC_RF` 保持悬空（改有源天线必须由 VCC_RF 供电 ≤50mA）<br>馈电端缺低结容 ESD（改版补齐） | BOM 定稿后归档 |
 | **板载双频 LNA** | **ATR2652（U5）** | 杭州中科微 | DFN-6 / SOT23-6 | 1.8V 受控<br>*(支持 1.5~3.6V)* | L1 增益 22.4dB / NF 0.85dB<br>L5 增益 22.0dB / NF 0.75dB | **本版 DNP（不贴）**：V0.2 量产只贴直通，仅保留焊盘/BOM 位；贴装时必须同时 NC 掉 C46/C47<br>工作电流 4.5mA | 原厂选型手册 |
 | **板载双通带 SAW** | **B39162B2651P810（Q1）** | Qualcomm / RF360 | 1511<br>*(1.5×1.1mm)* | 无源器件 | 单进单出双通带 (L1+L5)<br>2.4GHz 抑制 > 38dB | **本版 DNP（不贴）**；GNSS 模组内部已含 SAW，带外抑制由模组承担<br>启用增强版必须与 C46/C47 互斥 | 原厂选型手册 |
-| **SPI NOR Flash** | **W25Q512NWEIQ**<br>*(1.8V 宽压旗舰)* | Winbond (华邦) | WSON-8<br>*(6×8mm)* | 1.9V 常通<br>*(VCC 1.7~1.95V)* | 标准 4 线 SPI (模式 0)<br>**目标时钟: 8MHz (低噪声)** | `/CS`=**P2.05**（固件内部上拉）、`CLK`=**P2.01**、`MOSI`=**P2.02**、`MISO`=**P2.04**（SPIM00 专用脚）<br>/WP(Pin3)与/HOLD(Pin7) 直连 1.9V 主电轨（改版建议改 10kΩ 上拉） | `Doc/Hardware/Datasheets/Winbond_07022021_W25Q512NW-2451091.pdf` |
-| **6轴 IMU** | **LSM6DSVTR** | STMicroelectronics | LGA-14<br>*(2.5×3.0mm)* | 1.9V 常通<br>*(现为 0Ω 直连；磁珠 π 滤波为改版项)* | SPI 8MHz：`SCL/SPC`=**P1.03**、`SDA/SDI`=**P1.02**、`SDO/SA0`=**P1.13**、`CS`=**P1.14**（`SPIM22` 同域 P1，**无需 Constant Latency**）<br>SFLP 输出: 60Hz 姿态四元数 | 静止待机: 低功耗加速度计 (~7.5µA)<br>INT1 = **P0.02**（GPIOTE30）运动唤醒与数据就绪中断 | `Doc/Hardware/Datasheets/LSM6DSV16X_Datasheet.pdf` |
-| **三轴磁力计** | **LIS2MDL** | STMicroelectronics | LGA-12<br>*(2.0×2.0mm)* | 1.9V 常通<br>*(现为 0Ω 直连；磁珠 π 滤波为改版项)* | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSVTR Sensor Hub AUX I2C<br>数据进 IMU FIFO，MCU 固件执行磁校准与姿态融合 | `Doc/Hardware/Datasheets/LIS2MDL_Datasheet.pdf` |
-| **气压高度计** | **BMP388** | Bosch Sensortec | LGA-10<br>*(2.0×2.0mm)* | 1.9V 常通<br>*(现为 0Ω 直连；磁珠 π 滤波为改版项)* | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSVTR Sensor Hub AUX I2C<br>相对精度 typ. ±8Pa (±0.08hPa, 等效约 ±0.66m) | `Doc/Hardware/Datasheets/BMP388_Datasheet.pdf` |
+| **SPI NOR Flash** | **W25Q512NWEIQ (64MB)** / **W25Q256 (32MB)**<br>*(运行时 SFDP 容量自适应)* | Winbond (华邦) | WSON-8<br>*(6×8mm)* | 1.9V 常通<br>*(VCC 1.7~1.95V)* | 标准 4 线 SPI (模式 0)<br>**目标时钟: 8MHz (低噪声)** | `/CS`=**P2.05**（固件内部上拉）、`CLK`=**P2.01**、`MOSI`=**P2.02**、`MISO`=**P2.04**（SPIM00 专用脚）<br>OTA `slot1` 固定在 `容量 - 1MiB`；/WP(Pin3)与/HOLD(Pin7) 直连 1.9V | `Doc/Hardware/Datasheets/Winbond_07022021_W25Q512NW-2451091.pdf` |
+| **6轴 IMU** | **LSM6DSRTR**<br>*(与 LSM6DSVTR LGA-14 封装引脚完全兼容)* | STMicroelectronics | LGA-14<br>*(2.5×3.0mm)* | 1.9V 常通<br>*(现为 0Ω 直连；磁珠 π 滤波为改版项)* | SPI 8MHz：`SCL/SPC`=**P1.03**、`SDA/SDI`=**P1.02**、`SDO/SA0`=**P1.13**、`CS`=**P1.14**（`SPIM22` 同域 P1，**无需 Constant Latency**）<br>原生 26Hz ODR（ZUPT 26 点=1.000s） | `WHO_AM_I = 0x6B`；内置硬件计步器/FSM + MCU 固件姿态融合<br>INT1 = **P0.02**（GPIOTE30）运动唤醒与数据就绪中断 | ST DS11976 (`LSM6DSR`) / `Doc/Hardware/Datasheets/LSM6DSV16X_Datasheet.pdf` |
+| **三轴磁力计** | **LIS2MDL** | STMicroelectronics | LGA-12<br>*(2.0×2.0mm)* | 1.9V 常通<br>*(现为 0Ω 直连；磁珠 π 滤波为改版项)* | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSRTR Sensor Hub AUX I2C<br>数据经 `SENSOR_HUB_1..6` 读取，MCU 固件执行磁校准与姿态融合 | `Doc/Hardware/Datasheets/LIS2MDL_Datasheet.pdf` |
+| **气压高度计** | **BMP388** | Bosch Sensortec | LGA-10<br>*(2.0×2.0mm)* | 1.9V 常通<br>*(现为 0Ω 直连；磁珠 π 滤波为改版项)* | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSRTR Sensor Hub AUX I2C<br>相对精度 typ. ±8Pa (±0.08hPa, 等效约 ±0.66m) | `Doc/Hardware/Datasheets/BMP388_Datasheet.pdf` |
 | **常通降压 DCDC** | **SGM6040AXTHL8G/TR** | 圣邦微 (SGMICRO) | **TDFN-2×1.5-8L**<br>*(RSET设定 1.9V)* | 输入 1.8~5.5V<br>**设定输出 1.9V** | 750mA 输出能力，效率 > 90%<br>Pin 5 VSET 接 909Ω；Pin 6 STOP 内部下拉悬空 | 全板常通核心（为MCU/Flash/传感器/GNSS后备供电）<br>静态电流仅 60nA (关断 25nA) | `Doc/Hardware/Datasheets/SGM6040A_Datasheet.pdf` |
 | **受控低噪 LDO** | **SGM2045-1.8XXDH4G/TR** | 圣邦微 (SGMICRO) | **XTDFN-1×1-4L**<br>*(超微型封装)* | 输入 1.1~5.5V (接1.9V主轨)<br>**固定输出 1.8V** | 300mA 输出能力，**92dB 超高 PSRR**<br>**9.5µVrms 超低噪声，额定压差仅 100mV** | 专供 GNSS `VCC`(Pin8) 与 `V_IO`(Pin7)，即 `VDD_GPS` 轨<br>由 **`GPS_EN` = P1.07** 使能，关断漏电 30nA | `Doc/Hardware/Datasheets/SGM2045_Datasheet.pdf` |
 | **锂电充电 IC** | **SGM4056** | 圣邦微 (SGMICRO) | TDFN-3×3-8L<br>*(带底部散热EP)* | 输入 4.5~6.8V<br>OVP 6.8V | $R_{IREF}=34.0\text{k}\Omega$ 限制 350mA 恒流<br>$R_{IMIN}=340\text{k}\Omega$ 设定约 29 mA 截止电流（$I_{MIN}=10169/R-0.8$） | Pin3 `/CHG` 接 **P0.04**（固件内部上拉）；Pin4 `EN` 接 **P0.03**<br>**低有效**：低电平允充、高电平禁充（固件勿写反）<br>Pin2 `PPR` 悬空 | `Doc/Hardware/Datasheets/SGM4056_Datasheet.pdf` |
@@ -134,7 +135,7 @@
 | **定位 / 测速精度** | **1.5 m (CEP50)** / **0.05 m/s (1σ)** | 航迹极为平滑平稳，漂移抑制能力出众 |
 | **启动时间 (TTFF)** | 冷启动 $\le 28\text{ s}$，**热启动 $\le 1\text{ s}$**，辅助启动 $\le 1\text{ s}$ | 具备后备电源 V_BCKP 时，重新通电瞬间实现秒级锁定 |
 | **最大定位更新率** | **最高 10 Hz** (默认 1Hz 快照 / 高精 5Hz) | 兼顾全天候记录平滑度与极低能耗 |
-| **串口通信特性** | **默认 115200 bps** (8-N-1) | 采用高效紧凑二进制 UBX-NAV-PVT 协议，单包仅数十字节，极速吐字 |
+| **串口通信特性** | **出厂默认 38400 bps** (8-N-1，可配 115200 bps) | 采用高效紧凑二进制 UBX-NAV-PVT 协议，单包仅 92 字节，极速吐字 |
 | **运行功耗参数 (出处: 官方 Table 16 1.8V 规范)**| **默认三星连续跟踪：15.2 mA @ 1.8V (27.4 mW)**<br>*(IVCC 13mA + IV_IO 2.2mA)*<br>**默认三星省电跟踪 (PSM)：8.5 mA @ 1.8V (15.3 mW)**<br>*(IVCC 6.5mA + IV_IO 2.0mA)* | 后备供电 Pin 6 V_BCKP 手册值 **28 µA @3.3V**（1.9V 下待实测，预算按 15µA 保守估算）(由 SGM6040A 1.9V 常通供电维持 RTC/SRAM 星历) |
 | **独立供电架构** | **圣邦微 SGM2045-1.8 专用受控 LDO 供电** | **微型 XTDFN-1×1-4L，92dB PSRR，9.5µVrms 低噪，额定压差仅 100mV**；专供 Pin 8 VCC，由 P1.07 控制，关断漏电仅 30nA |
 | **射频前端天线方案** | **微型 Chip 天线 + 双 BOM 兼容架构** | **【BOM Option A】默认直通版**（贴片 C46/C47 22pF，NC: LNA与SAW，最简低成本零额外功耗）；<br>**【BOM Option B】增强版**（贴片 ATR2652 LNA + B39162 SAW，NC: C46/C47） |
@@ -147,14 +148,14 @@
    * **电池端放电电流暴降**：9mA @ 1.8V 经 SGM6040A 降压，折算至 3.8V 锂电池端仅需 **$\approx 4.6\text{ mA}$**！
    * **极致射频底噪**：SGM2045 在 1kHz 下具备高达 **92 dB 的超高 PSRR** 和 **9.5 µVrms 超低底噪**，彻底吸收 SGM6040A 的 1.5MHz 开关纹波，为 MAX-M10S 提供纯净电源；
 2. **固件级 UBX 极速报文传输**：
-   * 模组出厂支持 NMEA 与 UBX 双协议。固件配置模组仅输出 **`UBX-NAV-PVT`** 核心时空二进制包（单包仅 92 字节，在 115200bps 下传输耗时仅约 **8ms**）；
-   * 极短的数据传输时间使 MCU 串口 DMA 接收完成后即可迅速将 MAX-M10S 断电，每次快照比传统 NMEA 节省 80% 以上的活跃接收功耗。
+   * 模组出厂默认波特率为 **38400 bps**（接口手册 `CFG-UART1-BAUDRATE = 38400`，支持 NMEA 与 UBX 双协议，并可在运行期切换至 115200 bps）。固件配置模组开启 **`UBX-NAV-PVT`** 核心时空二进制包（单包 payload 92 字节）；
+   * 紧凑的二进制帧使 MCU 接收完成后即可迅速下发 `UBX-RXM-PMREQ` 并将 MAX-M10S 断电，每次快照比传统 NMEA 节省 80% 以上的活跃接收功耗。
 3. **射频前端双模式兼容设计（直通 vs 增强 LNA+SAW）**：
    * **BOM Option A（默认标准直通版）**：贴片 **C47 (22pF) 隔直** 与 **C46 (0Ω 跳线)**，**严禁贴片 U5 (ATR2652) 与 Q1 (B39162)**。天线经调谐匹配后直连 MAX-M10S Pin 11 (RF_IN)，适用于日常开阔场景，零额外功耗；
    * **BOM Option B（射频高增益增强版）**：贴片 U5 与 Q1，**强制严禁贴片（NC）C46 与 C47**。利用 ATR2652 提供 +22dB 前置增益，配合 B39162 SAW 滤除板载 2.4GHz 蓝牙干扰；
    * > ⚠️ **【防射频正反馈自激硬性红线】**：**严禁同时贴片装配（C46+C47）与（U5+Q1）！** 否则将引发强烈的射频自激振荡，彻底摧毁卫星信号接收并存在器件烧毁隐患！
 4. **模组真实引脚映射与后备电源 V_BCKP 硬件连接**：
-   * **Pin 1 为 GND**，**Pin 6 为 V_BCKP**（后备输入：MAX-M10S 1.65~3.6V / LC79H 1.62~1.98V；硬件后备电流手册值 28 µA @3.3V，1.9V 下待实测），**Pin 8 为 VCC**（主输入：MAX-M10S 1.76~3.6V / LC79H 1.75~1.98V）；**Pin 7 为 V_IO**（MAX-M10S 经 R13 接 1.8V 域；LC79H 该脚为 RESERVED）；**Pin 15 `VIO_SEL` 必须接 GND** 才是 1.8V I/O 模式（悬空＝3.3V 模式）；⚠️ 但 LC79H 的 Pin15 为 RESERVED，Quectel 手册明确 **禁止接电源或 GND**，故该脚必须改为 0Ω 跳线（MAX-M10S 贴 / LC79H 不贴）——**当前硬接 GND，是 V0.2 的待改项**；
+   * **Pin 1 为 GND**，**Pin 6 为 V_BCKP**（后备输入：MAX-M10S 1.65~3.6V / LC79H 1.62~1.98V；硬件后备电流手册值 28 µA @3.3V，1.9V 下待实测），**Pin 8 为 VCC**（主输入：MAX-M10S 1.76~3.6V / LC79H 1.75~1.98V）；**Pin 7 为 V_IO**（MAX-M10S 经 R13 接 1.8V 域；LC79H 该脚为 RESERVED）；**Pin 15 `VIO_SEL` 经 R29 (0Ω) 接 GND** 才是 1.8V I/O 模式（悬空＝3.3V 模式；装 LC79H 时拆掉 R29）；
    * **硬件基线规定：Pin 6 `V_BCKP` 直连系统常通 1.9V 主电源轨 (由 SGM6040A 直供)**；
    * 当受控 LDO SGM2045-1.8 切断模组主电源（Pin 8 VCC）时，Pin 6 `V_BCKP` 维持内部 RTC 运行与低功耗 SRAM 中的星历时钟状态以支持热启动；
    * **Pin 4 (TIMEPULSE) 悬空**，裁撤硬件 1PPS 授时，释放主控引脚。
@@ -166,7 +167,7 @@
    * **硬件跳线方案（`Hardware/Schematic/Life_GPS_SCH_V0.1.SVG` 规范）**：
      - 主控 MCU 的唤醒控制信号 **`GPS_WAKE`（P1.09 / Pin 37）** 分别通过两个预留阻容跳线位连接至模组管脚：
        - **【MAX-M10S 默认装配方案】**：贴片焊接 **R28 = 100Ω**，**R27 为 NC (空贴)**；`GPS_WAKE` 经 R28 直达模组 Pin 5 (`EXTINT`)，Pin 18 悬空；
-       - **【LC79H 兼容装配方案】**：**R27 默认 NC**，仅当需要用 `WAKEUP` 唤醒时才贴 **100Ω**（原理图标注 `100R For LC79H`）；**R28 与 R13 均为 NC (空贴)**，Pin 5 / Pin 7 / **Pin 15（对地跳线亦须 NC）** 悬空。
+       - **【LC79H 兼容装配方案】**：**R27 默认 NC**，仅当需要用 `WAKEUP` 唤醒时才贴 **100Ω**（原理图标注 `100R For LC79H`）；**R28、R13 与 R29（Pin 15 对地跳线）均为 NC (空贴)**。
          ⚠️ **电平余量为负**：Quectel 手册 `WAKEUP VIH(min) = 1.62 V`，而 `nRF54L15` 在 1.9V 下 `VOH,SD(min)=VDD−0.4=1.5 V` → 最坏情况差 **−120 mV**；若启用该唤醒路径，须实测确认或加 1.8V 上拉/电平转换。
    * **固件协议自适应**：
      - 唤醒时序统一由主控 P1.09 驱动高电平脉冲，硬件层透明解耦；
@@ -174,25 +175,24 @@
 
 ---
 
-### 2.4 6轴惯性测量单元 (IMU)：STMicroelectronics LSM6DSVTR
-* **传感器规格**：3 轴数字加速度计（±2g 至 ±16g） + 3 轴数字陀螺仪（±125 至 ±4000 dps）。
-* **功耗分级管理（实事求是按运行模式核算）**：
-  * **模式 1：深度静止待机模式**：陀螺仪完全关闭，加速度计配置为低频运动唤醒模式（**15Hz LPM1，典型电流仅约 7.5 µA**，由 INT1 引脚唤醒主控）；
-  * **模式 2：日常活动与计步**：陀螺仪休眠，开启 60Hz LPM1 加速度计，电流仅 **$\approx 17\text{ }\mu\text{A}$**；
-  * **模式 3：PDR 惯导接管与高精运动**：全开加速度计 + 陀螺仪 + SFLP 姿态递推，低功耗 Combo 模式下电流为 **$0.65\text{ mA} \sim 0.90\text{ mA}$**；
-* **SFLP 姿态四元数与 MCU 固件算法分工**：
-  * LSM6DSVTR 内置 SFLP（Sensor Fusion Low Power）内核，以 60Hz 硬件输出 6 轴 Game Rotation Vector 姿态四元数（增量功耗仅 14µA）；
-  * **单 INT1 中断架构**：传感器 Pin 4 (INT1) 连接主控 **P0.02（Pin 27，GPIOTE30）**，负责静止唤醒及数据就绪中断；
-  * **MCU 固件轻量级计步与运动判别**：运动模式检测与步数统计直接由 nRF54L15 固件驱动层轻量级执行，简化硬件依赖；
-  * **磁异常检测与自适应抑制**：Sensor Hub 采集 LIS2MDL 磁力计数据进 FIFO，主控在磁场平稳时进行航向校准，在强磁异常环境下自适应切断地磁校准。EKF 绝对航向纠偏，客观表述为“有效抑制并减缓长期偏航漂移”，绝不在工程文档中承诺物理上不可达到的“彻底消除漂移”；
-* **扩展能力 (Sensor Hub)**：具备独立 I2C Master，挂载三轴磁力计（**LIS2MDL**）与高精度气压计（**BMP388**），数据统一打包进芯片内部高达 **4.5 KB 的 Smart FIFO**（系统可按需配置 1KB 阈值中断或深度批处理缓冲），支持 MCU 突发批量读取。
-* **触摸感知**：具备 **Qvar** 静电电荷变化检测通道，支持设备外壳轻击滑动手势及人体穿戴检测。
+### 2.4 6轴惯性测量单元 (IMU)：STMicroelectronics LSM6DSRTR
+* **传感器规格与引脚兼容**：3 轴数字加速度计（±2g 至 ±16g） + 3 轴数字陀螺仪（±125 至 ±4000 dps），LGA-14（$2.5\times 3.0\text{ mm}$）封装，与原理图初期标注的 `LSM6DSVTR` 引脚完全兼容（`WHO_AM_I = 0x6B`，依据 ST 官方手册 `DS11976`）。
+* **原生 ODR 与功耗分级管理**：
+  * **原生采样率档位**：`12.5 / 26 / 52 / 104 / 208 Hz`；系统取 **26 Hz 原生档**，使 **26 点滑动窗口恰好等于 1.000 s**（无抽取畸变，完美匹配 §7.5 ZUPT 1.0s 窗口判据）；
+  * **模式 1：深度静止待机模式**：陀螺仪完全关闭，加速度计配置为 12.5Hz/26Hz 超低功耗模式（由 INT1 引脚唤醒主控）；
+  * **模式 2：日常活动与计步**：陀螺仪休眠，仅开启低功耗加速度计与硬件/固件计步器；
+  * **模式 3：PDR 惯导接管与高精运动**：开启 26Hz 加速度计（±4g） + 陀螺仪（±1000 dps） + Sensor Hub 外挂传感采集；
+* **固件姿态解算与计步分工**：
+  * **单 INT1 中断架构**：传感器 Pin 4 (INT1) 连接主控 **P0.02（Pin 27，GPIOTE30）**，负责静止唤醒及数据就绪（`XLDA | GDA`）通知；
+  * **步伐检测与 Weinberg 步长**：支持芯片内置硬件计步器（pedometer）及 MCU 固件基于机体合加速度动态峰峰值的步伐检测与 Weinberg 步长递推；
+  * **磁异常检测与自适应抑制**：Sensor Hub 采集 LIS2MDL 磁力计数据（`SENSOR_HUB_1..6`），主控在磁场平稳时进行航向校准，在强磁异常环境下（模长偏离基准 $>30\%$）自适应切断地磁校准。客观表述为“有效抑制并减缓长期偏航漂移”，绝不在工程文档中承诺物理上不可达到的“彻底消除漂移”；
+* **扩展能力 (Sensor Hub)**：具备独立 I2C Master（`MASTER_CONFIG`），挂载三轴磁力计（**LIS2MDL**，50Hz）与高精度气压计（**BMP388**，25Hz），通过 `SENSOR_HUB_1..12` 寄存器组供 MCU 突发批量读取。
 
 ---
 
 ### 2.5 板载 64MB (512Mb) SPI NOR Flash：Winbond W25Q512NW (1.8V 宽压旗舰)
-为配合全系统 1.9V 超低功耗供电架构并实现**“存储整机物理生命周期一生轨迹”**的核心愿景，系统将板载存储选型锁定为华邦工业级 1.8V 宽压 64MB SPI NOR Flash：
-* **芯片型号**：Winbond **`W25Q512NWEIQ`**（512M-bit / 64 Mega-bytes，WSON-8 6×8mm 紧凑封装，额定工作电压 **$1.65\text{V} \sim 1.95\text{V}$**，完美兼容 1.9V 主供电轨）；
+为配合全系统 1.9V 超低功耗供电架构并实现**“存储整机物理生命周期一生轨迹”**的核心愿景，系统将板载存储选型锁定为华邦工业级 1.8V 宽压 SPI NOR Flash，并在固件层通过 **SFDP 运行时探测同时兼容 32MB (`W25Q256`) 与 64MB (`W25Q512NWEIQ`)**：
+* **芯片型号与运行时自适应**：BOM 基线为 Winbond **`W25Q512NWEIQ`**（512M-bit / 64MB，WSON-8 6×8mm，工作电压 **$1.65\text{V} \sim 1.95\text{V}$**）；样板贴装 **32MB (`W25Q256`)** 亦可无缝工作，固件按 `flash_get_page_count()` 动态将最高 `1 MiB` 划为 OTA `slot1`，其余 `容量 - 1 MiB`（31 MiB 或 63 MiB）划为轨迹区；
 * **物理可靠性与标准 4 线 SPI 规范**：
   * 相比 SPI NAND Flash，NOR 架构**出厂零坏块无坏块管理（BBM）与 ECC 纠错负担**，支持标准 256 字节页编程与 4KB 扇区擦除；
   * **标准 4 线 SPI 架构**：硬件上仅占用主控 `P2.05 (CS)``P2.01 (CLK)``P2.02 (MOSI)``P2.04 (MISO)` 4 个 GPIO；芯片 Pin 3 (`/WP`) 与 Pin 7 (`/HOLD`) 在 PCB 硬件原理图上直接连接至 `BT_1V9` 主电轨，**零占用主控 GPIO，彻底消除引脚定义冲突**；
@@ -1020,7 +1020,7 @@ flowchart TD
 
 ```
 Life_GPS/                                        # 单仓 Monorepo：硬件 + 固件 + Android + 协议
-├── .github/workflows/                           # protocol.yml / docs.yml / app.yml
+├── .github/workflows/                           # protocol.yml / docs.yml / app.yml / firmware.yml
 ├── App/                                         # LIFE GPS Android 调试工具与产品终端（Kotlin + Compose）
 │   ├── app/src/main/java/com/lifegps/app/       # 单模块骨架：debug 页面 + Fake 数据
 │   ├── app/src/test/                            # JVM 单测
@@ -1028,13 +1028,13 @@ Life_GPS/                                        # 单仓 Monorepo：硬件 + �
 │   ├── docs/                                    # 入门/架构
 │   ├── gradle/ + gradlew                        # Gradle 8.9 wrapper
 │   └── README.md
-├── Firmware/                                    # Zephyr RTOS / nRF Connect SDK
+├── Firmware/                                    # Zephyr RTOS / nRF Connect SDK v3.4.2
 │   ├── west.yml                                 # 固定 NCS/Zephyr 与模块 revision
 │   ├── boards/lifegps/                          # 自定义 nRF54L15 板级定义
-│   ├── src/                                     # 电源状态机、GNSS/IMU、PDR、存储、BLE
+│   ├── src/                                     # 电源状态机、GNSS/IMU、PDR、存储、遥测
 │   ├── include/generated/                       # 协议生成 C 头文件（CI 校验）
 │   ├── tests/                                   # native_sim / twister 单测
-│   ├── docs/PARTITIONS.md                       # 内部/外部 Flash 分区与 OTA
+│   ├── docs/                                    # M1_BRINGUP.md 与 PARTITIONS.md
 │   └── README.md
 ├── Hardware/                                    # 硬件工程（立创 EDA / KiCad）
 │   ├── Schematic/                               # Life_GPS_SCH_V0.1.SVG 等
@@ -1074,16 +1074,16 @@ Life_GPS/                                        # 单仓 Monorepo：硬件 + �
 ### 阶段一：硬件架构基线闭环冻结 (Phase 1: Architecture Baseline Frozen - SSOT Established)
 > 🔒 **架构基线达成**：经多轮深度工程技术评审，本阶段架构基线已全部收敛闭环，正式确立为全项目单一真相源（SSOT），进入 Phase 2 原理图与版图设计阶段：
 
-- [x] **建立全项目唯一硬件配置基线表**：主 README、Doc/Hardware/README、架构图与引脚分配表全部对齐同一套元器件料号（主控 nRF54L15-QFAA QFN48MAX-M10S-00B 1.8VW25Q512NW 1.8VSGM6040A TDFN-8L 1.9VSGM2045-1.8 XTDFN）封装时钟接口与供电。
+- [x] **建立全项目唯一硬件配置基线表**：主 README、Doc/Hardware/README、架构图与引脚分配表全部对齐同一套元器件料号（主控 nRF54L15-QFAA QFN48、MAX-M10S-00B 1.8V、LSM6DSRTR 6轴 IMU、W25Q512NW/W25Q256 SFDP 自适应、SGM6040A TDFN-8L 1.9V、SGM2045-1.8 XTDFN）封装时钟接口与供电。
 - [x] **nRF54L15 QFN48 引脚交叉核对（V0.2）**：依据 Datasheet Table 79 锁定 49 脚映射并迁入 `Doc/Hardware/Pinmap_Main_V0.2.md`；CHG_STAT=P0.04、CHG_EN=P0.03、SPI_MOSI=P2.02、SPI_MISO=P2.04、GPS_WAKE=P1.09；Flash 标准 4 线 SPI（SPIM00），/WP 与 /HOLD 直连 1.9V。
 - [x] **GNSS 分层状态机与上电时序设计闭环**：确立冷启动 60s 独立超时窗口冷启动首次 Fix 后保持通电 35s 广播星历接收机制，以及热启动 3.5s -> 8s -> 15s 自适应延展与阶梯指数退避（120s/300s/深度休眠）接管时序。
 - [x] **GNSS 模组真实引脚与备用供电明确**：依据原厂手册确立 Pin 1 为 GNDPin 6 为 VBATPin 8 为 VCC；Pin 6 直连常通 1.9V 主电源；其硬件后备电流按手册 28 µA @3.3V 计入待机预算（1.9V 下待实测）。
 - [x] **射频前端决策（V0.2 定稿）**：GNSS 走**无源天线直通**（U7 → C47 → C46 → RF_IN），板载 LNA(ATR2652)+SAW(B39162B2651P810) **本版 DNP**；BLE 侧按 `nRF54L15` Figure 180 三级匹配接 2.4GHz Chip 天线 L3；保留 Option B 焊盘与互斥 BOM。
-- [x] **惯导融合架构概念纠偏与 SFLP 功耗规范**：明确 LSM6DSVTR SFLP 为纯 6 轴姿态解算（Game Rotation Vector），规范 60Hz 输出下增量功耗为 14µA；明确三层融合分工与固件级磁异常检测降权机制；去掉“彻底消除偏航漂移”承诺。
-- [x] **PDR 零速更新 (ZUPT) 双判据与 8-bit Flag 规范**：确立滑动窗口合加速度方差 $\sigma_a^2 < 0.005\text{g}^2$ 与角速度模长 $\|\boldsymbol{\omega}\| < 0.08\text{rad/s}$ 持续 10s 绝对锁死坐标递推机制；固化 32 字节主记录中的 8-bit status_flags 状态与质量位图。
+- [x] **惯导融合架构与 LSM6DSRTR 26Hz 基线确立**：锁定 U12 为 LSM6DSRTR（26Hz 原生 ODR，内置计步器/FSM + MCU 固件姿态融合），明确三层融合分工与固件级磁异常检测降权机制；去掉“彻底消除偏航漂移”承诺。
+- [x] **PDR 零速更新 (ZUPT) 双判据与 8-bit Flag 规范**：确立 26Hz（$N=26, T=1.000\text{s}$）滑动窗口合加速度方差 $\sigma_a^2 < 0.005\text{g}^2$ 与角速度模长 $\|\boldsymbol{\omega}\| < 0.08\text{rad/s}$ 持续 10s 绝对锁死坐标递推机制；固化 32 字节主记录中的 8-bit status_flags 状态与质量位图。
 - [x] **高精度连续模式功耗重算**：基于 SGM6040A(1.9V) + SGM2045-1.8(1.8V) 二级拓扑与**无源天线直通版**（无 LNA），电池侧 `8.26(GNSS) + 2.8(SoC+Flash+BLE) + 0.4(IMU) ≈ 11.46 mA`，900mAh 有效电量下理论连续记录 **≈78.5 小时**。（早期 `29.6mA / 30.4 小时` 等估算已作废）
 - [x] **典型生活画像与存储容量数学模型闭环**：确立都市人 24 小时生活画像（理论 **4.9~13.5 mAh/天**，对应 **66~184 天**，见 §6.2；**尚未实测**）；给出 64MB Flash 满足 7~14 年的自适应工况计算依据，警示高精模式边界；废除全局布隆过滤器，改用时间滑动窗口限频队列。
-- [x] **引脚与时钟表述**：QFN48 共 **31 个 GPIO（P0×5 / P1×15 / P2×11）**，未用 6 脚（Pin 3/4/11/14/18/42）；NFC 脚（P1.02/P1.03）须 `NFCT.PADCONFIG` 释放才可作 GPIO；晶振改用片内 INTCAP（CL 6~9pF），不再使用外挂电容公式。
+- [x] **引脚与时钟表述**：QFN48 共 **31 个 GPIO（P0×5 / P1×15 / P2×11）**，未用 6 脚（P2.00/03/06/08/09/10）；NFC 脚（P1.02/P1.03）经 `&uicr { nfct-pins-as-gpios; }` 释放作 SPIM22；晶振改用片内 INTCAP（CL 6~9pF），不再使用外挂电容公式。
 
 #### 投板前必须完成的五项硬性验收标准 (Hard Acceptance Criteria)：
 1. **GNSS 状态机上电时序与防倒灌实测漏电验收**：
@@ -1091,7 +1091,7 @@ Life_GPS/                                        # 单仓 Monorepo：硬件 + �
 2. **GNSS 冷启动与星历状态保持有效性实测验收**：
    - 实测冷启动下模组持续供电并在 60s 内成功获得首定，首定后保持通电 35s 接收广播星历帧；随后切断 Pin 8 主电 30 分钟（保留 Pin 6 VBAT 1.9V），再次唤醒时实测能否在 $\le 3.5\text{ s}$ 内完成热启动首捕秒定；
 3. **整机待机底噪与高精连续电流仪器实测验收**：
-   - 使用 Nordic PPK2 功耗分析仪实测深度静止模式整机电池端输入电流，必须稳定在 $\le 25\text{ }\mu\text{A}$（预算含 GNSS `V_BCKP` 28µA@3.3V 折算 + IMU 15Hz LPM1，**待实测**）；高精度连续工作电流的设计目标为 $\approx 11.5\text{ mA}$（GNSS 直通版 **待实测**）；
+   - 使用 Nordic PPK2 功耗分析仪实测深度静止模式整机电池端输入电流，必须稳定在 $\le 25\text{ }\mu\text{A}$（预算含 GNSS `V_BCKP` 28µA@3.3V 折算 + IMU 低功耗待机，**待实测**）；高精度连续工作电流的设计目标为 $\approx 11.5\text{ mA}$（GNSS 直通版 **待实测**）；
 4. **Flash 掉电 Journaling 双备份与原子提交无损恢复验收**：
    - 在夜间归档压缩包写入期间执行随机强行断电拔电池 100 次，重新上电后验证暂存区数据 0 损坏0 丢失，系统能够无损回滚并重试归档；
 5. **铁磁异常检测与 PDR 航向自适应降权实测验收**：
@@ -1099,12 +1099,12 @@ Life_GPS/                                        # 单仓 Monorepo：硬件 + �
 - [x] **硬件原理图进度（V0.1 为 nRF52840 历史版本；V0.2 = nRF54L15，导出件待归档）**：
   - [x] 完成 SGM4056 充电电路（$R_{IREF}=34.0\text{k}\Omega$ 设 350mA 恒流，$R_{IMIN}=340\text{k}\Omega$ 设约 29 mA 截止，芯片自带 115℃ 热调节）、MCU P0.04 状态检测与 P0.03 EN 充电控制；
   - [x] 完成 SGM6040A 60nA 纳安级降压 DCDC 电路（$R_{SET}=909\Omega$ 设定 1.9V 供电轨；**Pin 6 STOP 悬空（片内 490kΩ 下拉）**，改版建议就近接地）；
-  - [ ] 传感器（LSM6DSVTR、LIS2MDL、BMP388）1.9V 磁珠+电容 π 型低噪滤波供电网络——**V0.2 现为 `R5/R6/R7=0Ω` 直连，磁珠为改版项**；
+  - [ ] 传感器（LSM6DSRTR、LIS2MDL、BMP388）1.9V 磁珠+电容 π 型低噪滤波供电网络——**V0.2 现为 `R5/R6/R7=0Ω` 直连，磁珠为改版项**；
   - [x] 完成 SGM2045-1.8 受控 LDO（专供 GNSS `VCC`+`V_IO`）与直通射频前端电路（`U5 ATR2652`/`Q1 SAW` 本版 **DNP**；⚠️ LDO 输入现接 1.9V，压差仅 100mV，92dB PSRR 需改接 VBAT 才能兑现；1.8V/1.9V 电平自适应）；
-  - [x] **GNSS 默认料 = u-blox MAX-M10S-00B**（固件默认 UBX）；同时预留 Quectel LC79H 可选兼容位（R13 0Ω / R28 100Ω / R27 100Ω-NC / **R29 0Ω 为 `VIO_SEL` 对地跳线，装 LC79H 时拆掉**）。**Pin 15 现直接硬接 GND（MAX-M10S 必需）→ 若真要用 LC79H，需先增补第 4 只对地跳线**；
+  - [x] **GNSS 默认料 = u-blox MAX-M10S-00B**（固件默认 UBX）；同时预留 Quectel LC79H 可选兼容位（R13 0Ω / R28 100Ω / R27 100Ω-NC / **R29 0Ω 为 `VIO_SEL` 对地跳线，装 LC79H 时拆掉**）；
   - [x] 完成 nRF54L15 QFN48 最小系统（DCC/DECD 4.7µH 电感、DECA/DECRF 经磁珠、片内负载电容晶振）与 7P 排针 H1 调试接口（DEBUG_TX=P0.00、DEBUG_RX=P0.01）；
-  - [x] 完成 LSM6DSVTR 与 Sensor Hub（LIS2MDL 电子罗盘、BMP388 气压计）AUX I2C 总线连接；
-  - [ ] W25Q512NW 64MB 1.8V SPI Flash 标准 4 线 8MHz 低噪声布线（**待改版**：Pin 3/7 现直连 1.9V，建议改 10kΩ 上拉；`/CS` 现依赖固件片内上拉）；
+  - [x] 完成 LSM6DSRTR 与 Sensor Hub（LIS2MDL 电子罗盘、BMP388 气压计）AUX I2C 总线连接；
+  - [ ] W25Q512NW / W25Q256 1.8V SPI Flash 标准 4 线 8MHz 低噪声布线（**待改版**：Pin 3/7 现直连 1.9V，建议改 10kΩ 上拉；`/CS` 现依赖固件片内上拉）；
   - [x] 完成双按键（SW7 `P1.06`、SW1 `P1.08`，各串 100Ω、**依赖固件片内上拉，无 RC 消抖电容——固件需软件消抖**）、三色 LED（`DTC143ZETL` 带阻三极管驱动）及 1M/330k 电池分压采样电路（`P1.11 / AIN4`）。
 - [ ] **4 层高密度沉金 PCB 设计与打样**：
   - [ ] 顶层板角为 BLE Chip 天线 L3 与 GNSS 无源天线 U7 分别预留全层掏空净空区，GNSS 馈电端补 0402 π 型调谐位与低结容 ESD，馈线 50Ω 共面波导阻抗控制；
@@ -1114,14 +1114,14 @@ Life_GPS/                                        # 单仓 Monorepo：硬件 + �
 ### 阶段二：固件驱动算法融合与数据流落地 (Phase 2: Firmware & Algorithms)
 - [x] **数据结构与时间系统设计**：定义规避 Y2038 溢出的 Life_GPS 2020 Epoch，确立支持 1~20Hz 高频记录的 32 字节定长轨迹结构体（含毫秒偏移与气压楼层），解耦独立的 16 字节定长 BLE 环境信标事件结构体，全部引入 `_Static_assert` 编译期静态断言。
 - [ ] **Zephyr RTOS 超低功耗电源调度框架与系统可靠性**：
-  - [ ] **实现两个按键长按 8 秒开/关机状态机**：落地关机 System OFF 模式（整机待机 <1µA），实现关机反向慢闪（绿3次->蓝3次->红3次）与开机正向慢闪（红3次->蓝3次->绿3次）LED 提示灯语；
-  - [ ] **启用 nRF54L15 硬件看门狗 (WDT 30s)**：配置 LFCLK 独立驱动、System ON 休眠持续计数、主循环分层任务喂狗，以及复位后 RESETREAS 异常日志自愈写入；
-  - [ ] 实现 GNSS 脉冲上电初始化与 **UBX** 协议栈（MAX-M10S），落地分层状态机（冷启动 60s 超时、热启动自适应延展与指数退避接管）；NMEA/PAIR 降级兼容**仅在启用备份料 LC79H 时才需要**，默认不实现；
-  - [ ] 实现待机计步（15Hz LPM1 加速度计 ~7.5µA 静止唤醒 / 60Hz LPM1 ~17µA 日常活动）与 PDR 接管（全开陀螺仪+加速度计 Combo 模式 0.65~0.9mA）两档自适应调度。
+  - [ ] **实现两个按键长按 8 秒开/关机状态机**：已落地运行期长按 8s 关机 System OFF 模式与正/反向慢闪 LED 提示灯语；待 M2 开启 GPIO SENSE 唤醒与开机 8s 防误触；
+  - [x] **启用 nRF54L15 硬件看门狗 (WDT 30s)**：配置 LFCLK 独立驱动、System ON 休眠持续计数、5s 监督窗口分层线程喂狗，以及复位后 hwinfo 异常原因上报；
+  - [x] 实现 GNSS 脉冲上电初始化与 **UBX** 协议栈（MAX-M10S，38400 默认 + 9600 回退），落地分层状态机（冷启动 60s 超时、35s 星历保持、热启动脉冲 3.5s/8s/15s、正常周期休眠与指数退避接管）；
+  - [ ] 实现待机计步与 PDR 接管两档自适应功耗调度。
 - [ ] **PDR 惯导与三维环境解算固件**：
-  - [ ] **落地背面贴装传感器旋转矩阵与机体坐标系对齐**：按照 GPS 天线为正面、USB 向下基准，实施 $\mathbf{R}_{\text{IMU}} = \mathbf{R}_{\text{MAG}} = \begin{bmatrix}0 & -1 & 0 \\ 1 & 0 & 0 \\ 0 & 0 & -1\end{bmatrix}$，利用硬件旋转 90° 达成 Sensor Hub 内部 1:1 同向免重映射；
-  - [ ] 移植 ST 官方 SFLP 驱动并实现固件计步算法，实现 6 轴姿态 60Hz 硬件递推 (SFLP 14µA)；
-  - [ ] 在 nRF54L15 固件端实现 LIS2MDL 磁力计硬铁/软铁椭球拟合校准、机体坐标系对齐以及室内铁磁扰动检测自适应降权；
+  - [x] **落地背面贴装传感器旋转矩阵与机体坐标系对齐**：按照 GPS 天线为正面、USB 向下基准及台架四姿态实测，实施 $\det=+1$ 的正交旋转矩阵 $\mathbf{R}_{\text{IMU}} = \mathbf{R}_{\text{MAG}} = \begin{bmatrix}0 & -1 & 0 \\ -1 & 0 & 0 \\ 0 & 0 & -1\end{bmatrix}$；
+  - [x] 实现 LSM6DSRTR 26Hz 采样、ZUPT 1.000s 滑动窗锁死、步伐检测与 Weinberg 步长递推；
+  - [ ] 在 nRF54L15 固件端实现 LIS2MDL 磁力计硬铁/软铁椭球拟合校准及室内铁磁扰动检测自适应降权闭环；
   - [ ] 实现 Weinberg 步长模型在线 GPS 标定与冷启动三级兜底逻辑（先验默认K值与置信度衰减）；
   - [ ] 基于 BMP388 气压计构建垂直高程滤波与电梯/楼梯识别三维状态机。
 - [ ] **可靠文件系统与硬件安全加密**：

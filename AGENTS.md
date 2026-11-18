@@ -9,23 +9,23 @@
 
 ## 0. 项目事实（AI 必须先读，不得假设）
 
-| 项 | 实际状态（2026-11-11 核对） |
+| 项 | 实际状态（2026-11-18 核对） |
 |---|---|
 | 仓库根 | `/root/projects/Life_GPS`（pi-web 会话目录 `--root-projects-Life_GPS--`） |
 | 远端 | `https://github.com/suntyrael/Life_GPS.git`，分支 `main` |
 | 版本锁定 | `versions.yaml` **已锁定**：`distribution: nrf-connect-sdk`、`revision: v3.4.2`（LTS）、`sdk: ncs-toolchain-v3.4.2`、`kernel: 4.4.2` |
-| 硬件 | **Main_V0.2**（2026-11-11 原理图 `Hardware/Schematic/Life_GPS_V0.2_SCH.pdf` + 网表 `Hardware/Schematic/Netlist_Main_V0.2_2026-11-11.tel`）；引脚 SSOT = `Doc/Hardware/Pinmap_Main_V0.2.md` |
-| 固件状态 | `Firmware/` **只有 README/docs/tests 的骨架**，无 `CMakeLists.txt`、无 `west.yml`、无 `prj.conf`、无源码 |
+| 硬件 | **Main_V0.2**（2026-11-11 原理图 `Hardware/Schematic/Life_GPS_V0.2_SCH.pdf` + 网表 `Hardware/Schematic/Netlist_Main_V0.2_2026-11-11.tel`）；引脚 SSOT = `Doc/Hardware/Pinmap_Main_V0.2.md`；6 轴 IMU 实贴 **`LSM6DSRTR`**（26Hz ODR，无 SFLP）；外部 NOR Flash 运行时按 SFDP 自适应 **32MB (`W25Q256`) / 64MB (`W25Q512NW`)** |
+| 固件状态 | `Firmware/` **已落地 M1/M1.5 工程**（含 `CMakeLists.txt`、`west.yml`、`prj.conf`、`boards/lifegps/lifegps`、`src/**` 与 `tests/lifegps.*` `native_sim` 单测套件） |
 | 芯片 | ✅ **已确认：Nordic `NRF54L15-QFAA-R`（nRF54L15-QFAA，QFN48，49 脚含 EP）**。规格书 `Doc/Hardware/Datasheets/nRF54L15_nRF54L10_nRF54L05_Datasheet_v1.0.pdf`。nRF52840 仅出现在 V0.1 历史文档中，**不得用于新代码/新配置** |
-| 现有 CI | `.github/workflows/`：`protocol.yml`、`docs.yml`、`app.yml`。**没有 `firmware.yml`** |
+| 现有 CI | `.github/workflows/`：`protocol.yml`、`docs.yml`、`app.yml`、**`firmware.yml`（已启用）** |
 | 本地编译 | **无**。项目约定「只使用 GitHub 编译」（`.github/workflows/README.md`）。本地不装 Android SDK / Gradle / west / Zephyr SDK |
-| 固件 CI 计划 | `.github/workflows/README.md` 列了待加的 `firmware.yml`（Zephyr 构建、native_sim、MCUboot 体积/分区门禁）与 `release.yml`，**均尚未建立** |
+| 固件 CI 状态 | `.github/workflows/firmware.yml` **已上线**（协议生成物漂移检查、NCS v3.4.2 容器构建 `lifegps/nrf54l15/cpuapp`、体积门禁 `text+data <= 712 KB` / `data+bss <= 256 KB`、`twister -p native_sim` 单测）；`release.yml` 与 MCUboot sysbuild 门禁尚待建立 |
 
-**推论（必须遵守）**：当前任何固件改动都**不会触发编译门禁**。AI 不得声称「已编译通过」「已验证」，
-必须在输出中明确标注「本次改动未经编译验证」，并提示用户是否需要新增 `firmware.yml`（新增文件也需先确认）。
+**推论（必须遵守）**：本地无编译工具链，任何固件/App 改动在本地均**未经编译验证**。AI 不得声称在本地「已编译通过」，
+必须在输出中明确标注「本地未编译，预计触发 `firmware.yml` / `app.yml`，最终以 GitHub Actions 结果为准」。
 
 **引脚与硬件口径（2026-11-11 起）**：任何引脚/电平/供电相关结论，一律以
-`Doc/Hardware/Pinmap_Main_V0.2.md`（引脚 SSOT）+ 最新网表 + 原厂规格书为准；文档之间冲突时按此顺序裁定。
+`Doc/Hardware/Pinmap_Main_V0.2.md`（引脚 SSOT）+ 台架实测记录 `Firmware/docs/M1_BRINGUP.md` + 最新网表 + 原厂规格书为准；文档之间冲突时按此顺序裁定。
 
 ---
 
@@ -47,10 +47,10 @@
 - **禁止**在本地执行 `west build`、`cmake`、`ninja`、`make fw`、`./gradlew`、
   `cargo build`、`twister` 等构建类命令；本机没有工具链，执行只会产生误导性失败。
 - **允许**只读自检（`git status`、`git diff`、`grep -R`、`python3 tools/protocol-gen/validate.py`、
-  `python3 tools/ci/check_links.py`）——这些不编译，且是现有 CI 的同款检查。
+  `python3 tools/protocol-gen/gen_c.py --check`、`python3 tools/ci/check_links.py`）——这些不编译，且是现有 CI 的同款检查。
 - AI 输出中必须写明：
   1. 本次改动预计触发哪个 workflow（按 `.github/workflows/*.yml` 的 `on.push.paths` 判断）；
-  2. 若涉及 `Firmware/**`：**明确警告「仓库无 firmware.yml，改动不会被编译」**；
+  2. 若涉及 `Firmware/**`：**明确注明「本地未编译，由 `.github/workflows/firmware.yml` 在云端执行构建与 `native_sim` 单测」**；
   3. CI 待检查项清单，以及「本地未编译，最终以 Actions 结果为准」。
 - push 后由用户在 Actions 页面看结果；AI 不得替用户判断 CI 已通过。
 - `versions.yaml` 已锁定 **NCS v3.4.2 / toolchain ncs-toolchain-v3.4.2 / kernel 4.4.2**；生成代码必须相对该版本查证。

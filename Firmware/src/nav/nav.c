@@ -249,3 +249,75 @@ bool lgps_pdr_is_frozen(const struct lgps_pdr *pdr)
 
 	return pdr->frozen;
 }
+
+void lgps_step_detector_reset(struct lgps_step_detector *det)
+{
+	if (det == NULL) {
+		return;
+	}
+
+	memset(det, 0, sizeof(*det));
+}
+
+bool lgps_step_detector_update(struct lgps_step_detector *det, const float accel_g[3],
+			       uint32_t now_ms, float *delta_accel_g)
+{
+	float accel_sq_g2;
+	float norm_g;
+
+	if ((det == NULL) || (accel_g == NULL)) {
+		return false;
+	}
+
+	accel_sq_g2 = (accel_g[0] * accel_g[0]) + (accel_g[1] * accel_g[1]) +
+		      (accel_g[2] * accel_g[2]);
+	norm_g = sqrtf(accel_sq_g2);
+	if (!lgps_float_is_finite(norm_g)) {
+		return false;
+	}
+
+	if (det->have_peak &&
+	    ((uint32_t)(now_ms - det->peak_ms) > LGPS_STEP_MAX_INTERVAL_MS)) {
+		det->have_peak = false;
+	}
+
+	if (!det->have_peak) {
+		if (norm_g >= LGPS_STEP_PEAK_THRESHOLD_G) {
+			det->have_peak = true;
+			det->peak_norm_g = norm_g;
+			det->valley_norm_g = norm_g;
+			det->peak_ms = now_ms;
+		}
+		return false;
+	}
+
+	if (norm_g > det->peak_norm_g) {
+		det->peak_norm_g = norm_g;
+		det->valley_norm_g = norm_g;
+		det->peak_ms = now_ms;
+		return false;
+	}
+
+	if (norm_g < det->valley_norm_g) {
+		det->valley_norm_g = norm_g;
+	}
+
+	if (det->valley_norm_g <= LGPS_STEP_VALLEY_THRESHOLD_G) {
+		float span_g = det->peak_norm_g - det->valley_norm_g;
+		bool refractory_ok = (!det->have_step) ||
+				     ((uint32_t)(now_ms - det->last_step_ms) >=
+				      LGPS_STEP_MIN_INTERVAL_MS);
+
+		det->have_peak = false;
+		if ((span_g >= LGPS_STEP_DELTA_ACCEL_MIN_G) && refractory_ok) {
+			det->last_step_ms = now_ms;
+			det->have_step = true;
+			if (delta_accel_g != NULL) {
+				*delta_accel_g = span_g;
+			}
+			return true;
+		}
+	}
+
+	return false;
+}

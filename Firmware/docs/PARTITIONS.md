@@ -13,51 +13,47 @@
 
 `slot1` **不执行**，也不做 XIP；它只在 OTA 期间被 MCUboot 读写。
 
-## 内部 RRAM 1524KB（nRF54L15）
+## 内部 RRAM 1524KB（nRF54L15，NCS v3.4.2 标准布局）
 
-> ⚠️ 下表为 nRF52840（1MB Flash）时代的分区方案，**迁移到 nRF54L15（1524KB RRAM）后必须重算**，M1 出表前不得作为实现依据。
-
-| 区域 | 偏移 | 大小 | 说明 |
-| :--- | :--- | :--- | :--- |
-| MCUboot | `0x00000` | 64KB | 含 SPI NOR/flash map；M1 实测可调 |
-| slot0 | `0x10000` | 896KB | 当前运行固件；镜像预算 860KB |
-| scratch | `0xF0000` | 32KB | swap 暂存 |
-| settings/NVS | `0xF8000` | 32KB | 绑定/配置 |
-
-## 外部 64MB（W25Q512，4KB sectors）
+依据 `dts/vendor/nordic/nrf54l15_cpuapp_partition.dtsi` 与 `.github/workflows/firmware.yml` 体积门禁：
 
 | 区域 | 偏移 | 大小 | 说明 |
 | :--- | :--- | :--- | :--- |
-| 轨迹暂存/归档/索引 | `0x0000000` | 63MB | App 只写此区；AES-CTR |
-| OTA slot1 | `0x3F00000` | 1MB | MCUboot 只写此区；只签名 |
+| `boot_partition` (MCUboot) | `0x00000` | 62KB (`0x0F800`) | 引导加载程序 |
+| `slot0_partition` | `0x0F800` | 712KB (`0xB2000`) | 当前运行固件槽；CI 门禁 `text + data <= 712 KB` |
+| `slot1_partition`（内部备用） | `0xC1800` | 712KB (`0xB2000`) | 内部双槽备份区（若不启用外部 Flash slot1 时直接可用） |
+| `storage_partition` | `0x173800` | 36KB (`0x09000`) | Settings / NVS 绑定与配置存储 |
 
-## DTS 参考
+## 外部 SPI NOR Flash（运行时 SFDP 容量自适应：32MB / 64MB 通用）
+
+固件开启 `CONFIG_SPI_NOR_SFDP_RUNTIME=y`，在挂载时通过 `flash_get_page_count()` 动态获取真实物理容量（`total_bytes`），**不写死 64MB**，从而同时兼容样板贴装的 **32MB (`W25Q256`)** 与 BOM 基线的 **64MB (`W25Q512NW`)**：
+
+| 区域 | 起始偏移 | 大小（计算规则） | 32MB 料 (`W25Q256`) | 64MB 料 (`W25Q512NW`) | 说明 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 暂存环形队列 | `0x0000000` | 64KB（16 × 4KB 扇区） | `0x0000000 .. 0x0010000` | `0x0000000 .. 0x0010000` | 每日 32B 原始记录磨损均衡轮转区 |
+| 轨迹归档与索引区 | `0x0010000` | `total_bytes - 1 MiB - 64 KiB` | 约 30.94 MiB (`0x0010000 .. 0x1F00000`) | 约 62.94 MiB (`0x0010000 .. 0x3F00000`) | App 仅读写轨迹暂存与归档区（`0 .. total_bytes - 1 MiB`） |
+| 外部 OTA `slot1` 预留 | `total_bytes - 1 MiB` | 1 MiB (`0x100000`) | `0x1F00000 .. 0x2000000` | `0x3F00000 .. 0x4000000` | 固定预留在芯片最高 1 MiB；应用层 `lgps_ring` 绝不触碰该区域 |
+
+## DTS 配置（`lifegps_nrf54l15_cpuapp.dts`）
+
+> 注意：`jedec,jesd216.yaml` 规定 `size` 属性单位为 **bit**（而非 byte）。512 Mbit = `536870912`（256 Mbit = `268435456`）；开启 `CONFIG_SPI_NOR_SFDP_RUNTIME=y` 后，运行时容量由 SFDP 决定，轨迹上限由 `flash_ring.c` 按 `total_bytes - LGPS_FLASH_OTA_RESERVE_BYTES` 动态计算。
 
 ```dts
-&spi1 {
-  w25q512: flash@0 {
-    compatible = "jedec,spi-nor";
-    reg = <0>;
-    spi-max-frequency = <8000000>;
-    size = <0x4000000>;
-    partitions {
-      compatible = "fixed-partitions";
-      #address-cells = <1>;
-      #size-cells = <1>;
-      traj_partition: partition@0 {
-        label = "traj";
-        reg = <0x0000000 0x3F00000>;
-      };
-      slot1_partition: partition@3F00000 {
-        label = "slot1";
-        reg = <0x3F00000 0x100000>;
-      };
-    };
-  };
+&spi00 {
+	status = "okay";
+	pinctrl-0 = <&spi00_default>;
+	pinctrl-1 = <&spi00_sleep>;
+	pinctrl-names = "default", "sleep";
+	cs-gpios = <&gpio2 5 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+
+	w25q512: flash@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+		size = <536870912>;
+	};
 };
 ```
-
-内部 Flash 还需要：`boot_partition`、`slot0_partition`、`scratch_partition`、`settings_partition`。
 
 ## MCUboot 配置要点
 

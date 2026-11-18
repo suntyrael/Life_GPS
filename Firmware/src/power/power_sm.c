@@ -5,6 +5,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/poweroff.h>
 
 #include <lifegps/diag.h>
@@ -24,10 +25,17 @@ LOG_MODULE_REGISTER(lgps_power, LOG_LEVEL_INF);
 #define SHUTDOWN_SEQUENCE_MS (3U * 3U * 2U * 500U + 500U)
 
 static bool precision_requested;
+/* Shared between keys thread (writer) and main thread (consumer); protected by atomic_t. */
+static atomic_t poi_requested;
 
 bool lgps_power_precision_requested(void)
 {
 	return precision_requested;
+}
+
+bool lgps_power_consume_poi_request(void)
+{
+	return atomic_cas(&poi_requested, 1, 0);
 }
 
 static void enter_system_off(void)
@@ -63,6 +71,7 @@ static void on_key(enum lgps_key_id key, enum lgps_key_event_type event, uint32_
 		 * release.
 		 */
 		if (key == LGPS_KEY_POI) {
+			(void)atomic_set(&poi_requested, 1);
 			LOG_INF("POI mark (KEY1_POI pressed)");
 			(void)lgps_led_play(LGPS_LED_PATTERN_FIX);
 		}

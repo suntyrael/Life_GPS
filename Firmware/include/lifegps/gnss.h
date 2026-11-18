@@ -28,6 +28,8 @@
 
 #define LGPS_GNSS_COLD_START_TIMEOUT_MS 60000U
 #define LGPS_GNSS_EPHEMERIS_HOLD_MS 35000U
+#define LGPS_GNSS_NOMINAL_PERIOD_MS 45000U
+#define LGPS_GNSS_HOT_TIMEOUT_MS 15000U
 #define LGPS_GNSS_BACKOFF_STEP1_MS 120000U
 #define LGPS_GNSS_BACKOFF_STEP2_MS 300000U
 #define LGPS_GNSS_BACKOFF_STEP3_MS 900000U
@@ -37,6 +39,8 @@ enum lgps_gnss_state {
 	LGPS_GNSS_STATE_COLD_START,
 	LGPS_GNSS_STATE_FIXED,
 	LGPS_GNSS_STATE_EPHEMERIS_HOLD,
+	LGPS_GNSS_STATE_SLEEP_NOMINAL,
+	LGPS_GNSS_STATE_HOT_PULSE,
 	LGPS_GNSS_STATE_BACKOFF,
 };
 
@@ -83,5 +87,14 @@ void lgps_gnss_get_fix(struct lgps_gnss_fix *out);
 enum lgps_gnss_state lgps_gnss_get_state(void);
 
 const char *lgps_gnss_state_name(enum lgps_gnss_state state);
+
+/* Request an immediate hot-start wake (e.g. KEY1 POI pressed while GNSS is asleep). */
+void lgps_gnss_request_immediate(void);
+
+/* Enable or disable continuous high-precision mode (KEY2 toggle). */
+void lgps_gnss_set_continuous(bool enable);
+
+/* Inform the GNSS state machine whether ZUPT has locked the device as stationary. */
+void lgps_gnss_set_stationary(bool stationary);
 
 #endif /* LIFEGPS_GNSS_H_ */
