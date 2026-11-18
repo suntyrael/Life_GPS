@@ -39,6 +39,11 @@ static enum lgps_gnss_state gnss_state = LGPS_GNSS_STATE_OFF;
 static uint32_t state_since_ms;
 static uint32_t last_pvt_log_ms;
 
+/* Given by lgps_gnss_init() only after the UART and its IRQ handler are live,
+ * so the state machine can never power the rail before the receive path exists.
+ */
+static K_SEM_DEFINE(gnss_ready_sem, 0, 1);
+
 static const char *const state_names[] = {
 	[LGPS_GNSS_STATE_OFF] = "OFF",
 	[LGPS_GNSS_STATE_COLD_START] = "COLD_START",
@@ -287,6 +292,11 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 
 	uint32_t backoff_ms = LGPS_GNSS_BACKOFF_STEP1_MS;
 
+	/* Block until lgps_gnss_init() reports the receive path is usable. */
+	if (k_sem_take(&gnss_ready_sem, K_FOREVER) != 0) {
+		return;
+	}
+
 	gnss_power_up();
 	set_state(LGPS_GNSS_STATE_COLD_START, LGPS_GNSS_COLD_START_TIMEOUT_MS);
 
@@ -353,7 +363,12 @@ int lgps_gnss_init(void)
 
 	ret = uart_irq_callback_user_data_set(gnss_uart, gnss_uart_isr, NULL);
 	if (ret < 0) {
-		LOG_ERR("UARTE20 callback registration failed (%d)", ret);
+		if (ret == -ENOTSUP) {
+			LOG_ERR("UARTE20 interrupt API unavailable (%d = -ENOTSUP): "
+				"CONFIG_UART_INTERRUPT_DRIVEN must be enabled", ret);
+		} else {
+			LOG_ERR("UARTE20 callback registration failed (%d)", ret);
+		}
 		return ret;
 	}
 
@@ -361,6 +376,9 @@ int lgps_gnss_init(void)
 	memset(&current_fix, 0, sizeof(current_fix));
 
 	LOG_INF("GNSS UART ready: UARTE20 P1.04(TX)/P1.05(RX) 115200 8N1, default part MAX-M10S (UBX)");
+
+	/* Only now may the state machine touch the GNSS rail. */
+	k_sem_give(&gnss_ready_sem);
 
 	return 0;
 }

@@ -21,23 +21,27 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include <string.h>
+
 #include <lifegps/battery.h>
 #include <lifegps/board_io.h>
 #include <lifegps/diag.h>
 #include <lifegps/flash_ring.h>
 #include <lifegps/gnss.h>
 #include <lifegps/imu.h>
+#include <lifegps/keys.h>
 #include <lifegps/led.h>
 #include <lifegps/nav.h>
 #include <lifegps/power_sm.h>
+#include <lifegps/telemetry.h>
 #include <lifegps/wdt.h>
 
 LOG_MODULE_REGISTER(lgps_main, LOG_LEVEL_INF);
 
 /* Poll faster than the 26 Hz ODR and let the data-ready bit do the pacing. */
 #define MAIN_LOOP_PERIOD_MS 10U
-#define STATUS_PERIOD_MS 1000U
-#define BATTERY_PERIOD_MS 60000U
+#define TELEMETRY_PERIOD_MS 1000U
+#define BATTERY_PERIOD_MS 10000U
 
 static struct lgps_zupt zupt;
 static struct lgps_pdr pdr;
@@ -110,32 +114,70 @@ static int init_subsystems(void)
 	return 0;
 }
 
-static void publish_status(uint32_t now_ms, const struct lgps_imu_sample *sample)
+static void emit_telemetry(uint32_t now_ms, const struct lgps_imu_sample *sample,
+			   bool imu_valid, int32_t bat_mv, bool bat_valid)
 {
-	struct lgps_gnss_fix fix;
+	static struct lgps_telemetry_snapshot snap;
+	struct lgps_imu_mag mag;
+	struct lgps_imu_baro baro;
 	struct lgps_ring_stats ring;
 	bool charging = false;
+	int ret;
 
-	lgps_gnss_get_fix(&fix);
-	lgps_ring_get_stats(&ring);
+	memset(&snap, 0, sizeof(snap));
+
+	lgps_gnss_get_fix(&snap.fix);
+	snap.gnss_state = lgps_gnss_get_state();
+	if (snap.fix.last_pvt_uptime_ms != 0U) {
+		snap.gnss_age_ms = now_ms - snap.fix.last_pvt_uptime_ms;
+	}
+
+	snap.imu_who_am_i = lgps_imu_who_am_i();
+	snap.imu_valid = imu_valid;
+	if (imu_valid) {
+		for (uint8_t axis = 0U; axis < 3U; axis++) {
+			snap.acc_lsb[axis] = sample->raw_accel[axis];
+			snap.gyro_lsb[axis] = sample->raw_gyro[axis];
+			snap.acc_g[axis] = sample->accel_g[axis];
+			snap.gyro_dps[axis] = sample->gyro_dps[axis];
+		}
+	}
+
+	ret = lgps_imu_read_hub(&mag, &baro);
+	if (ret == 0) {
+		snap.hub_valid = true;
+		for (uint8_t axis = 0U; axis < 3U; axis++) {
+			snap.mag_lsb[axis] = mag.raw[axis];
+		}
+		snap.baro_press_raw = baro.raw_pressure;
+		snap.baro_temp_raw = baro.raw_temperature;
+	} else if (ret != -EAGAIN) {
+		LOG_WRN("sensor hub read failed (%d)", ret);
+	}
+
+	snap.bat_valid = bat_valid;
+	snap.bat_mv = bat_mv;
 	(void)lgps_charger_charging(&charging);
+	snap.charging = charging;
+	snap.key_levels = lgps_keys_levels();
+	snap.zupt_locked = lgps_zupt_locked(&zupt);
+	snap.zupt_var_g2 = lgps_zupt_accel_variance_g2(&zupt);
+	snap.steps = pdr.steps_total;
 
-	LOG_INF("status: uptime=%u ms gnss=%s fix=%u sats=%u batt_ok=%s charging=%d "
-		"ring_seq=%u ring_records=%u zupt=%s locked steps=%u",
-		now_ms, lgps_gnss_state_name(lgps_gnss_get_state()), fix.fix_type, fix.satellites,
-		fix.valid ? "yes" : "no", charging ? 1 : 0, ring.sector_seq, ring.records_written,
-		lgps_zupt_locked(&zupt) ? "stationary" : "moving", pdr.steps_total);
+	lgps_ring_get_stats(&ring);
+	snap.ring_sector_seq = ring.sector_seq;
+	snap.ring_records = ring.records_written;
 
-	LOG_INF("imu: acc=[%.3f %.3f %.3f] g gyro=[%.2f %.2f %.2f] dps var=%.5f g^2",
-		(double)sample->accel_g[0], (double)sample->accel_g[1], (double)sample->accel_g[2],
-		(double)sample->gyro_dps[0], (double)sample->gyro_dps[1],
-		(double)sample->gyro_dps[2], (double)lgps_zupt_accel_variance_g2(&zupt));
+	lgps_telemetry_emit(&snap);
 }
 
 int main(void)
 {
-	uint32_t last_status_ms = 0U;
+	uint32_t last_telemetry_ms = 0U;
 	uint32_t last_battery_ms = 0U;
+	int32_t bat_mv = 0;
+	bool bat_valid = false;
+	bool imu_valid = false;
 	struct lgps_imu_sample sample = { 0 };
 
 	lgps_diag_banner();
@@ -168,26 +210,24 @@ int main(void)
 
 			lgps_zupt_update(&zupt, accel_body, gyro_rps, now_ms);
 			lgps_pdr_set_frozen(&pdr, lgps_zupt_locked(&zupt));
+			imu_valid = true;
 		} else if (ret != -EAGAIN) {
 			LOG_ERR("IMU read failed (%d)", ret);
-		}
-
-		if ((uint32_t)(now_ms - last_status_ms) >= STATUS_PERIOD_MS) {
-			last_status_ms = now_ms;
-			publish_status(now_ms, &sample);
 		}
 
 		if ((uint32_t)(now_ms - last_battery_ms) >= BATTERY_PERIOD_MS) {
 			int32_t millivolts = 0;
 
 			last_battery_ms = now_ms;
-
-			ret = lgps_battery_read_mv(&millivolts);
-			if (ret == 0) {
-				LOG_INF("battery: %d mV (divider corrected)", millivolts);
-			} else {
-				LOG_ERR("battery read failed (%d)", ret);
+			bat_valid = (lgps_battery_read_mv(&millivolts) == 0);
+			if (bat_valid) {
+				bat_mv = millivolts;
 			}
+		}
+
+		if ((uint32_t)(now_ms - last_telemetry_ms) >= TELEMETRY_PERIOD_MS) {
+			last_telemetry_ms = now_ms;
+			emit_telemetry(now_ms, &sample, imu_valid, bat_mv, bat_valid);
 		}
 
 		lgps_wdt_feed();

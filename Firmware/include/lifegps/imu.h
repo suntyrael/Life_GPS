@@ -91,6 +91,9 @@ int lgps_imu_probe_hub(struct lgps_imu_hub_ids *ids);
  */
 int lgps_imu_hub_configure(void);
 
+/* WHO_AM_I value read at init (0x6B = LSM6DSR); 0 when the IMU was not detected. */
+uint8_t lgps_imu_who_am_i(void);
+
 /* Read one acceleration/gyro pair unconditionally (diagnostics, self test). */
 int lgps_imu_read_sample(struct lgps_imu_sample *out);
 

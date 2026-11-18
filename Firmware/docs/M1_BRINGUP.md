@@ -76,28 +76,67 @@
 3. Sensor hub 现在有 18 字节输出：M1 用 6 字节 LIS2MDL（0x68 起，50 Hz）+ 6 字节 BMP388（0x04 起，25 Hz）。
 4. BMP388 补偿算法（Bosch 官方补偿系数 + 温度补偿）**尚未实现**，M1 只搬运原始 24 位压力/温度，不输出海拔——避免出现编造的高度值。
 
-## 3. 串口日志长这样
+## 3. 串口日志格式（固定契约）
+
+### 3.1 三类行
+
+| 类别 | 标签 | 何时出现 | 用途 |
+| :--- | :--- | :--- | :--- |
+| 事件 | 各模块自己的标签（`lgps_keys`/`lgps_power`/`lgps_gnss`…） | 状态变化时 | 一次性事实：上电、按键、状态机迁移、错误 |
+| 周期遥测 | **`lgps_tele`** | 每 1 s，固定 5 行 | 机器可解析的全量快照 |
+| 诊断横幅 | `lgps_diag` | 仅启动一次 | 构建/复位/时钟等静态信息 |
+
+### 3.2 周期遥测字段（`lgps_tele`，固定顺序、单位写在键名里）
+
+| 行 | 字段 | 来源 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `GNSS` | `st` | `lgps_gnss_get_state()` | `OFF/COLD_START/FIXED/EPHEMERIS_HOLD/BACKOFF` |
+| | `fix` `sats` | NAV-PVT | `fixType` 0..5、参与解算卫星数 |
+| | `pdop_e2` | NAV-PVT pDOP | 观测的 ×100（1.23 → 123） |
+| | `lat_e7` `lon_e7` `hmsl_mm` `spd_cms` `hdg_ddeg` | NAV-PVT | 与 `TrajectoryRecord_t` 同一量纲，无浮点损失 |
+| | `utc_s` | NAV-PVT UTC + 2020 epoch | 秒；未解析时 `---` |
+| | `age_ms` | 上一条 NAV-PVT 距今 | 判断接收机是否还在吐数据 |
+| `IMU` | `id` | `WHO_AM_I(0x0F)` | LSM6DSR = `0x6B` |
+| | `acc_lsb` `gyro_lsb` | 原始 16 位计数 | 精确值，便于换算/复核 |
+| | `acc_g` `gyro_dps` | `LSB × 0.122 mg` / `× 35 mdps` | 灵敏度取自 DS11976 Table 3 |
+| `MAG` | `lsb` / `ut` | LIS2MDL 0x68..0x6D | `1 LSB = 1.5 mG = 0.15 µT`（LIS2MDL Table 3 `So`） |
+| `BARO` | `press_raw` `temp_raw` | BMP388 0x04..0x09 | 原始 24 位；**未做补偿**，所以不打印 hPa/°C |
+| `SYS` | `bat_mv` | SAADC AIN4 + 分压修正 | 每 10 s 采样一次，期间沿用缓存 |
+| | `chg` | SGM4056 `/CHG` | `1` = 正在充电 |
+| | `keys` | 消抖后的电平 | `K1,K2`，`1` = 按下（用来看按键是否卡死） |
+| | `zupt` `var_mg2` | ZUPT 状态机 | `locked/move` 与加速度模长方差（mg²） |
+| | `steps` `ring_seq` `ring_rec` | PDR / 暂存环形 | 步数、当前扇区序号、累计写入条数 |
+
+不可用的值统一打印 `---`，字段个数与顺序永不变动，便于 `awk`/`grep` 取用：
+
+```bash
+grep 'lgps_tele: GNSS' log.txt | sed -n 's/.*fix=\([0-9]*\).*/\1/p'
+```
+
+### 3.3 样例
 
 ```
-[00:00:00.014] <inf> lgps_diag: =========================================================
-[00:00:00.015] <inf> lgps_diag:  Life_GPS firmware M1 (bring-up skeleton)
-[00:00:00.016] <inf> lgps_diag:  board  : Main_V0.2, nRF54L15-QFAA (QFN48), 1.9 V rails
-[00:00:00.017] <inf> lgps_diag:  reset  : power-on (0x00000008), uptime 17 ms
-[00:00:00.019] <wrn> lgps_diag: crystal CL out of spec: X1 12.5 pF / X2 12 pF vs 6..9 pF, ...
-[00:00:00.031] <inf> lgps_board_io: chip selects: Flash /CS=P2.05 IMU /CS=P1.14 driven high ...
-[00:00:00.045] <inf> lgps_led: LED ready: RED=P1.10 GREEN=P2.07 BLUE=P1.12, active high
-[00:00:00.052] <inf> lgps_keys: keys ready: KEY1_POI=P1.06 KEY2_MODE=P1.08 (pull-up, 20 ms debounce, 8000 ms long press)
-[00:00:00.060] <inf> lgps_wdt: WDT30 armed: timeout 30000 ms, 3 supervised tasks (layered feed)
-[00:00:00.075] <inf> lgps_gnss: GNSS UART ready: UARTE20 P1.04(TX)/P1.05(RX) 115200 8N1, default part MAX-M10S (UBX)
-[00:00:00.120] <inf> lgps_imu: LSM6DSR detected on SPIM22 (WHO_AM_I=0x6b, CS=P1.14, 8 MHz)
-[00:00:00.140] <inf> lgps_imu: LSM6DSR configured: +/-4 g (0.122 mg/LSB), +/-1000 dps (35 mdps/LSB), ODR 104 Hz
-[00:00:00.310] <inf> lgps_imu: sensor hub probe: LIS2MDL WHO_AM_I=0x4f (ok) BMP388 CHIP_ID=0x50 (ok)
-[00:00:00.360] <inf> lgps_ring: staging ring: 16 sectors, 127 records/sector, record 32 bytes
-[00:00:01.020] <inf> lgps_main: status: uptime=1020 ms gnss=COLD_START fix=0 sats=0 ...
-[00:00:01.021] <inf> lgps_main: imu: acc=[0.001 0.002 1.001] g gyro=[0.12 -0.04 0.02] dps var=0.00001 g^2
+[00:00:08.210] <inf> lgps_tele: GNSS st=COLD_START fix=0 sats=0 pdop_e2=--- lat_e7=--- lon_e7=--- hmsl_mm=--- spd_cms=--- hdg_ddeg=--- utc_s=--- age_ms=0
+[00:00:08.225] <inf> lgps_tele: IMU id=0x6b acc_lsb=115,-25,9016 gyro_lsb=19,-13,-151 acc_g=0.014,-0.003,1.100 gyro_dps=0.67,-0.46,-5.29
+[00:00:08.240] <inf> lgps_tele: MAG lsb=1234,-567,890 ut=185.1,-85.0,133.5
+[00:00:08.255] <inf> lgps_tele: BARO press_raw=8012345 temp_raw=6412345 (uncompensated)
+[00:00:08.270] <inf> lgps_tele: SYS bat_mv=4021 chg=1 keys=0,0 zupt=move var_mg2=30 steps=0 ring_seq=1 ring_rec=0
 ```
 
-> 上面是**格式示意**（字段来自代码路径）。真实数值必须由板子跑出来，M1 不写入任何“看起来正常”的假数据。
+> 样例中的数值仅示意字段位置；真实值必须由板子产生。
+
+### 3.4 M1 首轮实测暴露的三个问题（已修，附根因）
+
+| 现象 | 根因（源码级证据） | 修复 |
+| :--- | :--- | :--- |
+| `UARTE20 callback registration failed (-134)` + `GNSS init failed (-134)` | Zephyr 最小 libc 的 `ENOTSUP = 134`；nrfx UARTE 的 `.irq_callback_set` 只在 `CONFIG_UART_INTERRUPT_DRIVEN` 打开时才编进 API 表，否则 `uart_irq_*` 一律返回 `-ENOTSUP`（`drivers/serial/uart_nrfx_uarte.c` 的 `#ifdef UARTE_INTERRUPT_DRIVEN` 段） | `prj.conf` 增加 `CONFIG_UART_INTERRUPT_DRIVEN=y`；错误日志直接点明缺失的 Kconfig |
+| GNSS 初始化失败后仍打印 `GNSS 1V8 rail -> on`（顺序看起来反了） | 上电由 `gnss` 线程执行，而 `init` 只注册回调；线程没有等 init 成功，于是"回调失败"与"上电"同时发生 | 新增 `gnss_ready_sem`：`init` 只有在 UART + IRQ 回调都就绪后才 `k_sem_give`，线程 `k_sem_take(K_FOREVER)` 之后才允许拉 `GPS_EN` |
+| 只按了 KEY2，约 8 s 后自动 `System OFF` | KEY1（P1.06）上电即为低电平：`init` 把它当"已按下"，`press_start_ms` 从启动时刻起算，8 s 后长按条件满足 → 关机灯语 → `sys_poweroff()`。日志里没有 `KEY1_POI pressed` 只有 `long press` 正是这个特征 | 新增 **arm-on-release**：上电即为低的按键必须先被释放一次才允许产生 press/long-press；并在启动时 `WRN` 打印"某键上电即低，已解除武装，请检查网络/按键"，`SYS keys=` 字段可实时观察 |
+
+补充说明：
+
+* 启动横幅里的 `crystal CL out of spec` **是编码里写死的静态配置检查，不是硬件测量结果**（数值来自 BOM/设备树的 X1 = 12.5 pF、X2 = 12 pF，对比 nRF54L15 手册 6..9 pF 的 trim 窗口）。只有频率计或 BLE 载波测试才能给出真实 ppm，日志文案已改为 `static config check (NOT measured)`。
+* KEY2 的短按检测本身没有问题：日志里的 `held 167/187/197 ms` 就是三次短按，每次 100 ms 消抖通过后触发一次"高精度模式"切换（本轮把原始 press/release 降到 DBG，只在语义事件上留 INF，避免刷屏）。真正的异常是上面的 KEY1 卡低。
 
 ## 4. 构建与测试（只在 GitHub）
 

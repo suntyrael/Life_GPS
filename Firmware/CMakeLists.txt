@@ -20,6 +20,7 @@ target_sources(app PRIVATE
   src/main.c
   src/board/board_io.c
   src/diag/diag.c
+  src/diag/telemetry.c
   src/gnss/gnss.c
   src/gnss/ubx.c
   src/imu/lsm6dsr.c

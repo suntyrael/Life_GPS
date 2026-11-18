@@ -97,12 +97,15 @@ void lgps_diag_banner(void)
 	LOG_INF("=========================================================");
 
 	/*
-	 * Known deviation, tracked as pinmap pending item "crystal CL": the fitted
-	 * crystals (X1 CL 12.5 pF, X2 CL 12 pF) sit above the nRF54L15 internal
-	 * trim range, so BLE carrier accuracy must be measured before RF bring-up.
+	 * STATIC CONFIG CHECK, NOT A MEASUREMENT: the numbers come from the BOM /
+	 * devicetree (X1 = FC-135R CL 12.5 pF, X2 = 32 MHz CL 12 pF) compared with the
+	 * nRF54L15 internal-trim window (CL_LFXO/CL_HFXO = 6..9 pF, datasheet section
+	 * 11). Nothing on this board measures the crystal; only a frequency counter or
+	 * a BLE carrier test can confirm the actual ppm error.
 	 */
-	LOG_WRN("crystal CL out of spec: X1 12.5 pF / X2 12 pF vs 6..9 pF, "
-		"internal trim set to max (LFXO 18000 fF, HFXO 17000 fF)");
+	LOG_WRN("static config check (NOT measured): X1 CL 12.5 pF / X2 CL 12 pF sit above "
+		"the nRF54L15 6..9 pF trim window; trim set to max (LFXO 18000 fF, HFXO 17000 fF). "
+		"Confirm with a frequency counter before RF bring-up");
 }
 
 void lgps_diag_hexdump(const char *tag, const uint8_t *data, size_t len_bytes)

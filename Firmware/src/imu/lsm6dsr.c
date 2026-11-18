@@ -88,6 +88,7 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 static const struct spi_dt_spec imu_spi = SPI_DT_SPEC_GET(DT_NODELABEL(imu), SPI_OP, 0);
 static K_MUTEX_DEFINE(imu_lock);
 static bool hub_streaming_configured;
+static uint8_t detected_who_am_i;
 
 static int imu_read_buf(uint8_t reg, uint8_t *buf, size_t len_bytes)
 {
@@ -402,6 +403,11 @@ static void decode_sample(const uint8_t raw[12], struct lgps_imu_sample *out)
 	}
 }
 
+uint8_t lgps_imu_who_am_i(void)
+{
+	return detected_who_am_i;
+}
+
 int lgps_imu_read_sample(struct lgps_imu_sample *out)
 {
 	uint8_t raw[12];
@@ -534,6 +540,7 @@ int lgps_imu_init(void)
 		goto out;
 	}
 
+	detected_who_am_i = who_am_i;
 	LOG_INF("LSM6DSR detected on SPIM22 (WHO_AM_I=0x%02x, CS=P1.14, 8 MHz)", who_am_i);
 
 	/* Software reset, then BDU + IF_INC. */

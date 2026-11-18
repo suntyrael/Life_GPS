@@ -25,6 +25,9 @@ struct lgps_key_state {
 	uint8_t candidate_samples;
 	uint32_t press_start_ms;
 	bool long_sent;
+	/* False until the key has been seen released once: a key that is low at boot
+	 * cannot start the 8 s power-off countdown. */
+	bool armed;
 };
 
 static const struct gpio_dt_spec key_poi = GPIO_DT_SPEC_GET(DT_NODELABEL(key_poi), gpios);
@@ -81,8 +84,20 @@ static void update_key(enum lgps_key_id id, uint32_t now_ms)
 	if (pressed != 0U) {
 		key->press_start_ms = now_ms;
 		key->long_sent = false;
-		LOG_INF("%s pressed", key->name);
+
+		if (!key->armed) {
+			/* Level was already low at boot: wait for a real release first. */
+			return;
+		}
+
+		LOG_DBG("%s pressed", key->name);
 		notify(id, LGPS_KEY_EVENT_PRESS, 0U);
+		return;
+	}
+
+	if (!key->armed) {
+		key->armed = true;
+		LOG_INF("%s released after boot, key armed", key->name);
 		return;
 	}
 
@@ -92,7 +107,7 @@ static void update_key(enum lgps_key_id id, uint32_t now_ms)
 		notify(id, LGPS_KEY_EVENT_SHORT_PRESS, held_ms);
 	}
 
-	LOG_INF("%s released after %u ms", key->name, held_ms);
+	LOG_DBG("%s released after %u ms", key->name, held_ms);
 	notify(id, LGPS_KEY_EVENT_RELEASE, held_ms);
 }
 
@@ -110,7 +125,7 @@ static void keys_thread(void *arg1, void *arg2, void *arg3)
 
 			struct lgps_key_state *key = &keys[id];
 
-			if (key->stable_pressed != 0U && !key->long_sent) {
+			if (key->armed && key->stable_pressed != 0U && !key->long_sent) {
 				uint32_t held_ms = now_ms - key->press_start_ms;
 
 				if (held_ms >= LGPS_KEY_LONG_PRESS_MS) {
@@ -149,14 +164,40 @@ int lgps_keys_init(lgps_key_callback_t callback)
 			return ret;
 		}
 
-		key->stable_pressed = (gpio_pin_get_dt(key->spec) == 0) ? 1U : 0U;
+		int level = gpio_pin_get_dt(key->spec);
+
+		if (level < 0) {
+			LOG_ERR("%s: initial read failed (%d)", key->name, level);
+			return level;
+		}
+
+		key->stable_pressed = (level == 0) ? 1U : 0U;
 		key->candidate_pressed = key->stable_pressed;
 		key->press_start_ms = k_uptime_get_32();
+		key->armed = (key->stable_pressed == 0U);
+
+		if (!key->armed) {
+			LOG_WRN("%s reads low at boot (%s): long press disarmed until it is "
+				"released once - check the net / the button",
+				key->name, key->spec->port->name);
+		}
 	}
 
 	LOG_INF("keys ready: KEY1_POI=P1.06 KEY2_MODE=P1.08 (pull-up, %u ms debounce, "
-		"%u ms long press)",
-		LGPS_KEY_DEBOUNCE_MS, LGPS_KEY_LONG_PRESS_MS);
+		"%u ms long press, arm-on-release)", LGPS_KEY_DEBOUNCE_MS, LGPS_KEY_LONG_PRESS_MS);
 
 	return 0;
+}
+
+uint8_t lgps_keys_levels(void)
+{
+	uint8_t levels = 0U;
+
+	for (uint8_t id = 0U; id < LGPS_KEY_COUNT; id++) {
+		if (keys[id].stable_pressed != 0U) {
+			levels |= (uint8_t)BIT(id);
+		}
+	}
+
+	return levels;
 }
