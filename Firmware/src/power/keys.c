@@ -15,7 +15,12 @@ LOG_MODULE_REGISTER(lgps_keys, LOG_LEVEL_INF);
 
 #define KEY_POLL_PERIOD_MS 10
 #define KEY_SETTLE_MS 5
-#define KEY_THREAD_STACK 1024
+/*
+ * Immediate-mode logging formats on the caller's stack, and the key self-test
+ * prints eight-argument lines; 1 KiB left no margin for that on top of the
+ * debounce state machine. 2 KiB costs 1 KiB of RAM (main stack is 4 KiB).
+ */
+#define KEY_THREAD_STACK 2048
 #define KEY_THREAD_PRIORITY 8
 
 struct lgps_key_state {
@@ -81,11 +86,6 @@ static K_SEM_DEFINE(keys_ready_sem, 0, 1);
  * Reading the pin after each explicit configuration separates them, and the
  * devicetree flag value is printed so a lost GPIO_PULL_UP is visible.
  */
-static int read_pin(const struct gpio_dt_spec *spec)
-{
-	return gpio_pin_get_raw(spec->port, spec->pin);
-}
-
 static void diagnose_key_pin(const struct gpio_dt_spec *spec, const char *name)
 {
 	gpio_flags_t effective = 0U;
@@ -102,16 +102,21 @@ static void diagnose_key_pin(const struct gpio_dt_spec *spec, const char *name)
 		return;
 	}
 	k_msleep(2);
-	as_dt = read_pin(spec);
+	as_dt = read_level(spec);
 
-	/* Ignore devicetree flags: request the pull directly. */
+	/*
+	 * Ignore devicetree flags: request the pull directly. This also clears the
+	 * invert bit that GPIO_ACTIVE_LOW produced, which is what the raw pull
+	 * experiment needs; the restore call below re-applies dt_flags, so the
+	 * inverted (logical) view comes back.
+	 */
 	ret = gpio_pin_configure(spec->port, spec->pin, GPIO_INPUT | GPIO_PULL_UP);
 	if (ret < 0) {
 		LOG_ERR("%s: explicit pull-up failed (%d)", name, ret);
 		return;
 	}
 	k_msleep(2);
-	explicit_up = read_pin(spec);
+	explicit_up = read_level(spec);
 
 	ret = gpio_pin_configure(spec->port, spec->pin, GPIO_INPUT | GPIO_PULL_DOWN);
 	if (ret < 0) {
@@ -119,21 +124,30 @@ static void diagnose_key_pin(const struct gpio_dt_spec *spec, const char *name)
 		return;
 	}
 	k_msleep(2);
-	explicit_down = read_pin(spec);
+	explicit_down = read_level(spec);
 
-	/* Restore the board configuration. */
+	/* Restore the board configuration (dt_flags are OR-ed back in). */
 	ret = gpio_pin_configure_dt(spec, GPIO_INPUT);
 	if (ret < 0) {
-		LOG_ERR("%s: restore failed (%d)", name, ret);
+		LOG_ERR("%s: restore failed (%d) - the pad keeps the self-test pull-down "
+			"until the next reset", name, ret);
 	}
 
 	/*
 	 * What the driver thinks the pin is: a missing GPIO_INPUT or GPIO_PULL_UP here
 	 * means the configuration never reached the hardware, which is a completely
-	 * different fault from an externally driven pin.
+	 * different fault from an externally driven pin. Both reads are checked: an
+	 * unchecked gpio_pin_get_config() failure left effective = 0 and the code below
+	 * then reported "configuration did not reach the hardware" for a driver fault it
+	 * had never actually observed.
 	 */
-	(void)gpio_pin_get_config(spec->port, spec->pin, &effective);
-	(void)gpio_port_get_raw(spec->port, &port_in);
+	ret = gpio_pin_get_config(spec->port, spec->pin, &effective);
+	if (ret < 0) {
+		LOG_ERR("%s: gpio_pin_get_config failed (%d): pull-up state unknown, the "
+			"diagnosis below is incomplete", name, ret);
+	} else if (gpio_port_get_raw(spec->port, &port_in) < 0) {
+		LOG_ERR("%s: gpio_port_get_raw failed", name);
+	}
 
 	LOG_WRN("%s self-test: dt_flags=0x%02x effective=0x%02x (input=%d pull_up=%d pull_down=%d)",
 		name, spec->dt_flags, effective,

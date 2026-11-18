@@ -49,8 +49,13 @@
 
 	keys: keys {
 		compatible = "gpio-keys";
-		/* No RC on the board (pinmap section "投板前"): debounce in firmware. */
-		debounce-interval-ms = <20>;
+		/*
+		 * No debounce property here on purpose: gpio-keys only honours
+		 * debounce-interval-ms when CONFIG_INPUT is enabled, and this firmware has no
+		 * input subsystem (the keys are polled by src/power/keys.c). A property that
+		 * silently does nothing is worse than none - src/power/keys.c debounces in
+		 * software for LGPS_KEY_DEBOUNCE_MS.
+		 */
 
 		key_poi: key_poi {
 			gpios = <&gpio1 6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
@@ -77,6 +82,12 @@
 		gnss-wake-gpios = <&gpio1 9 GPIO_ACTIVE_HIGH>;
 		chg-en-gpios = <&gpio0 3 GPIO_ACTIVE_LOW>;
 		chg-stat-gpios = <&gpio0 4 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		/*
+		 * Declared for M2 motion wake (pinmap section 2: P0.02 = LSM6_SPI_INT, GPIOTE30).
+		 * M1 polls the data-ready bit over SPI and never configures this pad, so it
+		 * stays in its reset state (input, disconnected buffer). LSM6DSR INT1 is
+		 * push-pull, so an unconfigured pad neither floats nor draws current.
+		 */
 		imu-int1-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
 		/*
 		 * The two chip selects are also owned by the SPI controllers; they are
@@ -209,7 +220,14 @@
 		reg = <0>;
 		/* Board layout is noise-sensitive: run the NOR at 8 MHz, not 32 MHz. */
 		spi-max-frequency = <8000000>;
-		size = <67108864>;
+		/*
+		 * "size" is the capacity in BITS, not bytes (dts/bindings/mtd/
+		 * jedec,jesd216.yaml: "flash capacity in bits"). W25Q512NW = 512 Mbit =
+		 * 64 MiB = 536870912 bits; the earlier 67108864 declared an 8 MiB part.
+		 * CONFIG_SPI_NOR_SFDP_RUNTIME=y makes the driver take the real density
+		 * from SFDP anyway, so this line is a declaration, not the capacity source.
+		 */
+		size = <536870912>;
 		has-dpd;
 		t-enter-dpd = <3000>;  /* tDP   = 3 us  (datasheet AC characteristics) */
 		t-exit-dpd = <30000>;  /* tRES1 = 30 us (datasheet AC characteristics) */
@@ -228,6 +246,13 @@
 		compatible = "lifegps,lsm6dsr";
 		reg = <0>;
 		spi-max-frequency = <8000000>;
+		/*
+		 * No spi-cpol/spi-cpha: SPI_CONFIG_DT takes CPOL/CPHA only from devicetree,
+		 * so these two flags *are* the bus mode, and the LSM6DSR datasheet permits
+		 * both mode 0 and mode 3 (DS11976 section 5.1: "the device is compatible
+		 * with SPI modes 0 and 3"). Mode 0 is what the M1 bench verified:
+		 * WHO_AM_I = 0x6B and a streaming sensor hub on every read.
+		 */
 	};
 };
 
@@ -248,7 +273,12 @@
 		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 40)>;
 		zephyr,input-positive = <NRF_SAADC_AIN4>;
 		zephyr,resolution = <12>;
-		zephyr,oversampling = <8>;
+		/*
+		 * oversampling is log2(samples): <8> meant 256 averages per channel (about
+		 * 12 ms per conversion at 40 us acquisition). <2> = 4 averages, which is the
+		 * noise/energy compromise for a 1 M/330 k divider with a 100 nF filter cap.
+		 */
+		zephyr,oversampling = <2>;
 	};
 };
 

@@ -41,11 +41,15 @@ enum lgps_gnss_state {
 };
 
 struct lgps_gnss_fix {
-	bool valid;          /* fixType >= 3 and gnssFixOK */
+	/* fixType 3 (3D) or 4 (GNSS + DR) with gnssFixOK set. fixType 5 is time-only:
+	 * the receiver reports it without a position, so it must not lock a fix.
+	 */
+	bool valid;
 	bool utc_valid;
 	uint8_t fix_type;
 	uint8_t satellites;
-	uint16_t hdop_1e2;
+	/* NAV-PVT carries pDOP, not hDOP (hDOP only exists in UBX-NAV-DOP). */
+	uint16_t pdop_1e2;
 	int32_t lat_e7;
 	int32_t lon_e7;
 	int32_t hmsl_mm;
@@ -68,6 +72,8 @@ struct lgps_gnss_counters {
 /*
  * Receive-path counters. They answer the question the fix log cannot: is the
  * receiver silent (rx_bytes == 0), talking NMEA only, or sending corrupt UBX?
+ * Each field is either ISR-written (atomic) or GNSS-thread-written, so the copy
+ * below has no data race; values from different fields may be one frame apart.
  */
 void lgps_gnss_get_counters(struct lgps_gnss_counters *out);
 

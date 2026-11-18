@@ -3,8 +3,11 @@
 
 cmake_minimum_required(VERSION 3.20.0)
 
-# The board definition ships with the application (boards/lifegps/lifegps), so the
-# plain `west build -b lifegps/nrf54l15/cpuapp .` works without -DBOARD_ROOT.
+# The board definition ships with the application (boards/lifegps/lifegps).
+# Appending it here makes the single-image build work without -DBOARD_ROOT
+# (west build -b lifegps/nrf54l15/cpuapp .). It does NOT cover sysbuild: each child
+# image (e.g. MCUboot) resolves the board in its own CMake project, so the OTA build
+# has to pass -DBOARD_ROOT=<this directory> on the command line.
 list(APPEND BOARD_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Application level devicetree bindings (dts/bindings) are picked up because the

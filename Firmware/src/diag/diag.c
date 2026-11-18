@@ -19,7 +19,14 @@
 LOG_MODULE_REGISTER(lgps_diag, LOG_LEVEL_INF);
 
 static uint32_t reset_cause;
-static char reset_text[48] = "unknown";
+/*
+ * Worst case, all twelve names joined by '+':
+ * "reset-pin+software+brownout+power-on+watchdog+debug+security+
+ *  wake-from-system-off+cpu-lockup+clock+hardware+temperature" = 119 characters.
+ * The previous 48-byte buffer silently truncated the list (and strncat() with
+ * sizeof - strlen - 1 kept it legal, so nothing complained).
+ */
+static char reset_text[128] = "unknown";
 static bool reset_cause_valid;
 
 uint32_t lgps_diag_uptime_ms(void)
@@ -33,6 +40,12 @@ static void decode_reset_cause(void)
 		uint32_t flag;
 		const char *name;
 	} causes[] = {
+		/*
+		 * Not every flag is produced by the nRF54L15 HWINFO driver (brownout /
+		 * hardware / temperature have no RESETREAS source on this part); the table
+		 * stays complete so a port to another SoC needs no edit, and the banner prints
+		 * whatever the driver reports as a hex mask as well.
+		 */
 		{ RESET_PIN, "reset-pin" },
 		{ RESET_SOFTWARE, "software" },
 		{ RESET_BROWNOUT, "brownout" },
@@ -47,7 +60,9 @@ static void decode_reset_cause(void)
 		{ RESET_TEMPERATURE, "temperature" },
 	};
 
-	int ret = hwinfo_get_reset_cause(&reset_cause);
+	int ret;
+
+	ret = hwinfo_get_reset_cause(&reset_cause);
 
 	if (ret < 0) {
 		LOG_ERR("hwinfo_get_reset_cause failed (%d)", ret);
@@ -55,6 +70,20 @@ static void decode_reset_cause(void)
 	}
 
 	reset_cause_valid = true;
+
+	/*
+	 * Clear RESETREAS after reading it. The nRF reset-reason registers accumulate:
+	 * a watchdog reset followed later by a pin reset reports both, so without this
+	 * every boot logs the union of all previous resets instead of this one. A driver
+	 * without the clear operation (-ENOSYS) is not fatal - the banner then keeps
+	 * showing the accumulated mask.
+	 */
+	ret = hwinfo_clear_reset_cause();
+	if (ret < 0) {
+		LOG_DBG("hwinfo_clear_reset_cause unsupported (%d): reset causes accumulate",
+			ret);
+	}
+
 	reset_text[0] = '\0';
 
 	ARRAY_FOR_EACH(causes, i) {

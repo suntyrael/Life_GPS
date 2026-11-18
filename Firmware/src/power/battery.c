@@ -39,7 +39,7 @@ int lgps_battery_init(void)
 	}
 
 	LOG_INF("BAT_ADC ready: AIN4 (P1.11), R25=%u ohm, R26=%u ohm, R_in=%u ohm, "
-		"gain 1/2, internal reference",
+		"gain/reference/resolution from devicetree",
 		LGPS_BATT_R_TOP_OHM, LGPS_BATT_R_BOTTOM_OHM, LGPS_BATT_SAADC_RIN_OHM);
 
 	return 0;
@@ -48,10 +48,8 @@ int lgps_battery_init(void)
 int lgps_battery_read_mv(int32_t *millivolts)
 {
 	uint16_t raw = 0U;
-	int32_t vpin_mv;
+	int32_t pin_mv;
 	int32_t bottom_ohm;
-	uint32_t vref_mv;
-	int64_t scaled;
 	struct adc_sequence sequence = { 0 };
 	int ret;
 
@@ -74,31 +72,32 @@ int lgps_battery_read_mv(int32_t *millivolts)
 		return ret;
 	}
 
-	vref_mv = adc_ref_internal(battery_channel.dev);
-	if (vref_mv == 0U) {
-		LOG_ERR("SAADC internal reference unknown");
-		return -EIO;
-	}
-
 	/*
-	 * Gain is 1/2 (board devicetree), so the input range is 2 * Vref:
-	 *   vpin = raw / (2^resolution - 1) * 2 * Vref
+	 * Let the ADC helper apply gain, reference and resolution from the devicetree
+	 * channel (zephyr,gain = ADC_GAIN_1_2, zephyr,reference = ADC_REF_INTERNAL,
+	 * zephyr,resolution = 12). The previous code hard-coded the 1/2 gain as "* 2"
+	 * and divided by (1 << resolution): an edited devicetree gain silently produced
+	 * a wrong pack voltage, and resolution == 0 divided by zero.
 	 */
-	scaled = (int64_t)raw * 2 * (int64_t)vref_mv;
-	vpin_mv = (int32_t)(scaled / ((1 << battery_channel.resolution) - 1));
+	pin_mv = (int32_t)raw;
+
+	ret = adc_raw_to_millivolts_dt(&battery_channel, &pin_mv);
+	if (ret < 0) {
+		LOG_ERR("adc_raw_to_millivolts_dt failed (%d)", ret);
+		return ret;
+	}
 
 	bottom_ohm = bottom_effective_ohm();
 
 	/* vbat = vpin * (R_top + R_bottom_eff) / R_bottom_eff */
-	*millivolts = (int32_t)((int64_t)vpin_mv * (LGPS_BATT_R_TOP_OHM + bottom_ohm) / bottom_ohm);
+	*millivolts = (int32_t)((int64_t)pin_mv * (LGPS_BATT_R_TOP_OHM + bottom_ohm) / bottom_ohm);
 
 	/*
 	 * Raw numbers in the log: a wrong gain / reference / pin shows up here as a
 	 * mismatch between raw and the expected divider voltage, and a missing pack
 	 * shows up as a plausible raw with ~0 V at the pin.
 	 */
-	LOG_DBG("battery: raw=%u vref=%u mV gain=1/2 -> vpin=%d mV vbat=%d mV", raw, vref_mv,
-		vpin_mv, *millivolts);
+	LOG_DBG("battery: raw=%u pin=%d mV -> vbat=%d mV", raw, pin_mv, *millivolts);
 
 	if (*millivolts < LGPS_BATT_MV_PLAUSIBLE_MIN) {
 		static bool warned;

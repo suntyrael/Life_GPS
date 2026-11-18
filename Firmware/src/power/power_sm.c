@@ -14,7 +14,13 @@
 
 LOG_MODULE_REGISTER(lgps_power, LOG_LEVEL_INF);
 
-/* Nine slow blinks (three colours x on/off) plus a small margin. */
+/*
+ * Nine slow blinks (three colours x on/off) plus a small margin.
+ * The shutdown pattern must start immediately, so the request purges anything
+ * queued first (see on_key): the boot confirmation is 9 s long and would otherwise
+ * push the shutdown pattern behind it, making this wait expire before the LEDs were
+ * done - sys_poweroff() then cut the rail mid-pattern.
+ */
 #define SHUTDOWN_SEQUENCE_MS (3U * 3U * 2U * 500U + 500U)
 
 static bool precision_requested;
@@ -41,6 +47,10 @@ static void on_key(enum lgps_key_id key, enum lgps_key_event_type event, uint32_
 		LOG_INF("%s held %u ms -> power off sequence", key == LGPS_KEY_POI ? "KEY1_POI"
 										 : "KEY2_MODE",
 			held_ms);
+		/* Cancel/drop whatever is playing or queued (e.g. the 9 s boot
+		 * confirmation) so the shutdown pattern starts now.
+		 */
+		(void)lgps_led_off_all();
 		(void)lgps_led_play(LGPS_LED_PATTERN_SHUTDOWN_CONFIRM);
 		k_msleep((int32_t)SHUTDOWN_SEQUENCE_MS);
 		enter_system_off();

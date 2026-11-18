@@ -7,6 +7,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/util.h>
 
 #include <lifegps/led.h>
@@ -73,11 +74,28 @@ static const struct lgps_led_sequence sequences[LGPS_LED_PATTERN_COUNT] = {
 
 K_MSGQ_DEFINE(led_pattern_queue, sizeof(enum lgps_led_pattern), 4, 4);
 
+/*
+ * Cancellation token for the sequence that is currently being played.
+ * lgps_led_off_all() increments it; the pattern thread compares its own snapshot
+ * and aborts as soon as it differs. Without this the thread could only be stopped
+ * at the end of a 9 s boot/shutdown confirmation, and the power state machine's
+ * fixed wait would expire before the shutdown pattern even started.
+ */
+static atomic_t led_generation;
+
+/* Cancellation is honoured inside a blink, so a 500 ms step cannot delay it. */
+#define LED_CANCEL_SLICE_MS 50U
+
 int lgps_led_set(enum lgps_led_color color, bool on)
 {
 	int ret;
 
-	if (color >= LGPS_LED_COLOR_COUNT) {
+	/*
+	 * Cast before comparing: an enum whose underlying type is int passes a plain
+	 * "color >= LGPS_LED_COLOR_COUNT" check with a negative value and indexes the
+	 * array out of bounds.
+	 */
+	if ((unsigned int)color >= (unsigned int)LGPS_LED_COLOR_COUNT) {
 		return -EINVAL;
 	}
 
@@ -93,6 +111,12 @@ int lgps_led_set(enum lgps_led_color color, bool on)
 int lgps_led_off_all(void)
 {
 	int ret = 0;
+
+	/* Cancel the running sequence, then drop everything that is still queued: the
+	 * header promises "force all LEDs off and drop any queued pattern".
+	 */
+	(void)atomic_inc(&led_generation);
+	k_msgq_purge(&led_pattern_queue);
 
 	for (uint8_t color = 0U; color < LGPS_LED_COLOR_COUNT; color++) {
 		int err = lgps_led_set((enum lgps_led_color)color, false);
@@ -112,7 +136,34 @@ static void apply_colors(uint8_t colors)
 	(void)lgps_led_set(LGPS_LED_BLUE, (colors & BIT(LGPS_LED_BLUE)) != 0U);
 }
 
-static void run_sequence(enum lgps_led_pattern pattern)
+static bool cancelled(atomic_val_t generation)
+{
+	return atomic_get(&led_generation) != generation;
+}
+
+/*
+ * Sleep in slices so a cancellation is noticed within LED_CANCEL_SLICE_MS.
+ * Returns false when the sequence must stop.
+ */
+static bool sleep_unless_cancelled(uint16_t duration_ms, atomic_val_t generation)
+{
+	uint16_t remaining_ms = duration_ms;
+
+	while (remaining_ms > 0U) {
+		uint16_t slice_ms = (uint16_t)MIN((uint32_t)remaining_ms, LED_CANCEL_SLICE_MS);
+
+		k_msleep((int32_t)slice_ms);
+		remaining_ms = (uint16_t)(remaining_ms - slice_ms);
+
+		if (cancelled(generation)) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+static void run_sequence(enum lgps_led_pattern pattern, atomic_val_t generation)
 {
 	const struct lgps_led_sequence *seq = &sequences[pattern];
 
@@ -120,15 +171,28 @@ static void run_sequence(enum lgps_led_pattern pattern)
 		const struct lgps_led_step *step = &seq->steps[i];
 
 		for (uint8_t repeat = 0U; repeat < step->repeats; repeat++) {
+			if (cancelled(generation)) {
+				goto done;
+			}
+
 			apply_colors(step->colors);
-			k_msleep(step->on_ms);
+
+			if (!sleep_unless_cancelled(step->on_ms, generation)) {
+				goto done;
+			}
+
 			apply_colors(0U);
 
-			if (step->off_ms > 0U) {
-				k_msleep(step->off_ms);
+			if ((step->off_ms > 0U) &&
+			    !sleep_unless_cancelled(step->off_ms, generation)) {
+				goto done;
 			}
 		}
 	}
+
+done:
+	/* Always leave the LEDs dark: a cancellation must not freeze a colour on. */
+	apply_colors(0U);
 }
 
 static void led_thread(void *arg1, void *arg2, void *arg3)
@@ -139,12 +203,15 @@ static void led_thread(void *arg1, void *arg2, void *arg3)
 
 	for (;;) {
 		enum lgps_led_pattern pattern;
+		atomic_val_t generation;
 
 		if (k_msgq_get(&led_pattern_queue, &pattern, K_FOREVER) != 0) {
 			continue;
 		}
 
-		run_sequence(pattern);
+		/* Snapshot before playing: an off_all() that lands later must win. */
+		generation = atomic_get(&led_generation);
+		run_sequence(pattern, generation);
 	}
 }
 

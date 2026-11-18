@@ -69,12 +69,17 @@ static int configure_output(const struct gpio_dt_spec *spec, bool active, const 
 	return 0;
 }
 
-/* Chip selects first: neither the NOR nor the IMU has an external pull-up. */
-/*
+/**
  * Proof that reading a P1 pin through the GPIO driver actually follows the pad.
  * GPS_WAKE (P1.09) is used because the GNSS rail is still off at this point, so a
- * short pulse cannot reach the receiver. If the driver reports what we drive, the
- * read path is sound and a low key reading must come from outside the MCU.
+ * short pulse cannot reach the receiver.
+ *
+ * The read is done with gpio_pin_get_raw() on purpose: this test proves the
+ * PAD -> register path only. It cannot prove the logical (inverted) view, because
+ * that needs a drivable pin declared GPIO_ACTIVE_LOW and this board has none - the
+ * old version drove an ACTIVE_HIGH pin and therefore could never have caught the
+ * inversion bug that broke the keys and the charger status. Code that needs a
+ * physical level uses gpio_pin_get_raw() for exactly that reason.
  */
 static int p1_read_path_self_test(void)
 {
@@ -88,7 +93,7 @@ static int p1_read_path_self_test(void)
 		return ret;
 	}
 
-	high = gpio_pin_get_dt(&gnss_wake);
+	high = gpio_pin_get_raw(gnss_wake.port, gnss_wake.pin);
 
 	ret = gpio_pin_set_dt(&gnss_wake, 0);
 	if (ret < 0) {
@@ -96,7 +101,7 @@ static int p1_read_path_self_test(void)
 		return ret;
 	}
 
-	low = gpio_pin_get_dt(&gnss_wake);
+	low = gpio_pin_get_raw(gnss_wake.port, gnss_wake.pin);
 
 	if ((high == 1) && (low == 0)) {
 		LOG_INF("P1 read path OK (GPS_WAKE driven 1 -> read 1, driven 0 -> read 0)");
@@ -110,6 +115,17 @@ static int p1_read_path_self_test(void)
 	return 0;
 }
 
+/*
+ * Chip selects.
+ *
+ * Timing fact: the SPI drivers own both CS pins (devicetree cs-gpios) and configure
+ * them during driver initialisation, i.e. BEFORE main() runs. The comment that used
+ * to sit here claimed board_io drives them high "first"; it does not - it runs
+ * later. What is genuinely added here is the internal pull-up, which the cs-gpios
+ * flags do not request (neither memory has an external pull-up, so an undriven CS
+ * would float while the NOR/IMU are powered). The pins stay inactive (high, because
+ * GPIO_ACTIVE_LOW), so neither device is selected outside a transfer.
+ */
 static int configure_chip_selects(void)
 {
 	int ret;
@@ -126,7 +142,8 @@ static int configure_chip_selects(void)
 		return ret;
 	}
 
-	LOG_INF("chip selects: Flash /CS=P2.05 IMU /CS=P1.14 driven high with internal pull-up");
+	LOG_INF("chip selects: Flash /CS=P2.05 IMU /CS=P1.14 (INACTIVE=high) + internal pull-up; "
+		"the SPI drivers configured these pins earlier, this only adds the pull-up");
 
 	return 0;
 }
@@ -238,13 +255,20 @@ int lgps_charger_charging(bool *charging)
 		return -EINVAL;
 	}
 
-	value = gpio_pin_get_dt(&chg_stat);
+	/*
+	 * Read the PHYSICAL level on purpose. CHG_STAT is declared GPIO_ACTIVE_LOW,
+	 * and gpio_pin_get_dt() returns the *logical* level: it XORs the port value
+	 * with the invert mask built from GPIO_ACTIVE_LOW (gpio.h, z_impl_gpio_pin_get()).
+	 * Using it here reported "not charging" while charging and vice versa - the
+	 * same inverted-reading trap that produced the key behaviour in M1.
+	 * SGM4056 /CHG is an open-drain output: pad low == charging in progress.
+	 */
+	value = gpio_pin_get_raw(chg_stat.port, chg_stat.pin);
 	if (value < 0) {
 		LOG_ERR("CHG_STAT read failed (%d)", value);
 		return value;
 	}
 
-	/* Active low: pin low == charging. */
 	*charging = (value == 0);
 
 	return 0;

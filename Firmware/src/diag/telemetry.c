@@ -16,6 +16,33 @@ LOG_MODULE_REGISTER(lgps_tele, LOG_LEVEL_INF);
 /* LIS2MDL sensitivity: 1.5 mgauss/LSB (datasheet table 3, So) = 0.15 uT/LSB. */
 #define MAG_UT_PER_LSB 0.15F
 
+/* Largest magnitude the mg^2 field may take; see var_mg2_int(). */
+#define VAR_MG2_LIMIT 2000000000.0F
+
+/*
+ * var_mg2 is a float, and a direct (int32_t) cast of an out-of-range float is
+ * undefined behaviour (the conversion does not saturate on Cortex-M). Clamp and
+ * neutralise NaN instead of trusting the input range.
+ */
+static int32_t var_mg2_int(const struct lgps_telemetry_snapshot *snap)
+{
+	float value_mg2 = snap->zupt_var_g2 * 1000000.0F;
+
+	if (value_mg2 != value_mg2) {
+		return 0;
+	}
+
+	if (value_mg2 > VAR_MG2_LIMIT) {
+		return 2000000000;
+	}
+
+	if (value_mg2 < -VAR_MG2_LIMIT) {
+		return -2000000000;
+	}
+
+	return (int32_t)value_mg2;
+}
+
 void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 {
 	char pdop[8];
@@ -31,10 +58,10 @@ void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 	}
 
 	/* GNSS: absent values are printed as "---" so the field count never changes. */
-	if (snap->fix.hdop_1e2 == 0U) {
+	if (snap->fix.pdop_1e2 == 0U) {
 		(void)snprintk(pdop, sizeof(pdop), "---");
 	} else {
-		(void)snprintk(pdop, sizeof(pdop), "%u", snap->fix.hdop_1e2);
+		(void)snprintk(pdop, sizeof(pdop), "%u", snap->fix.pdop_1e2);
 	}
 
 	if (snap->fix.valid) {
@@ -97,7 +124,7 @@ void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 			(unsigned int)(snap->key_levels & 0x01U),
 			(unsigned int)((snap->key_levels >> 1) & 0x01U),
 			snap->zupt_locked ? "locked" : "move",
-			(int32_t)(snap->zupt_var_g2 * 1000000.0F), snap->steps,
+			(int32_t)var_mg2_int(snap), snap->steps,
 			snap->ring_sector_seq, snap->ring_records);
 	} else {
 		LOG_INF("SYS bat_mv=--- chg=%d keys=%u,%u zupt=%s var_mg2=%d steps=%u ring_seq=%u "
@@ -106,7 +133,7 @@ void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 			(unsigned int)(snap->key_levels & 0x01U),
 			(unsigned int)((snap->key_levels >> 1) & 0x01U),
 			snap->zupt_locked ? "locked" : "move",
-			(int32_t)(snap->zupt_var_g2 * 1000000.0F), snap->steps,
+			(int32_t)var_mg2_int(snap), snap->steps,
 			snap->ring_sector_seq, snap->ring_records);
 	}
 }
