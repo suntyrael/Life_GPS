@@ -12,7 +12,10 @@
  *   uint32 sector_seq  global rotation counter
  *   uint32 erase_count physical erase counter for wear monitoring
  *   uint16 commit_flags 0xFFFF writing / 0x55AA archived / 0x0000 erasing
- *   uint16 header_crc16 CRC-16/CCITT-FALSE over the first 14 bytes
+ *   uint16 header_crc16 CRC-16/CCITT-FALSE over bytes 0..11 (magic, sector_seq,
+ *                      erase_count). commit_flags is outside the CRC on purpose:
+ *                      sealing a sector must be a pure 1->0 bit update, because
+ *                      NOR programming can only clear bits.
  *
  * Records are passed in already serialised by lgps_traj_encode(); this module
  * never interprets them.
@@ -56,6 +59,9 @@ struct lgps_ring_stats {
 
 /*
  * Probe the NOR, read the 16 sector headers and pick the active sector.
+ * The number of records already present in that sector is rebuilt from the media
+ * (first fully erased slot), so a reset cannot make the write cursor point at an
+ * already programmed record.
  * Returns 0 on success, -ENODEV when the flash is missing, negative errno when
  * a sector cannot be read.
  */

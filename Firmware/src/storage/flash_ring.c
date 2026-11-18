@@ -11,21 +11,10 @@
 
 #include <stddef.h>
 
-#include <lifegps/crc.h>
 #include <lifegps/flash_ring.h>
+#include <lifegps/sector_format.h>
 
 LOG_MODULE_REGISTER(lgps_ring, LOG_LEVEL_INF);
-
-struct sector_header {
-	uint32_t magic;
-	uint32_t sector_seq;
-	uint32_t erase_count;
-	uint16_t commit_flags;
-	uint16_t header_crc16;
-} __packed;
-
-BUILD_ASSERT(sizeof(struct sector_header) == LGPS_RING_HEADER_SIZE,
-	     "sector header must be exactly 16 bytes");
 
 static const struct device *const nor = DEVICE_DT_GET(DT_NODELABEL(w25q512));
 static K_MUTEX_DEFINE(ring_lock);
@@ -40,13 +29,12 @@ static off_t sector_offset(uint8_t sector)
 	return (off_t)sector * (off_t)LGPS_RING_SECTOR_SIZE;
 }
 
-static uint16_t header_crc(const struct sector_header *header)
-{
-	return lgps_crc16_ccitt_false((const uint8_t *)header, offsetof(struct sector_header,
-								       header_crc16));
-}
-
-static int header_write(uint8_t sector, const struct sector_header *header)
+/*
+ * All header encoding/decoding lives in lifegps/sector_format.h so it can be unit
+ * tested without a flash driver; this module only moves those bytes to and from
+ * the device.
+ */
+static int header_write(uint8_t sector, const struct lgps_sector_header *header)
 {
 	int ret = flash_write(nor, sector_offset(sector), header, sizeof(*header));
 
@@ -57,7 +45,7 @@ static int header_write(uint8_t sector, const struct sector_header *header)
 	return ret;
 }
 
-static int header_read(uint8_t sector, struct sector_header *header)
+static int header_read(uint8_t sector, struct lgps_sector_header *header)
 {
 	int ret = flash_read(nor, sector_offset(sector), header, sizeof(*header));
 
@@ -71,15 +59,9 @@ static int header_read(uint8_t sector, struct sector_header *header)
 
 static void start_sector(uint8_t sector, uint32_t sector_seq, uint32_t erase_count)
 {
-	struct sector_header header = {
-		.magic = LGPS_RING_HEADER_MAGIC,
-		.sector_seq = sector_seq,
-		.erase_count = erase_count,
-		.commit_flags = LGPS_RING_FLAGS_WRITING,
-		.header_crc16 = 0U,
-	};
+	struct lgps_sector_header header;
 
-	header.header_crc16 = header_crc(&header);
+	lgps_sector_header_init(&header, sector_seq, erase_count);
 	(void)header_write(sector, &header);
 
 	active_sector = sector;
@@ -90,21 +72,80 @@ static void start_sector(uint8_t sector, uint32_t sector_seq, uint32_t erase_cou
 	}
 }
 
+#define RING_SCAN_CHUNK_BYTES 256U
+#define RING_SCAN_RECORDS (RING_SCAN_CHUNK_BYTES / LGPS_RING_RECORD_SIZE)
+
+/*
+ * Recover the write cursor of the sector an earlier boot left open.
+ *
+ * records_in_sector lived only in RAM, so after a reset it was 0 while the sector
+ * already held records: the next append rewrote slot 0 of an already programmed
+ * area. NOR can only clear bits, so the old record was corrupted silently and no
+ * CRC ever noticed. The cursor is therefore rebuilt from the media: records are
+ * written strictly in order from slot 0, so the first fully erased slot (0xFF...)
+ * is where the next record belongs. A serialised record always carries its CRC-8
+ * byte and can therefore never be all-0xFF.
+ *
+ * Cost: one 256-byte static buffer (8 records per flash_read) and 16 reads of
+ * 256 B at mount time. Nothing here touches the stack.
+ */
+static int count_used_records(uint8_t sector, uint16_t *used)
+{
+	static uint8_t chunk[RING_SCAN_CHUNK_BYTES];
+	uint16_t total = 0U;
+
+	for (uint16_t base = 0U; base < LGPS_RING_RECORDS_PER_SECTOR;
+	     base = (uint16_t)(base + RING_SCAN_RECORDS)) {
+		uint16_t slots = (uint16_t)MIN((uint32_t)RING_SCAN_RECORDS,
+					       (uint32_t)LGPS_RING_RECORDS_PER_SECTOR - base);
+		off_t offset = sector_offset(sector) + (off_t)LGPS_RING_HEADER_SIZE +
+			       (off_t)((uint32_t)base * LGPS_RING_RECORD_SIZE);
+		size_t len_bytes = (size_t)slots * (size_t)LGPS_RING_RECORD_SIZE;
+		uint16_t in_chunk;
+		int ret = flash_read(nor, offset, chunk, len_bytes);
+
+		if (ret < 0) {
+			LOG_ERR("sector %u record scan at 0x%08x failed (%d)", sector,
+				(unsigned int)offset, ret);
+			return ret;
+		}
+
+		/* Same helper the unit test covers: count programmed slots until the
+		 * first erased one.
+		 */
+		in_chunk = lgps_sector_used_records(chunk, len_bytes);
+		total = (uint16_t)(total + in_chunk);
+
+		if (in_chunk < slots) {
+			/* The write cursor lives inside this chunk. */
+			break;
+		}
+	}
+
+	*used = total;
+
+	return 0;
+}
+
 static int sector_rotate(void)
 {
-	struct sector_header header;
+	struct lgps_sector_header header;
 	uint8_t next = (uint8_t)((active_sector + 1U) % LGPS_RING_SECTOR_COUNT);
 	int ret;
 
-	/* 1. Seal the sector that just filled up. */
+	/* 1. Seal the sector that just filled up. The header CRC does not cover
+	 * commit_flags, so no CRC byte has to go back from 0 to 1 here.
+	 */
 	ret = header_read(active_sector, &header);
 	if (ret < 0) {
 		return ret;
 	}
 
-	header.commit_flags = LGPS_RING_FLAGS_ARCHIVED;
-	header.header_crc16 = 0U;
-	header.header_crc16 = header_crc(&header);
+	/* commit_flags is outside the CRC, so sealing only clears bits: the CRC bytes
+	 * read back from the header stay exactly as they were and have to go back from
+	 * 0 to 1 for nothing.
+	 */
+	lgps_sector_header_seal(&header);
 
 	ret = header_write(active_sector, &header);
 	if (ret < 0) {
@@ -116,7 +157,7 @@ static int sector_rotate(void)
 	uint32_t erase_count = 0U;
 
 	ret = header_read(next, &header);
-	if (ret == 0 && header.magic == LGPS_RING_HEADER_MAGIC) {
+	if ((ret == 0) && (header.magic == LGPS_RING_HEADER_MAGIC)) {
 		erase_count = header.erase_count;
 	}
 
@@ -138,7 +179,7 @@ static int sector_rotate(void)
 
 int lgps_ring_init(void)
 {
-	struct sector_header header;
+	struct lgps_sector_header header;
 	bool found = false;
 	uint8_t best_sector = 0U;
 	uint32_t best_seq = 0U;
@@ -195,8 +236,7 @@ int lgps_ring_init(void)
 			return ret;
 		}
 
-		if (header.magic != LGPS_RING_HEADER_MAGIC ||
-		    header.header_crc16 != header_crc(&header)) {
+		if (!lgps_sector_header_valid(&header)) {
 			continue;
 		}
 
@@ -212,11 +252,21 @@ int lgps_ring_init(void)
 	}
 
 	if (found) {
+		uint16_t used_records = 0U;
+
+		ret = count_used_records(best_sector, &used_records);
+		if (ret < 0) {
+			k_mutex_unlock(&ring_lock);
+			return ret;
+		}
+
 		active_sector = best_sector;
 		stats.sector_seq = best_seq;
+		stats.records_in_sector = (uint8_t)used_records;
 		stats.erase_count_max = (uint8_t)MIN(best_erase, 255U);
-		LOG_INF("ring mounted on sector %u (seq %u, max erase count %u)", best_sector,
-			best_seq, stats.erase_count_max);
+		LOG_INF("ring mounted on sector %u (seq %u, %u/%u records used, max erase count %u)",
+			best_sector, best_seq, used_records, LGPS_RING_RECORDS_PER_SECTOR,
+			stats.erase_count_max);
 	} else {
 		/* Fresh flash: erase and publish sector 0. */
 		ret = flash_erase(nor, sector_offset(0U), LGPS_RING_SECTOR_SIZE);
