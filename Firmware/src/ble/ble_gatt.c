@@ -835,6 +835,22 @@ static void log_conn_params(struct bt_conn *conn)
 		(unsigned int)info.le.timeout * 10U);
 }
 
+/*
+ * The parameters logged at connect time are the ones the central picked. The
+ * peripheral's own request (BT_GAP_AUTO_UPDATE_CONN_PARAMS) is only sent five
+ * seconds later, and the central may answer with something else entirely - this
+ * callback is what proves whether the 8 s supervision timeout actually took
+ * effect.
+ */
+static void le_param_updated(struct bt_conn *conn, uint16_t interval, uint16_t latency,
+			     uint16_t timeout)
+{
+	ARG_UNUSED(conn);
+
+	LOG_INF("link updated: interval %u us, latency %u, supervision %u ms",
+		(unsigned int)interval * 1250U, (unsigned int)latency, (unsigned int)timeout * 10U);
+}
+
 static void connected(struct bt_conn *conn, uint8_t err)
 {
 	if (err != 0) {
@@ -881,6 +897,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected = connected,
 	.disconnected = disconnected,
+	.le_param_updated = le_param_updated,
 };
 
 /* --- public API ------------------------------------------------------------ */
