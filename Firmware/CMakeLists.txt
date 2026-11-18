@@ -21,6 +21,9 @@ target_include_directories(app PRIVATE
 
 target_sources(app PRIVATE
   src/main.c
+  src/ble/ble_frame.c
+  src/ble/ble_gatt.c
+  src/ble/ble_log.c
   src/board/board_io.c
   src/diag/diag.c
   src/diag/telemetry.c
@@ -41,5 +44,5 @@ target_sources(app PRIVATE
 
 # Keep the generated protocol header in the dependency graph so a protocol change
 # forces a rebuild instead of silently linking stale offsets.
-set_property(SOURCE src/storage/traj.c APPEND PROPERTY
+set_property(SOURCE src/storage/traj.c src/ble/ble_frame.c APPEND PROPERTY
   OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/include/generated/lifegps_protocol.h)

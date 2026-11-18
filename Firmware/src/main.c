@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include <lifegps/battery.h>
+#include <lifegps/ble.h>
 #include <lifegps/board_io.h>
 #include <lifegps/diag.h>
 #include <lifegps/flash_ring.h>
@@ -119,6 +120,15 @@ static int init_subsystems(void)
 	lgps_zupt_reset(&zupt, lgps_diag_uptime_ms());
 	lgps_pdr_init(&pdr);
 
+	/* The BLE link is the product's only display, so it starts last: every
+	 * stage above has already reported a failure on the console before the
+	 * radio comes up, and advertising never points at a half-built device.
+	 */
+	ret = lgps_ble_init();
+	if (ret < 0) {
+		return ret;
+	}
+
 	return 0;
 }
 
@@ -178,6 +188,7 @@ static void emit_telemetry(uint32_t now_ms, const struct lgps_imu_sample *sample
 	snap.ring_records = ring.records_written;
 
 	lgps_telemetry_emit(&snap);
+	lgps_ble_publish(&snap);
 }
 
 int main(void)
