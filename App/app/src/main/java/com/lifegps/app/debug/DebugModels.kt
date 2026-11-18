@@ -136,11 +136,42 @@ data class GeoPoint(
     val tick: Long,
 )
 
+/**
+ * One dead-reckoned trail point.
+ *
+ * [x]/[y] are metres east/north from the PDR packet; [qw]..[qz] and [headingDeg]
+ * are the attitude the firmware estimated when the step completed, so the 3D view
+ * can draw an oriented marker per point instead of a bare polyline.
+ */
 data class TrailPoint(
     val x: Float,
     val y: Float,
     val z: Float,
     val tick: Long,
+    val qw: Float = 1f,
+    val qx: Float = 0f,
+    val qy: Float = 0f,
+    val qz: Float = 0f,
+    val headingDeg: Float = 0f,
+)
+
+/**
+ * Attitude from the firmware filter (IMU telemetry packet).
+ *
+ * Angles follow the firmware convention: roll positive when the right side goes
+ * down, pitch positive nose-up, heading clockwise from north. Zeros with
+ * [valid] == false mean "no telemetry yet", never "level".
+ */
+data class AttitudeState(
+    val qw: Float = 0f,
+    val qx: Float = 0f,
+    val qy: Float = 0f,
+    val qz: Float = 0f,
+    val rollDeg: Float = 0f,
+    val pitchDeg: Float = 0f,
+    val headingDeg: Float = 0f,
+    val samples: Long = 0L,
+    val valid: Boolean = false,
 )
 
 data class PoiMarker(

@@ -1,6 +1,7 @@
 package com.lifegps.app.ble
 
 import android.content.Context
+import com.lifegps.app.debug.AttitudeState
 import com.lifegps.app.debug.BaroStatus
 import com.lifegps.app.debug.CheckItem
 import com.lifegps.app.debug.CheckState
@@ -24,8 +25,8 @@ import java.time.LocalTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Locale
-import kotlin.math.cos
-import kotlin.math.sin
+import kotlin.math.asin
+import kotlin.math.atan2
 import kotlin.math.sqrt
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -74,10 +75,15 @@ class BleDebugRepository(context: Context) : DebugRepository {
     private var baroExplained = false
     private var incompatibleReported = false
 
-    // PDR estimate state: firmware step count + heading, not an IMU attitude.
-    private var lastSteps = -1L
-    private var trailEastM = 0.0
-    private var trailNorthM = 0.0
+    // Latest telemetry: the firmware owns the attitude filter and the PDR, this
+    // side only renders what it publishes.
+    private var latestQw = 1f
+    private var latestQx = 0f
+    private var latestQy = 0f
+    private var latestQz = 0f
+    private var latestHeadingDeg = 0f
+    private var attitudeSamples = 0L
+    private var lastAttitudeEmitMs = 0L
 
     // Command sequencing / response matching.
     private val pendingLock = Any()
@@ -101,6 +107,9 @@ class BleDebugRepository(context: Context) : DebugRepository {
 
     private val _flash = MutableStateFlow(initialFlash())
     override val flash: StateFlow<FlashStatus> = _flash.asStateFlow()
+
+    private val _attitude = MutableStateFlow(AttitudeState())
+    override val attitude: StateFlow<AttitudeState> = _attitude.asStateFlow()
 
     private val _checks = MutableStateFlow(pendingChecks())
     override val checks: StateFlow<List<CheckItem>> = _checks.asStateFlow()
@@ -141,6 +150,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
         transport.onStatus = { bytes -> handleStatusBytes(bytes) }
         transport.onLog = { bytes -> handleLogPacket(bytes) }
         transport.onFrame = { bytes -> handleResponseFrame(bytes) }
+        transport.onTelemetry = { bytes -> handleTelemetry(bytes) }
 
         scope.launch {
             transport.state.collect { link -> handleLinkState(link) }
@@ -265,9 +275,13 @@ class BleDebugRepository(context: Context) : DebugRepository {
         flashInfo = null
         lastStatus = null
         baroExplained = false
-        lastSteps = -1L
-        trailEastM = 0.0
-        trailNorthM = 0.0
+        latestQw = 1f
+        latestQx = 0f
+        latestQy = 0f
+        latestQz = 0f
+        latestHeadingDeg = 0f
+        attitudeSamples = 0L
+        _attitude.value = AttitudeState()
     }
 
     // --- status / log notifications -------------------------------------------
@@ -372,40 +386,111 @@ class BleDebugRepository(context: Context) : DebugRepository {
                 (points + GeoPoint(latitude, longitude, tick)).takeLast(MAX_GEO_POINTS)
             }
         }
-        updatePdrTrail(frame)
         rebuildChecks()
     }
 
-    /**
-     * Advances the local trail by the real PDR step counter.
-     *
-     * This is an estimate, not an attitude solution: each new firmware step is
-     * treated as [STEP_LENGTH_M] metres along the current GNSS heading. The
-     * firmware does not publish a quaternion or a per-step vector, so no IMU
-     * attitude is implied here.
+    /** Telemetry characteristic: IMU packets carry the attitude, PDR packets the
+     *  dead-reckoned position. Anything else is a group this app does not draw yet.
      */
-    private fun updatePdrTrail(frame: StatusFrame) {
-        val steps = frame.steps
-        if (lastSteps < 0L) {
-            lastSteps = steps
-            return
+    private fun handleTelemetry(bytes: ByteArray) {
+        val packet = BleFrame.parseTelemetry(bytes) ?: return
+
+        when (packet.id) {
+            TelemetryId.IMU -> BleFrame.parseImuTelemetry(packet.payload)?.let { onImuTelemetry(it) }
+            TelemetryId.PDR -> BleFrame.parsePdrTelemetry(packet.payload)?.let { onPdrTelemetry(it) }
+            else -> Unit
         }
-        if (steps <= lastSteps) {
-            lastSteps = steps
-            return
+    }
+
+    /**
+     * IMU telemetry arrives at the IMU rate (26 Hz). The filter output is stored
+     * on every packet but only pushed into Compose at ~15 Hz: recomposing a 3D view
+     * 26 times per second buys nothing and costs battery.
+     */
+    private fun onImuTelemetry(imu: ImuTelemetry) {
+        latestQw = imu.qw
+        latestQx = imu.qx
+        latestQy = imu.qy
+        latestQz = imu.qz
+        attitudeSamples++
+
+        val euler = eulerDeg(imu.qw, imu.qx, imu.qy, imu.qz)
+
+        latestHeadingDeg = euler[2]
+
+        val now = System.currentTimeMillis()
+
+        if (now - lastAttitudeEmitMs < ATTITUDE_UI_PERIOD_MS) return
+        lastAttitudeEmitMs = now
+
+        _attitude.value = AttitudeState(
+            qw = imu.qw,
+            qx = imu.qx,
+            qy = imu.qy,
+            qz = imu.qz,
+            rollDeg = euler[0],
+            pitchDeg = euler[1],
+            headingDeg = euler[2],
+            samples = attitudeSamples,
+            valid = true,
+        )
+        _imu.update {
+            it.copy(
+                ax = imu.accLsb[0] * ACC_G_PER_LSB,
+                ay = imu.accLsb[1] * ACC_G_PER_LSB,
+                az = imu.accLsb[2] * ACC_G_PER_LSB,
+                gx = imu.gyroLsb[0] * GYRO_DPS_PER_LSB,
+                gy = imu.gyroLsb[1] * GYRO_DPS_PER_LSB,
+                gz = imu.gyroLsb[2] * GYRO_DPS_PER_LSB,
+                qw = imu.qw,
+                qx = imu.qx,
+                qy = imu.qy,
+                qz = imu.qz,
+            )
         }
-        val delta = (steps - lastSteps).coerceAtMost(MAX_STEP_DELTA)
-        if (_trailRunning.value) {
-            val headingRad = Math.toRadians(frame.headingDdeg / 10.0)
-            trailEastM += delta * STEP_LENGTH_M * sin(headingRad)
-            trailNorthM += delta * STEP_LENGTH_M * cos(headingRad)
-            val tick = frame.uptimeMs / 1000L
-            _trail.update { points ->
-                (points + TrailPoint(trailEastM.toFloat(), trailNorthM.toFloat(), 0f, tick))
-                    .takeLast(MAX_TRAIL_POINTS)
+    }
+
+    /** PDR telemetry: append one oriented point per completed step (or heartbeat). */
+    private fun onPdrTelemetry(pdr: PdrTelemetry) {
+        if (!_trailRunning.value) return
+
+        val point = TrailPoint(
+            x = pdr.xMm / 1000f,
+            y = pdr.yMm / 1000f,
+            z = 0f,
+            tick = pdr.steps.toLong(),
+            qw = latestQw,
+            qx = latestQx,
+            qy = latestQy,
+            qz = latestQz,
+            headingDeg = pdr.headingDdeg / 10f,
+        )
+        _trail.update { points ->
+            if (points.isNotEmpty() && points.last().x == point.x && points.last().y == point.y) {
+                points
+            } else {
+                (points + point).takeLast(MAX_TRAIL_POINTS)
             }
         }
-        lastSteps = steps
+    }
+
+    /** Quaternion to (roll, pitch, heading) in degrees, same convention as the
+     *  firmware: ZYX order, heading clockwise from north.
+     */
+    private fun eulerDeg(qw: Float, qx: Float, qy: Float, qz: Float): FloatArray {
+        val r20 = 2f * ((qx * qz) - (qw * qy))
+        val r21 = 2f * ((qy * qz) + (qw * qx))
+        val r22 = 1f - (2f * ((qx * qx) + (qy * qy)))
+        val r01 = 2f * ((qx * qy) - (qw * qz))
+        val r11 = 1f - (2f * ((qx * qx) + (qz * qz)))
+
+        val roll = Math.toDegrees(atan2(-r20.toDouble(), r22.toDouble())).toFloat()
+        val pitch = Math.toDegrees(asin(r21.coerceIn(-1f, 1f).toDouble())).toFloat()
+        var heading = Math.toDegrees(atan2(r01.toDouble(), r11.toDouble())).toFloat()
+
+        if (heading < 0f) heading += 360f
+
+        return floatArrayOf(roll, pitch, heading)
     }
 
     private fun handleLogPacket(bytes: ByteArray) {
@@ -1131,11 +1216,8 @@ class BleDebugRepository(context: Context) : DebugRepository {
         /** LIS2MDL: 1.5 mG/LSB = 0.15 µT/LSB. */
         const val MAG_UT_PER_LSB = 0.15f
 
-        /** Assumed PDR step length (metres) for the local trail estimate. */
-        const val STEP_LENGTH_M = 0.7
-
-        /** Ignore step-counter jumps larger than this between two status frames. */
-        const val MAX_STEP_DELTA = 50L
+        /** Attitude is pushed into Compose at ~15 Hz even though the IMU sends 26 Hz. */
+        const val ATTITUDE_UI_PERIOD_MS = 66L
 
         const val MAX_GEO_POINTS = 2_000
         const val MAX_TRAIL_POINTS = 600

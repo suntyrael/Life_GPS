@@ -40,6 +40,7 @@ fun SensorStatusScreen(
 ) {
     val imu by repo.imu.collectAsStateWithLifecycle()
     val mag by repo.mag.collectAsStateWithLifecycle()
+    val attitude by repo.attitude.collectAsStateWithLifecycle()
 
     val accelMag = sqrt(imu.ax * imu.ax + imu.ay * imu.ay + imu.az * imu.az)
     val gyroMag = sqrt(imu.gx * imu.gx + imu.gy * imu.gy + imu.gz * imu.gz)
@@ -72,7 +73,20 @@ fun SensorStatusScreen(
                     MetricRow("角速度 Z", f(imu.gz, "°/s"))
                     ValueBar("角速度模长", gyroMag, 300f, Amber, f(gyroMag, "°/s"))
                     Spacer(Modifier.height(6.dp))
-                    MetricRow("四元数", "固件 v1 未提供", TextDim)
+                    MetricRow("四元数 W", String.format(Locale.US, "%.3f", attitude.qw))
+                    MetricRow("四元数 X", String.format(Locale.US, "%.3f", attitude.qx))
+                    MetricRow("四元数 Y", String.format(Locale.US, "%.3f", attitude.qy))
+                    MetricRow("四元数 Z", String.format(Locale.US, "%.3f", attitude.qz))
+                    MetricRow(
+                        "横滚 / 俯仰",
+                        String.format(Locale.US, "%.1f° / %.1f°", attitude.rollDeg, attitude.pitchDeg),
+                        Cyan,
+                    )
+                    MetricRow(
+                        "航向",
+                        if (attitude.valid) String.format(Locale.US, "%.1f°", attitude.headingDeg) else "--",
+                        Green,
+                    )
                 }
             }
 
@@ -139,7 +153,7 @@ fun SensorStatusScreen(
 
             item {
                 Text(
-                    "Status 帧在有订阅时以 10 Hz 推送（无订阅 1 Hz）；加速度按 ±4 g（0.122 mg/LSB）、角速度按 ±1000 dps（35 mdps/LSB）、磁力计按 1.5 mG/LSB 换算。四元数与 hPa 不在 v1 帧内。",
+                    "Status 帧在有订阅时以 10 Hz 推送（无订阅 1 Hz）；加速度按 ±4 g（0.122 mg/LSB）、角速度按 ±1000 dps（35 mdps/LSB）、磁力计按 1.5 mG/LSB 换算。姿态四元数由 Telemetry 特征以 26 Hz 下发（界面限流到 15 Hz 渲染）；hPa 仍未标定，不在帧内。",
                     color = TextDim,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(bottom = 20.dp),

@@ -224,6 +224,59 @@ data class FlashInfo(
     val sectorCount: Int,
 )
 
+/** Offset table of a Telemetry packet (`BLE_Wire_v1.md` §5.1). */
+object TelemetryOffset {
+    const val ID = 0
+    const val VER = 1
+    const val SEQ = 2
+    const val PAYLOAD = 4
+}
+
+/** Telemetry group ids, mirroring `protocol/lifegps_protocol.yaml`. */
+object TelemetryId {
+    const val GNSS = 0x01
+    const val IMU = 0x02
+    const val MAG = 0x03
+    const val BARO = 0x04
+    const val PDR = 0x05
+    const val POWER = 0x06
+    const val SYSTEM = 0x07
+}
+
+/** One telemetry packet; [payload] excludes the 4-byte header. */
+data class TelemetryPacket(
+    val id: Int,
+    val ver: Int,
+    val seq: Int,
+    val payload: ByteArray,
+)
+
+/**
+ * IMU telemetry: body-frame raw counts plus the attitude quaternion in Q15.
+ *
+ * Q15 means 32767 = 1.0, so a component is `q15 / 32767f`. The quaternion maps the
+ * body frame to the world frame (X east, Y north, Z up), which is the same
+ * convention the wire document freezes for the firmware-side filter.
+ */
+data class ImuTelemetry(
+    val accLsb: List<Int>,
+    val gyroLsb: List<Int>,
+    val quatQ15: List<Int>,
+) {
+    val qw: Float get() = quatQ15[0] / 32767f
+    val qx: Float get() = quatQ15[1] / 32767f
+    val qy: Float get() = quatQ15[2] / 32767f
+    val qz: Float get() = quatQ15[3] / 32767f
+}
+
+/** PDR telemetry: dead-reckoned position in millimetres plus the step counter. */
+data class PdrTelemetry(
+    val xMm: Int,
+    val yMm: Int,
+    val headingDdeg: Int,
+    val steps: Int,
+)
+
 /** Decoded Log notification (`BLE_Wire_v1.md` §5). */
 data class LogPacket(
     val level: Int,
@@ -364,6 +417,44 @@ object BleFrame {
             recordsInSector = u8(body, FlashInfoOffset.RECORDS_IN_SECTOR),
             eraseCountMax = u8(body, FlashInfoOffset.ERASE_COUNT_MAX),
             sectorCount = u8(body, FlashInfoOffset.SECTOR_COUNT),
+        )
+    }
+
+    /** Splits a Telemetry notification into id/ver/seq plus the payload. */
+    fun parseTelemetry(bytes: ByteArray): TelemetryPacket? {
+        if (bytes.size < TelemetryOffset.PAYLOAD) return null
+        if ((bytes[TelemetryOffset.VER].toInt() and 0xFF) != VER) return null
+        return TelemetryPacket(
+            id = u8(bytes, TelemetryOffset.ID),
+            ver = u8(bytes, TelemetryOffset.VER),
+            seq = u16(bytes, TelemetryOffset.SEQ),
+            payload = bytes.copyOfRange(TelemetryOffset.PAYLOAD, bytes.size),
+        )
+    }
+
+    /** IMU telemetry payload: acc[3], gyro[3], quat[4], all i16 little endian. */
+    fun parseImuTelemetry(payload: ByteArray): ImuTelemetry? {
+        if (payload.size < 20) return null
+        return ImuTelemetry(
+            accLsb = i16Triple(payload, 0),
+            gyroLsb = i16Triple(payload, 6),
+            quatQ15 = listOf(
+                i16(payload, 12),
+                i16(payload, 14),
+                i16(payload, 16),
+                i16(payload, 18),
+            ),
+        )
+    }
+
+    /** PDR telemetry payload: x_mm i32, y_mm i32, heading_ddeg i16, steps u16. */
+    fun parsePdrTelemetry(payload: ByteArray): PdrTelemetry? {
+        if (payload.size < 12) return null
+        return PdrTelemetry(
+            xMm = i32(payload, 0),
+            yMm = i32(payload, 4),
+            headingDdeg = i16(payload, 8),
+            steps = u16(payload, 10),
         )
     }
 

@@ -57,6 +57,7 @@ fun SpatialTrailScreen(
     val trail by repo.trail.collectAsStateWithLifecycle()
     val running by repo.trailRunning.collectAsStateWithLifecycle()
     val imu by repo.imu.collectAsStateWithLifecycle()
+    val attitude by repo.attitude.collectAsStateWithLifecycle()
 
     val distance = trail.zipWithNext().sumOf { (a, b) ->
         val dx = (a.x - b.x).toDouble()
@@ -138,6 +139,20 @@ fun SpatialTrailScreen(
                                         radius = 2.5f,
                                         center = project(point.x, point.y, point.z),
                                     )
+                                    /* Heading of that step, straight from the firmware
+                                     * quaternion: a 30 cm tick showing where the device
+                                     * was pointing.
+                                     */
+                                    val yaw = Math.toRadians(point.headingDeg.toDouble())
+                                    val dx = (Math.sin(yaw) * 0.30).toFloat()
+                                    val dy = (Math.cos(yaw) * 0.30).toFloat()
+
+                                    drawLine(
+                                        color = Amber.copy(alpha = 0.75f),
+                                        start = project(point.x, point.y, point.z),
+                                        end = project(point.x + dx, point.y + dy, point.z),
+                                        strokeWidth = 2f,
+                                    )
                                 }
                             }
 
@@ -198,6 +213,44 @@ fun SpatialTrailScreen(
             }
 
             item {
+                SectionHeader("设备姿态", "固件互补滤波 + GNSS/磁力计航向")
+                CardBlock {
+                    MetricRow(
+                        "横滚",
+                        if (attitude.valid) String.format(java.util.Locale.US, "%.1f°", attitude.rollDeg) else "--",
+                        Cyan,
+                    )
+                    MetricRow(
+                        "俯仰",
+                        if (attitude.valid) String.format(java.util.Locale.US, "%.1f°", attitude.pitchDeg) else "--",
+                        Cyan,
+                    )
+                    MetricRow(
+                        "航向",
+                        if (attitude.valid) String.format(java.util.Locale.US, "%.1f°", attitude.headingDeg) else "--",
+                        Green,
+                    )
+                    MetricRow(
+                        "四元数",
+                        if (attitude.valid) {
+                            String.format(
+                                java.util.Locale.US,
+                                "%.2f %.2f %.2f %.2f",
+                                attitude.qw,
+                                attitude.qx,
+                                attitude.qy,
+                                attitude.qz,
+                            )
+                        } else {
+                            "--"
+                        },
+                        TextDim,
+                    )
+                    MetricRow("姿态样本", "${attitude.samples}")
+                }
+            }
+
+            item {
                 SectionHeader("轨迹统计", "局部坐标，单位米")
                 CardBlock {
                     MetricRow("采样点", "${trail.size}")
@@ -212,7 +265,7 @@ fun SpatialTrailScreen(
 
             item {
                 Text(
-                    "轨迹由固件 PDR 累计步数与 GNSS 航向按 0.7 m/步 累积估算（真实数据推算，非 IMU 姿态积分）；四元数不在 v1 帧内，因此 Z 轴与姿态相关结论都不可用。",
+                    "轨迹来自固件的 PDR（Weinberg 步长 + 姿态航向），每完成一步发一个 PDR 包；黄色短标的方向是该步完成时的设备朝向。姿态由互补滤波给出，GNSS 有效且地速 ≥ 1.5 m/s 时用航迹角对齐并校准磁力计偏置，掉星后由磁力计维持。",
                     color = TextDim,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(bottom = 20.dp),

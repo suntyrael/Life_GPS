@@ -90,6 +90,9 @@ class BleTransport(context: Context) {
     /** Raw response frames from the Control characteristic. */
     var onFrame: ((ByteArray) -> Unit)? = null
 
+    /** Raw Telemetry notifications (IMU / PDR packets). */
+    var onTelemetry: ((ByteArray) -> Unit)? = null
+
     @Volatile
     private var closed = false
 
@@ -104,6 +107,9 @@ class BleTransport(context: Context) {
 
     @Volatile
     private var logChar: BluetoothGattCharacteristic? = null
+
+    @Volatile
+    private var telemChar: BluetoothGattCharacteristic? = null
 
     @Volatile
     private var cccdFailed = false
@@ -365,6 +371,7 @@ class BleTransport(context: Context) {
             statusChar = null
             controlChar = null
             logChar = null
+            telemChar = null
         }
         if (target != null) {
             if (disconnectFirst) {
@@ -445,6 +452,7 @@ class BleTransport(context: Context) {
             statusChar = service.getCharacteristic(BleUuids.STATUS)
             controlChar = service.getCharacteristic(BleUuids.CONTROL)
             logChar = service.getCharacteristic(BleUuids.LOG)
+            telemChar = service.getCharacteristic(BleUuids.TELEMETRY)
             if (controlChar == null) {
                 _state.value = LinkState.ERROR("缺少 Control 特征（无法收发命令）")
                 completeOp()
@@ -456,6 +464,9 @@ class BleTransport(context: Context) {
             }
             if (logChar != null) {
                 enqueueOp { writeCccd(BleUuids.LOG) }
+            }
+            if (telemChar != null) {
+                enqueueOp { writeCccd(BleUuids.TELEMETRY) }
             }
             if (controlChar != null) {
                 enqueueOp { writeCccd(BleUuids.CONTROL) }
@@ -490,6 +501,7 @@ class BleTransport(context: Context) {
                 BleUuids.STATUS -> onStatus?.invoke(value.copyOf())
                 BleUuids.LOG -> onLog?.invoke(value.copyOf())
                 BleUuids.CONTROL -> onFrame?.invoke(value.copyOf())
+                BleUuids.TELEMETRY -> onTelemetry?.invoke(value.copyOf())
                 else -> Unit
             }
         }

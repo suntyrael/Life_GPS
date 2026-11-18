@@ -16,6 +16,11 @@ interface DebugRepository {
     val imu: StateFlow<ImuStatus>
     val mag: StateFlow<MagStatus>
     val baro: StateFlow<BaroStatus>
+
+    /** Attitude from the firmware filter; [AttitudeState.valid] is false until the
+     *  first IMU telemetry packet arrives.
+     */
+    val attitude: StateFlow<AttitudeState>
     val flash: StateFlow<FlashStatus>
     val checks: StateFlow<List<CheckItem>>
     val checkRunning: StateFlow<Boolean>

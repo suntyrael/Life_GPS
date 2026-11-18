@@ -305,4 +305,81 @@ class BleFrameTest {
         assertEquals("UNKNOWN_STATUS", StatusCode.labelOf(0x7E))
         assertEquals("UNKNOWN(9)", BleFrame.gnssStateName(9))
     }
+
+    // --- telemetry ------------------------------------------------------------
+
+    private fun telemPacket(id: Int, seq: Int, payload: ByteArray): ByteArray {
+        val out = ByteArray(TelemetryOffset.PAYLOAD + payload.size)
+        out[TelemetryOffset.ID] = id.toByte()
+        out[TelemetryOffset.VER] = BleFrame.VER.toByte()
+        writeU16(out, TelemetryOffset.SEQ, seq)
+        payload.copyInto(out, TelemetryOffset.PAYLOAD)
+        return out
+    }
+
+    @Test
+    fun parseTelemetrySplitsHeaderAndPayload() {
+        val raw = telemPacket(TelemetryId.PDR, 0x1234, ByteArray(12))
+
+        val packet = BleFrame.parseTelemetry(raw)
+        assertNotNull(packet)
+        packet!!
+        assertEquals(TelemetryId.PDR, packet.id)
+        assertEquals(BleFrame.VER, packet.ver)
+        assertEquals(0x1234, packet.seq)
+        assertEquals(12, packet.payload.size)
+
+        // A wrong version byte must be refused: the payload layout may differ.
+        val badVersion = raw.copyOf()
+        badVersion[TelemetryOffset.VER] = 2
+        assertNull(BleFrame.parseTelemetry(badVersion))
+
+        assertNull(BleFrame.parseTelemetry(ByteArray(3)))
+    }
+
+    @Test
+    fun parseImuTelemetryMatchesTheDocumentedOffsets() {
+        val payload = ByteArray(20)
+        writeU16(payload, 0, 258)          // acc x = 0x0102
+        writeU16(payload, 2, 0xFFFE)       // acc y = -2
+        writeU16(payload, 4, 0x7FFF)       // acc z
+        writeU16(payload, 6, 0x0304)       // gyro x
+        writeU16(payload, 8, 0xFFFC)       // gyro y = -4
+        writeU16(payload, 10, 0x7FFE)      // gyro z
+        writeU16(payload, 12, 32767)       // qw = 1.0
+        writeU16(payload, 14, 0)           // qx
+        writeU16(payload, 16, 0xC000)      // qy = -16384
+        writeU16(payload, 18, 0x2000)      // qz = 8192
+
+        val imu = BleFrame.parseImuTelemetry(payload)
+        assertNotNull(imu)
+        imu!!
+        assertEquals(listOf(258, -2, 0x7FFF), imu.accLsb)
+        assertEquals(listOf(0x0304, -4, 0x7FFE), imu.gyroLsb)
+        assertEquals(listOf(32767, 0, -16384, 8192), imu.quatQ15)
+        assertEquals(1.0f, imu.qw, 1e-4f)
+        assertEquals(-0.5f, imu.qy, 1e-4f)
+        assertEquals(0.25f, imu.qz, 1e-3f)
+
+        assertNull(BleFrame.parseImuTelemetry(ByteArray(19)))
+    }
+
+    @Test
+    fun parsePdrTelemetryMatchesTheDocumentedOffsets() {
+        val payload = ByteArray(12)
+        writeU32(payload, 0, 100_000L)             // x east, mm
+        writeU32(payload, 4, 0xFFFFFF9CL)          // y = -100 mm
+        writeU16(payload, 8, 3599)                 // heading, 0.1 deg
+        writeU16(payload, 10, 1234)                // steps
+
+        val pdr = BleFrame.parsePdrTelemetry(payload)
+        assertNotNull(pdr)
+        pdr!!
+        assertEquals(100_000, pdr.xMm)
+        assertEquals(-100, pdr.yMm)
+        assertEquals(3599, pdr.headingDdeg)
+        assertEquals(1234, pdr.steps)
+
+        assertNull(BleFrame.parsePdrTelemetry(ByteArray(11)))
+    }
 }

@@ -22,6 +22,9 @@ object BleUuids {
     /** Firmware log forwarding (UTF-8 after a level + source prefix). */
     val LOG: UUID = UUID.fromString("4C475053-0006-4C47-5053-000000000001")
 
+    /** Binary telemetry stream: IMU (with the attitude quaternion) and PDR packets. */
+    val TELEMETRY: UUID = UUID.fromString("4C475053-0005-4C47-5053-000000000001")
+
     /** Client Characteristic Configuration Descriptor shared by all notified characteristics. */
     val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 }
