@@ -47,4 +47,20 @@ bool lgps_ble_status_subscribed(void);
  */
 void lgps_ble_publish(const struct lgps_telemetry_snapshot *snap);
 
+/*
+ * IMU telemetry, called once per IMU sample with body-frame raw counts. The App
+ * uses it for the pose view: same frame as the quaternion, so the acceleration
+ * vector can be drawn next to the body without a hidden axis swap.
+ *
+ * Cheap when nobody subscribes: it returns before encoding in that case, so the
+ * main loop can call it at the full 26 Hz unconditionally.
+ */
+void lgps_ble_publish_imu(const int16_t acc_lsb[3], const int16_t gyro_lsb[3],
+			  const int16_t quat_q15[4]);
+
+/* PDR telemetry, called when a step completed (and once per second as a
+ * heartbeat by the caller if it wants one).
+ */
+void lgps_ble_publish_pdr(int32_t x_mm, int32_t y_mm, int16_t heading_ddeg, uint16_t steps);
+
 #endif /* LIFEGPS_BLE_H_ */

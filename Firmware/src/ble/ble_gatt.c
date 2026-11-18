@@ -102,6 +102,10 @@ static struct bt_uuid_128 log_uuid = {
 	.uuid = { .type = BT_UUID_TYPE_128 },
 	.val = { LGPS_UUID_LOG_LE },
 };
+static struct bt_uuid_128 telem_uuid = {
+	.uuid = { .type = BT_UUID_TYPE_128 },
+	.val = { LGPS_UUID_TELEMETRY_LE },
+};
 
 static ssize_t status_read(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf,
 			   uint16_t len, uint16_t offset);
@@ -110,6 +114,7 @@ static ssize_t control_write(struct bt_conn *conn, const struct bt_gatt_attr *at
 static void status_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 static void control_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 static void log_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
+static void telem_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 
 BT_GATT_SERVICE_DEFINE(lgps_svc,
 	BT_GATT_PRIMARY_SERVICE(&lgps_svc_uuid.uuid),
@@ -125,11 +130,15 @@ BT_GATT_SERVICE_DEFINE(lgps_svc,
 	BT_GATT_CHARACTERISTIC(&log_uuid.uuid, BT_GATT_CHRC_NOTIFY, BT_GATT_PERM_NONE, NULL, NULL,
 			       NULL),
 	BT_GATT_CCC(log_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+	BT_GATT_CHARACTERISTIC(&telem_uuid.uuid, BT_GATT_CHRC_NOTIFY, BT_GATT_PERM_NONE, NULL, NULL,
+			       NULL),
+	BT_GATT_CCC(telem_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 );
 
 static struct bt_gatt_attr *status_attr;
 static struct bt_gatt_attr *control_attr;
 static struct bt_gatt_attr *log_attr;
+static struct bt_gatt_attr *telem_attr;
 
 /* Written by the BT RX thread (CCC callback), read by the main loop and by the
  * command thread. A single-byte store is atomic on Cortex-M, but it is shared
@@ -138,6 +147,7 @@ static struct bt_gatt_attr *log_attr;
 static volatile bool status_subscribed;
 static bool control_subscribed;
 static bool log_subscribed;
+static volatile bool telem_subscribed;
 static bool debug_unlocked;
 static bool reboot_pending;
 static bool link_up;
@@ -158,6 +168,12 @@ static void reboot_work_handler(struct k_work *work)
  * 82-byte copy is short enough to sit behind a spinlock.
  */
 static uint8_t status_frame[LGPS_BLE_STATUS_SIZE];
+
+/* Free running per-id sequence numbers of the telemetry packets. Only touched by
+ * the main thread, so no locking is needed.
+ */
+static uint16_t telem_seq_imu;
+static uint16_t telem_seq_pdr;
 static bool status_frame_valid;
 static struct k_spinlock status_lock;
 
@@ -318,6 +334,14 @@ static void log_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 
 	log_subscribed = (value == BT_GATT_CCC_NOTIFY);
 	LOG_INF("log stream %s", log_subscribed ? "on" : "off");
+}
+
+static void telem_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+	ARG_UNUSED(attr);
+
+	telem_subscribed = (value == BT_GATT_CCC_NOTIFY);
+	LOG_INF("telemetry stream %s", telem_subscribed ? "on" : "off");
 }
 
 /* --- command queue --------------------------------------------------------- */
@@ -910,6 +934,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	status_subscribed = false;
 	control_subscribed = false;
 	log_subscribed = false;
+	telem_subscribed = false;
 
 	schedule_advertising(LGPS_BLE_ADV_RESTART_MS);
 }
@@ -961,6 +986,61 @@ void lgps_ble_publish(const struct lgps_telemetry_snapshot *snap)
 
 	if (status_subscribed) {
 		notify_guarded(status_attr, frame, (uint16_t)len);
+	}
+}
+
+void lgps_ble_publish_imu(const int16_t acc_lsb[3], const int16_t gyro_lsb[3],
+			  const int16_t quat_q15[4])
+{
+	struct lgps_ble_telem_imu imu;
+	uint8_t packet[LGPS_BLE_TELEM_IMU_SIZE];
+	int len;
+
+	if (!telem_subscribed) {
+		return;
+	}
+
+	if ((acc_lsb == NULL) || (gyro_lsb == NULL) || (quat_q15 == NULL)) {
+		return;
+	}
+
+	for (uint8_t axis = 0U; axis < 3U; axis++) {
+		imu.acc_lsb[axis] = acc_lsb[axis];
+		imu.gyro_lsb[axis] = gyro_lsb[axis];
+	}
+
+	for (uint8_t index = 0U; index < 4U; index++) {
+		imu.quat_q15[index] = quat_q15[index];
+	}
+
+	len = lgps_ble_telem_imu_encode(telem_seq_imu, &imu, packet, sizeof(packet));
+	telem_seq_imu++;
+
+	if (len == (int)LGPS_BLE_TELEM_IMU_SIZE) {
+		notify_guarded(telem_attr, packet, (uint16_t)len);
+	}
+}
+
+void lgps_ble_publish_pdr(int32_t x_mm, int32_t y_mm, int16_t heading_ddeg, uint16_t steps)
+{
+	struct lgps_ble_telem_pdr pdr;
+	uint8_t packet[LGPS_BLE_TELEM_PDR_SIZE];
+	int len;
+
+	if (!telem_subscribed) {
+		return;
+	}
+
+	pdr.x_mm = x_mm;
+	pdr.y_mm = y_mm;
+	pdr.heading_ddeg = heading_ddeg;
+	pdr.steps = steps;
+
+	len = lgps_ble_telem_pdr_encode(telem_seq_pdr, &pdr, packet, sizeof(packet));
+	telem_seq_pdr++;
+
+	if (len == (int)LGPS_BLE_TELEM_PDR_SIZE) {
+		notify_guarded(telem_attr, packet, (uint16_t)len);
 	}
 }
 
@@ -1016,7 +1096,10 @@ int lgps_ble_init(void)
 					    &control_uuid.uuid);
 	log_attr = bt_gatt_find_by_uuid(lgps_svc.attrs, (uint16_t)lgps_svc.attr_count,
 					&log_uuid.uuid);
-	if ((status_attr == NULL) || (control_attr == NULL) || (log_attr == NULL)) {
+	telem_attr = bt_gatt_find_by_uuid(lgps_svc.attrs, (uint16_t)lgps_svc.attr_count,
+					  &telem_uuid.uuid);
+	if ((status_attr == NULL) || (control_attr == NULL) || (log_attr == NULL) ||
+	    (telem_attr == NULL)) {
 		LOG_ERR("GATT attribute lookup failed, notifications disabled");
 		return -ENOENT;
 	}

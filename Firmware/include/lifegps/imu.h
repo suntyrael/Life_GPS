@@ -44,6 +44,11 @@
 #define LGPS_IMU_GYRO_FS_DPS 1000.0F   /* CTRL2_G FS[1:0]_G = 10b */
 #define LGPS_IMU_GYRO_MDPS_LSB 35.0F   /* datasheet G_So, FS = +/-1000 dps */
 
+/* LIS2MDL sensitivity, 1.5 mG/LSB (1 mG = 0.1 uT). Same value the telemetry
+ * formatter uses; named here so the navigation code does not invent its own.
+ */
+#define LGPS_LIS2MDL_UT_PER_LSB 0.15F
+
 /*
  * ODR programmed for both chains: 26 Hz high-performance. It is the native rate
  * closest to the 20 Hz the PDR design assumes, and 26 samples of it make the ZUPT

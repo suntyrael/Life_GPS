@@ -30,6 +30,7 @@ target_sources(app PRIVATE
   src/gnss/gnss.c
   src/gnss/ubx.c
   src/imu/lsm6dsr.c
+  src/nav/attitude.c
   src/nav/nav.c
   src/power/battery.c
   src/power/keys.c

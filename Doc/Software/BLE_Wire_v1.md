@@ -25,6 +25,7 @@
 | Status | `4C475053-0002-4C47-5053-000000000001` | Read + Notify + CCC | 82 字节固定状态快照；有 central 订阅时 10 Hz 推送，无订阅时 1 Hz 仅维持缓存 |
 | Control | `4C475053-0003-4C47-5053-000000000001` | Write + WriteWithoutResponse + Notify + CCC | 命令帧请求，响应走 Notify |
 | Log | `4C475053-0006-4C47-5053-000000000001` | Notify + CCC | 固件日志转发（UTF-8） |
+| Telemetry | `4C475053-0005-4C47-5053-000000000001` | Notify + CCC | 按传感器分组的二进制包：IMU（含姿态四元数）26 Hz、PDR 每步 |
 
 UUID 的 128 位表示与固件 `Firmware/include/lifegps/ble_uuid.h` 中的**小端字节宏**一一对应；
 两端一致性由 `Firmware/tests/lifegps.ble_frame` 的单测锁定（解析生成头里的 UUID 字符串
@@ -106,6 +107,33 @@ char message[...]        UTF-8，超长截断（单包 ≤ 240 字节）
 
 固件侧由 Zephyr log backend 写入 2 KB 环形缓冲，专用线程每 20 ms 出队并 notify，
 因此 `CONFIG_LOG_MODE_IMMEDIATE=y` 的 ISR 上下文也不会直接调用 GATT。
+
+## 5.1 Telemetry 包（Telemetry 特征）
+
+一个包只装一组传感器，避免把 82 字节的 Status 撑成高频宽帧：
+
+```
+off type  field
+0   u8    id     0x01 GNSS / 0x02 IMU / 0x03 MAG / 0x04 BARO / 0x05 PDR / 0x06 POWER / 0x07 SYSTEM
+1   u8    ver    = 1
+2   u16   seq    按 id 独立自由计数
+4   ...   payload
+```
+
+| id | payload | 字段 | 速率 |
+| :--- | :--- | :--- | :--- |
+| `0x02` IMU | 20 B（整包 24 B） | `i16 acc_lsb[3]`、`i16 gyro_lsb[3]`、`i16 quat_q15[4]`（w,x,y,z，32767 = 1.0） | 26 Hz（仅订阅时） |
+| `0x05` PDR | 12 B（整包 16 B） | `i32 x_mm`（东）、`i32 y_mm`（北）、`i16 heading_ddeg`、`u16 steps` | 每完成一步 + 1 Hz 心跳 |
+
+**IMU 包是 body 帧**（X 右 / Y 前 / Z 前脸法向），四元数把 body 映射到 world
+（X 东 / Y 北 / Z 上），所以加速度矢量可以直接和姿态一起画。
+Status 帧里的 `acc_lsb`/`gyro_lsb`/`mag_lsb` 仍是 **sensor 帧**（既有口径，不在此改动）。
+
+空口预算：26 Hz × 24 B ≈ 620 B/s，30–50 ms 连接间隔下占空比可忽略。
+App 侧建议把渲染限流到 15 Hz：26 Hz 的通知照收，但 Compose 每帧重绘没有必要。
+
+航向基准由固件决定，App 不需要复算：GNSS 有效且地速 ≥ 1.5 m/s 时用航迹角对齐
+yaw（并顺带学习磁力计偏置），否则用磁力计按该偏置维持 yaw。
 
 ## 6. 命令清单（v1）
 
