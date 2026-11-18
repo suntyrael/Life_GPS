@@ -166,7 +166,9 @@ jobs:
             apt-get update -qq
             apt-get install -y --no-install-recommends make
           fi
-          make --version | head -1
+          # No pipe here: `make --version | head -1` died with SIGPIPE (141) under
+          # `set -e -o pipefail` and failed the step.
+          make --version > /dev/null 2>&1 && echo "make: available"
           cd "${GITHUB_WORKSPACE}"
           "${ZEPHYR_BASE}/scripts/twister" -p native_sim -T Firmware/tests \
             -O "${NCS_WORKSPACE}/twister-out" --inline-logs -v
