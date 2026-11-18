@@ -335,4 +335,89 @@ ZTEST(lifegps_ble, test_caps_and_flash_info_layout)
 	zassert_equal(info_buf[22], 16U, "sector_count");
 }
 
+/* --- telemetry packets ----------------------------------------------------- */
+
+ZTEST(lifegps_ble, test_telemetry_imu_packet_layout)
+{
+	const struct lgps_ble_telem_imu imu = {
+		.acc_lsb = { 0x0102, -2, 0x7FFF },
+		.gyro_lsb = { 0x0304, -4, 0x7FFE },
+		.quat_q15 = { 32767, 0, -16384, 8192 },
+	};
+	uint8_t out[LGPS_BLE_TELEM_IMU_SIZE];
+	int len;
+
+	len = lgps_ble_telem_imu_encode(0x1234U, &imu, out, sizeof(out));
+
+	zassert_equal(len, LGPS_BLE_TELEM_IMU_SIZE, "IMU telemetry packet length");
+	zassert_equal(LGPS_BLE_TELEM_IMU_SIZE, 24, "IMU telemetry packet stays 24 bytes");
+
+	/* Header, then the documented payload offsets. */
+	zassert_equal(out[0], 0x02U, "telemetry id IMU");
+	zassert_equal(out[1], 0x01U, "telemetry version");
+	zassert_equal(out[2], 0x34U, "seq low byte");
+	zassert_equal(out[3], 0x12U, "seq high byte");
+
+	zassert_equal(out[4], 0x02U, "acc[0] low");
+	zassert_equal(out[5], 0x01U, "acc[0] high");
+	zassert_equal(out[6], 0xFEU, "acc[1] negative");
+	zassert_equal(out[10], 0x04U, "gyro[0] low");
+	zassert_equal(out[12], 0xFCU, "gyro[1] negative");
+	zassert_equal(out[16], 0xFFU, "quat w low byte (32767)");
+	zassert_equal(out[17], 0x7FU, "quat w high byte (32767)");
+	zassert_equal(out[18], 0x00U, "quat x is zero");
+	zassert_equal(out[20], 0x00U, "quat y low byte (-16384)");
+	zassert_equal(out[21], 0xC0U, "quat y high byte (-16384)");
+	zassert_equal(out[22], 0x00U, "quat z low byte (8192)");
+	zassert_equal(out[23], 0x20U, "quat z high byte (8192)");
+
+	zassert_equal(lgps_ble_telem_imu_encode(0U, &imu, out, LGPS_BLE_TELEM_IMU_SIZE - 1U),
+		      -ENOMEM, "short output buffer must be refused");
+	zassert_equal(lgps_ble_telem_imu_encode(0U, NULL, out, sizeof(out)), -EINVAL,
+		      "NULL payload must be refused");
+}
+
+ZTEST(lifegps_ble, test_telemetry_pdr_packet_layout)
+{
+	const struct lgps_ble_telem_pdr pdr = {
+		.x_mm = 0x000186A0,  /* 100 000 mm east */
+		.y_mm = -0x00000064, /* -100 mm north */
+		.heading_ddeg = 3599,
+		.steps = 1234,
+	};
+	uint8_t out[LGPS_BLE_TELEM_PDR_SIZE];
+	int len;
+
+	len = lgps_ble_telem_pdr_encode(7U, &pdr, out, sizeof(out));
+
+	zassert_equal(len, LGPS_BLE_TELEM_PDR_SIZE, "PDR telemetry packet length");
+	zassert_equal(LGPS_BLE_TELEM_PDR_SIZE, 16, "PDR telemetry packet stays 16 bytes");
+	zassert_equal(out[0], 0x05U, "telemetry id PDR");
+	zassert_equal(out[2], 7U, "seq low byte");
+	zassert_equal(out[4], 0xA0U, "x_mm byte 0");
+	zassert_equal(out[7], 0x00U, "x_mm byte 3");
+	zassert_equal(out[8], 0x9CU, "y_mm byte 0 (-100)");
+	zassert_equal(out[11], 0xFFU, "y_mm byte 3 (-100, two's complement)");
+	zassert_equal(out[12], 0x0FU, "heading_ddeg low byte (3599)");
+	zassert_equal(out[13], 0x0EU, "heading_ddeg high byte (3599)");
+	zassert_equal(out[14], 0xD2U, "steps low byte (1234)");
+	zassert_equal(out[15], 0x04U, "steps high byte (1234)");
+}
+
+ZTEST(lifegps_ble, test_telemetry_generic_encoder_bounds)
+{
+	uint8_t payload[2] = { 0xAA, 0xBB };
+	uint8_t out[LGPS_BLE_TELEM_HEADER_SIZE + 2U];
+
+	zassert_equal(lgps_ble_telem_encode(0x07U, 1U, payload, sizeof(payload), out, sizeof(out)),
+		      (int)(LGPS_BLE_TELEM_HEADER_SIZE + 2U), "generic telemetry packet");
+	zassert_equal(out[0], 0x07U, "id");
+	zassert_equal(out[4], 0xAAU, "payload byte 0");
+	zassert_equal(out[5], 0xBBU, "payload byte 1");
+
+	zassert_equal(lgps_ble_telem_encode(0x07U, 1U, payload, sizeof(payload), out,
+					    sizeof(out) - 1U),
+		      -ENOMEM, "short output buffer");
+}
+
 ZTEST_SUITE(lifegps_ble, NULL, NULL, NULL, NULL, NULL);

@@ -242,3 +242,70 @@ int lgps_ble_flash_info_encode(const struct lgps_ble_flash_info *info, uint8_t *
 
 	return (int)LGPS_BLE_FLASH_INFO_SIZE;
 }
+
+/* --- telemetry -------------------------------------------------------------- */
+
+int lgps_ble_telem_encode(uint8_t id, uint16_t seq, const uint8_t *payload, uint16_t payload_len,
+			  uint8_t *out, size_t out_size)
+{
+	size_t packet_len;
+
+	if ((out == NULL) || ((payload_len != 0U) && (payload == NULL))) {
+		return -EINVAL;
+	}
+
+	packet_len = (size_t)LGPS_BLE_TELEM_HEADER_SIZE + payload_len;
+	if (out_size < packet_len) {
+		return -ENOMEM;
+	}
+
+	out[0] = id;
+	out[1] = (uint8_t)LGPS_BLE_WIRE_VER;
+	put_u16(&out[2], seq);
+
+	if (payload_len != 0U) {
+		memcpy(&out[LGPS_BLE_TELEM_HEADER_SIZE], payload, payload_len);
+	}
+
+	return (int)packet_len;
+}
+
+int lgps_ble_telem_imu_encode(uint16_t seq, const struct lgps_ble_telem_imu *imu, uint8_t *out,
+			      size_t out_size)
+{
+	uint8_t payload[LGPS_BLE_TELEM_IMU_PAYLOAD];
+
+	if (imu == NULL) {
+		return -EINVAL;
+	}
+
+	for (uint8_t axis = 0U; axis < 3U; axis++) {
+		put_i16(&payload[axis * 2U], imu->acc_lsb[axis]);
+		put_i16(&payload[6U + (axis * 2U)], imu->gyro_lsb[axis]);
+	}
+
+	for (uint8_t index = 0U; index < 4U; index++) {
+		put_i16(&payload[12U + (index * 2U)], imu->quat_q15[index]);
+	}
+
+	return lgps_ble_telem_encode((uint8_t)LGPS_BLE_TELEM_IMU, seq, payload, sizeof(payload), out,
+				     out_size);
+}
+
+int lgps_ble_telem_pdr_encode(uint16_t seq, const struct lgps_ble_telem_pdr *pdr, uint8_t *out,
+			      size_t out_size)
+{
+	uint8_t payload[LGPS_BLE_TELEM_PDR_PAYLOAD];
+
+	if (pdr == NULL) {
+		return -EINVAL;
+	}
+
+	put_i32(&payload[0], pdr->x_mm);
+	put_i32(&payload[4], pdr->y_mm);
+	put_i16(&payload[8], pdr->heading_ddeg);
+	put_u16(&payload[10], pdr->steps);
+
+	return lgps_ble_telem_encode((uint8_t)LGPS_BLE_TELEM_PDR, seq, payload, sizeof(payload), out,
+				     out_size);
+}

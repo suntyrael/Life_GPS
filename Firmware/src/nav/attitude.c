@@ -229,8 +229,8 @@ void lgps_attitude_reset(struct lgps_attitude *att, const float accel_g[3])
 	}
 }
 
-void lgps_attitude_update(struct lgps_attitude *att, const float accel_g[3], const float gyro_rps[3],
-			  float dt_s)
+void lgps_attitude_update(struct lgps_attitude *att, const float accel_g[3],
+			  const float gyro_rps[3], float dt_s)
 {
 	float unit[3];
 	float world_up[3] = { 0.0F, 0.0F, 1.0F };
@@ -291,7 +291,7 @@ void lgps_attitude_accumulate_bias(struct lgps_attitude *att, const float gyro_r
 
 	for (uint8_t axis = 0U; axis < 3U; axis++) {
 		att->gyro_bias_rps[axis] +=
-			LGPS_GYRO_BIAS_ALPHA * (gyro_rps[axis] - att->gyro_bias_rps[axis]);
+			(LGPS_GYRO_BIAS_ALPHA * (gyro_rps[axis] - att->gyro_bias_rps[axis]));
 	}
 }
 

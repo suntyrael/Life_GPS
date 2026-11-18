@@ -89,6 +89,45 @@ enum lgps_ble_status_code {
 #define LGPS_BLE_FLASH_INFO_SIZE 24U
 #define LGPS_BLE_LOG_MAX_PACKET 240U
 
+/*
+ * Telemetry characteristic (4C475053-0005-...): one small packet per sensor
+ * group instead of one wide status frame, so the phone can get the attitude at
+ * the IMU rate and the scalar snapshot at its own rate.
+ *
+ * Header: id u8, ver u8, seq u16 (free running per id).
+ */
+#define LGPS_BLE_TELEM_HEADER_SIZE 4U
+#define LGPS_BLE_TELEM_IMU_PAYLOAD 20U
+#define LGPS_BLE_TELEM_IMU_SIZE (LGPS_BLE_TELEM_HEADER_SIZE + LGPS_BLE_TELEM_IMU_PAYLOAD)
+#define LGPS_BLE_TELEM_PDR_PAYLOAD 12U
+#define LGPS_BLE_TELEM_PDR_SIZE (LGPS_BLE_TELEM_HEADER_SIZE + LGPS_BLE_TELEM_PDR_PAYLOAD)
+
+/* Telemetry ids, mirroring protocol/lifegps_protocol.yaml `telemetry:`. */
+enum lgps_ble_telem_id {
+	LGPS_BLE_TELEM_GNSS = 0x01,
+	LGPS_BLE_TELEM_IMU = 0x02,
+	LGPS_BLE_TELEM_MAG = 0x03,
+	LGPS_BLE_TELEM_BARO = 0x04,
+	LGPS_BLE_TELEM_PDR = 0x05,
+	LGPS_BLE_TELEM_POWER = 0x06,
+	LGPS_BLE_TELEM_SYSTEM = 0x07,
+};
+
+/* Body-frame IMU sample plus the quaternion estimate (Q15, 32767 = 1.0). */
+struct lgps_ble_telem_imu {
+	int16_t acc_lsb[3];
+	int16_t gyro_lsb[3];
+	int16_t quat_q15[4];
+};
+
+/* PDR position in millimetres (x east, y north) with the current heading. */
+struct lgps_ble_telem_pdr {
+	int32_t x_mm;
+	int32_t y_mm;
+	int16_t heading_ddeg;
+	uint16_t steps;
+};
+
 /* Status snapshot, field semantics in Doc/Software/BLE_Wire_v1.md section 4. */
 struct lgps_ble_status {
 	uint8_t flags;
@@ -170,5 +209,21 @@ int lgps_ble_caps_encode(const struct lgps_ble_caps *caps, uint8_t *out, size_t 
 /* Serialise an FLASH_INFO body. Returns LGPS_BLE_FLASH_INFO_SIZE or -EINVAL/-ENOMEM. */
 int lgps_ble_flash_info_encode(const struct lgps_ble_flash_info *info, uint8_t *out,
 			       size_t out_size);
+
+/*
+ * Serialise one telemetry packet (header + caller supplied payload).
+ * Returns the packet length, or -EINVAL on NULL/oversized payload, -ENOMEM when
+ * @p out is too small.
+ */
+int lgps_ble_telem_encode(uint8_t id, uint16_t seq, const uint8_t *payload, uint16_t payload_len,
+			  uint8_t *out, size_t out_size);
+
+/* IMU telemetry packet. Returns LGPS_BLE_TELEM_IMU_SIZE or a negative errno. */
+int lgps_ble_telem_imu_encode(uint16_t seq, const struct lgps_ble_telem_imu *imu, uint8_t *out,
+			      size_t out_size);
+
+/* PDR telemetry packet. Returns LGPS_BLE_TELEM_PDR_SIZE or a negative errno. */
+int lgps_ble_telem_pdr_encode(uint16_t seq, const struct lgps_ble_telem_pdr *pdr, uint8_t *out,
+			      size_t out_size);
 
 #endif /* LIFEGPS_BLE_FRAME_H_ */
