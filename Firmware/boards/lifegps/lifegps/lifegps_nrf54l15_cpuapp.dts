@@ -257,9 +257,12 @@
 };
 
 /*
- * BAT_ADC on P1.11 = AIN4. Divider R25 = 1 M, R26 = 330 k, C14 = 100 nF.
- * SAADC gain 1/2 against the internal reference keeps a 4.2 V pack inside range
- * (see src/power/battery.c for the divider + input-resistance correction).
+ * BAT_ADC on P1.11 = AIN4. The netlist divider is R25 = 1 M, R26 = 330 k with
+ * C14 = 100 nF, but the fitted part measures 0.2861 instead of 0.2481 (that is
+ * R25 ~820 k), so the ratio is calibrated in software, not here. SAADC gain 1/2
+ * against the internal reference keeps a 4.2 V pack inside range: a 4.2 V pack
+ * maps to a 1.202 V tap, and the channel's 1800 mV reported full scale carries
+ * its own +4.18 % correction. Both constants live in include/lifegps/battery.h.
  */
 &adc {
 	status = "okay";

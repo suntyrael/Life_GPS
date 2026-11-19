@@ -21,7 +21,7 @@
 | 按键 | `src/power/keys.c` | 10 ms 轮询 + 100 ms 软件消抖（板上无 RC，`LGPS_KEY_DEBOUNCE_MS`）、8 s 长按、短按事件；`gpio_pin_get_raw()` 采样物理电平 |
 | 电源状态机 | `src/power/power_sm.c` | 长按 8 s → 关机灯语 → `sys_poweroff()`；KEY1 短按 = POI 打点请求；KEY2 短按 = 高精模式标志 |
 | 看门狗 | `src/power/wdt.c` | WDT30 30 s，分层喂狗（主循环线程 + GNSS 线程，每个 5 s 窗口各签到至少一次才喂；窗口结束即清掩码） |
-| 电池 | `src/power/battery.c` | SAADC AIN4（P1.11），按 R25/R26∥R_in 修正分压比；**不输出百分比**（放电曲线未实测） |
+| 电池 | `src/power/battery.c` | SAADC AIN4（P1.11）；两段标定：分压实测 0.2861（`LGPS_BATT_CAL_PACK_UV/TAP_UV`）+ ADC 通道 +4.18 % 标度误差（`LGPS_BATT_ADC_GAIN_PPM`），2.5–4.4 V 误差 ≤ ±2 mV；**不输出百分比**（放电曲线未实测） |
 | GNSS | `src/gnss/gnss.c`, `src/gnss/ubx.c` | UARTE20 38400（M10 出厂默认，与设备树 `current-speed` 一致）、UBX-CFG-MSG 打开 NAV-PVT、解析 NAV-PVT、冷启动 60 s → 首定 → 星历保持 35 s → PMREQ 备份 + 断电 → 退避 120/300/900 s |
 | IMU | `src/imu/lsm6dsr.c` | LSM6DSR 软复位、WHO_AM_I=0x6B 校验、±4 g/±1000 dps @26 Hz 高性能（数据就绪位驱动采样）、INT1=DRDY；sensor hub 探测 LIS2MDL/BMP388 并配置 12 字节串流 |
 | 导航数学 | `src/nav/nav.c` | 机体坐标旋转、ZUPT 双判据（σ²<0.005 g²、‖ω‖<0.08 rad/s、持续 10 s）、Weinberg 步长、磁异常判据 |
@@ -40,7 +40,7 @@
 | GNSS 串口 | UARTE20，P1.04 TX / P1.05 RX | 同上 |
 | IMU SPI | SPIM22，SCK P1.03 / MOSI P1.02 / MISO P1.13 / CS P1.14（同域，无需 Constant Latency） | 同上 + pinmap §1.1.2 方案 B |
 | Flash SPI | SPIM00，SCK P2.01 / MOSI P2.02 / MISO P2.04 / CS P2.05，8 MHz | pinmap §2 |
-| 电池采样 | P1.11 = AIN4，R25 = 1 MΩ、R26 = 330 kΩ、SAADC R_in ≈ 735 kΩ | pinmap §2/§3 |
+| 电池采样 | P1.11 = AIN4；网表标称 R25 = 1 MΩ / R26 = 330 kΩ（理论 0.2481），**实板实测 0.2861 ≈ R25 820 kΩ**；735 kΩ 是 SAADC 等效输入阻抗、DC 不加载 | pinmap §2/§3；`Firmware/include/lifegps/battery.h` |
 | NFC 脚释放 | `&uicr { nfct-pins-as-gpios; }` | `boards/nordic/nrf54l15tag/*.dts:26`（同版本 Zephyr 4.4.2） |
 | RRAM 分区 | boot 62 KB / slot0 712 KB / slot1 712 KB / storage 36 KB | `dts/vendor/nordic/nrf54l15_cpuapp_partition.dtsi` |
 | Flash 深度掉电 | tDP = 3 µs、tRES1 = 30 µs | `Doc/Hardware/Datasheets/Winbond_07022021_W25Q512NW-2451091.pdf` AC characteristics |
@@ -101,7 +101,7 @@
 | | `acc_g` `gyro_dps` | `LSB × 0.122 mg` / `× 35 mdps` | 灵敏度取自 DS11976 Table 3 |
 | `MAG` | `lsb` / `ut` | LIS2MDL 0x68..0x6D | `1 LSB = 1.5 mG = 0.15 µT`（LIS2MDL Table 3 `So`） |
 | `BARO` | `press_raw` `temp_raw` | BMP388 0x04..0x09 | 原始 24 位；**未做补偿**，所以不打印 hPa/°C |
-| `SYS` | `bat_mv` | SAADC AIN4 + 分压修正 | 每 10 s 采样一次，期间沿用缓存 |
+| `SYS` | `bat_mv` | SAADC AIN4 + 分压实测标定 + ADC 标度修正 | 每 10 s 采样一次，期间沿用缓存 |
 | | `chg` | SGM4056 `/CHG` | `1` = 正在充电 |
 | | `keys` | 消抖后的电平 | `K1,K2`，`1` = 按下（用来看按键是否卡死） |
 | | `zupt` `var_mg2` | ZUPT 状态机 | `locked/move` 与加速度模长方差（mg²） |

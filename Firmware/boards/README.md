@@ -22,7 +22,7 @@
 - Flash SPI（`SPIM00`）：SCK `P2.01`、MOSI `P2.02`、MISO `P2.04`、CS `P2.05`（**内部上拉**）
 - IMU SPI（`SPIM22` 同域 P1，无需 Constant Latency）：SCK `P1.03`、MOSI `P1.02`、MISO `P1.13`、CS `P1.14`（P1.02/P1.03 为 NFC 脚，须先 `&uicr { nfct-pins-as-gpios; }`）；INT1 `P0.02`
 - LED：`P1.10` 红 / `P1.12` 蓝 / `P1.13` 绿（DTC143ZETL 带阻三极管直驱）
-- 电池采样：`P1.11` = SAADC **AIN4**（非 AIN0），须做 735kΩ 输入阻抗修正
+- 电池采样：`P1.11` = SAADC **AIN4**（非 AIN0），分压比按**实板实测 0.2861** 标定（网表理论 0.2481 与实物不符）；SAADC 735 kΩ 是等效输入阻抗，DC 不加载
 - 调试串口：`P0.00` / `P0.01`（`UARTE30`），115200
 
 引脚以 **`Doc/Hardware/Pinmap_Main_V0.2.md`**（SSOT）与 V0.2 原理图为唯一依据；V0.1 SVG 仅作历史参考。
