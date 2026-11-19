@@ -39,6 +39,9 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 #define REG_SLV1_ADD 0x18U
 #define REG_SLV1_SUBADD 0x19U
 #define REG_SLV1_CONFIG 0x1AU
+#define REG_SLV2_ADD 0x1BU
+#define REG_SLV2_SUBADD 0x1CU
+#define REG_SLV2_CONFIG 0x1DU
 #define REG_DATAWRITE_SLV0 0x21U
 
 /* Bit definitions. */
@@ -83,12 +86,21 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 #define LIS2MDL_INT_THS_H_PATTERN 0x5AU
 #define LIS2MDL_WHO_AM_I_REG 0x4FU
 
-/* Hub block layout: LIS2MDL 0x68..0x6f is one contiguous run (six magnetometer
- * bytes followed by the two temperature bytes), then the BMP388 register run.
+/*
+ * Hub block layout. numop is a 3-bit field, so one slave transfers at most seven
+ * bytes; asking for eight silently reinterprets bit 3 as BATCH_EXT_SENS_0_EN and
+ * sets numop = 0, i.e. no read at all (that is what broke the magnetometer on the
+ * 2026-11-19 build). The LIS2MDL temperature therefore gets its own slave:
+ *
+ *   Sensor 0: LIS2MDL 0x68, 6 bytes (magnetometer)   -> hub 0..5
+ *   Sensor 1: BMP388  0x04, 6 bytes (pressure + T)   -> hub 6..11
+ *   Sensor 2: LIS2MDL 0x6e, 2 bytes (TEMP_OUT)       -> hub 12..13
  */
-#define HUB_MAG_BYTES 8U
+#define HUB_MAX_NUMOP 7U
+#define HUB_MAG_BYTES 6U
 #define HUB_BARO_BYTES 6U
-#define HUB_BLOCK_BYTES (HUB_MAG_BYTES + HUB_BARO_BYTES)
+#define HUB_MAG_TEMP_BYTES 2U
+#define HUB_BLOCK_BYTES (HUB_MAG_BYTES + HUB_BARO_BYTES + HUB_MAG_TEMP_BYTES)
 /* LSM6DSR sample burst: OUT_TEMP (0x20/0x21) is immediately followed by the gyro
  * and accelerometer outputs, so one burst covers all three quantities.
  */
@@ -332,7 +344,7 @@ static int hub_single_read(uint8_t i2c_addr, uint8_t sub_reg, uint8_t *out,
 	uint8_t numop = (uint8_t)len_bytes;
 	int ret;
 
-	if (out == NULL || len_bytes == 0U || len_bytes > 7U) {
+	if (out == NULL || len_bytes == 0U || len_bytes > HUB_MAX_NUMOP) {
 		return -EINVAL;
 	}
 
@@ -892,11 +904,11 @@ int lgps_imu_hub_configure(void)
 		goto out;
 	}
 
-	/* SHUB_ODR = 01b | numop = 8: six magnetometer bytes plus TEMP_OUT.
+	/* SHUB_ODR = 01b | numop = 6 (six magnetometer bytes, see HUB_MAX_NUMOP).
 	 * The cycle itself is triggered by the accelerometer/gyro data-ready, so the
 	 * effective rate is 26 Hz whatever this field asks for (DS11976 table 373).
 	 */
-	ret = imu_write(REG_SLV0_CONFIG, (uint8_t)(BIT(6) | 0x08U));
+	ret = imu_write(REG_SLV0_CONFIG, (uint8_t)(BIT(6) | HUB_MAG_BYTES));
 	if (ret < 0) {
 		goto out;
 	}
@@ -911,12 +923,29 @@ int lgps_imu_hub_configure(void)
 		goto out;
 	}
 
-	ret = imu_write(REG_SLV1_CONFIG, 0x06U); /* numop = 6: pressure + temperature */
+	ret = imu_write(REG_SLV1_CONFIG, HUB_BARO_BYTES); /* pressure + temperature */
 	if (ret < 0) {
 		goto out;
 	}
 
-	ret = imu_write(REG_MASTER_CONFIG, BIT(0) | MASTER_ON); /* two sensors, master on */
+	/* Third slave: LIS2MDL TEMP_OUT. Two bytes, so it fits the 3-bit numop. */
+	ret = imu_write(REG_SLV2_ADD, (uint8_t)((LGPS_LIS2MDL_I2C_ADDR << 1) | SLV0_ADD_READ));
+	if (ret < 0) {
+		goto out;
+	}
+
+	ret = imu_write(REG_SLV2_SUBADD, LIS2MDL_TEMP_OUT_L_REG);
+	if (ret < 0) {
+		goto out;
+	}
+
+	ret = imu_write(REG_SLV2_CONFIG, HUB_MAG_TEMP_BYTES);
+	if (ret < 0) {
+		goto out;
+	}
+
+	/* AUX_SENS_ON = 10b -> three sensors (table 367), master on. */
+	ret = imu_write(REG_MASTER_CONFIG, BIT(1) | MASTER_ON);
 	if (ret < 0) {
 		goto out;
 	}
@@ -928,15 +957,20 @@ int lgps_imu_hub_configure(void)
 	uint8_t check[HUB_BLOCK_BYTES] = { 0U };
 
 	if (imu_read_buf(REG_SENSOR_HUB_1, check, sizeof(check)) == 0) {
-		LOG_INF("sensor hub streaming: LIS2MDL 8B (mag + temp), BMP388 6B, hub cycle "
-			"26 Hz (gated by the IMU data-ready), %u of 18 bytes used @0x%02x",
-			(unsigned int)HUB_BLOCK_BYTES, bmp388_addr);
-		LOG_INF("sensor hub first burst: %02x %02x %02x %02x %02x %02x %02x %02x | "
-			"%02x %02x %02x %02x %02x %02x", check[0], check[1], check[2], check[3],
-			check[4], check[5], check[6], check[7], check[8], check[9], check[10],
-			check[11], check[12], check[13]);
+		LOG_INF("sensor hub streaming: 3 slaves (LIS2MDL mag 6B, BMP388 6B, LIS2MDL "
+			"temp 2B), hub cycle 26 Hz (gated by the IMU data-ready), %u of 18 bytes "
+			"used @0x%02x", (unsigned int)HUB_BLOCK_BYTES, bmp388_addr);
+		LOG_INF("sensor hub first burst: mag %02x %02x %02x %02x %02x %02x | baro "
+			"%02x %02x %02x %02x %02x %02x | mag_T %02x %02x", check[0], check[1],
+			check[2], check[3], check[4], check[5], check[6], check[7], check[8],
+			check[9], check[10], check[11], check[12], check[13]);
 
-		if ((check[8] == 0U) && (check[9] == 0U) && (check[10] == 0U)) {
+		if ((check[0] == 0U) && (check[1] == 0U) && (check[2] == 0U)) {
+			LOG_ERR("LIS2MDL returned zeros although it answered its WHO_AM_I read: "
+				"check the sensor hub block layout and numop");
+		}
+
+		if ((check[6] == 0U) && (check[7] == 0U) && (check[8] == 0U)) {
 			LOG_WRN("BMP388 pressure reads 0: check PWR_CTRL write path, SDO strapping "
 				"(0x76/0x77) and that U4 is populated");
 		}
@@ -1075,13 +1109,13 @@ int lgps_imu_read_hub(struct lgps_imu_mag *mag, struct lgps_imu_baro *baro)
 					   ((uint16_t)raw[2U * axis + 1U] << 8));
 	}
 
-	/* LIS2MDL TEMP_OUT follows the magnetometer outputs (0x6e/0x6f). */
-	mag->raw_temp = (int16_t)((uint16_t)raw[6] | ((uint16_t)raw[7] << 8));
-
 	/* BMP388 pressure and temperature are unsigned 24-bit values. */
-	baro->raw_pressure = (uint32_t)raw[8] | ((uint32_t)raw[9] << 8) | ((uint32_t)raw[10] << 16);
-	baro->raw_temperature = (uint32_t)raw[11] | ((uint32_t)raw[12] << 8) |
-				((uint32_t)raw[13] << 16);
+	baro->raw_pressure = (uint32_t)raw[6] | ((uint32_t)raw[7] << 8) | ((uint32_t)raw[8] << 16);
+	baro->raw_temperature = (uint32_t)raw[9] | ((uint32_t)raw[10] << 8) |
+				((uint32_t)raw[11] << 16);
+
+	/* Third hub slave: LIS2MDL TEMP_OUT (0x6e/0x6f). */
+	mag->raw_temp = (int16_t)((uint16_t)raw[12] | ((uint16_t)raw[13] << 8));
 
 	mag->valid = mag_present;
 	baro->valid = baro_present;
