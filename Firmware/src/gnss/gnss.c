@@ -1071,14 +1071,25 @@ static void gnss_process_rx(void)
 			}
 		} else if (parser.msg_class == LGPS_UBX_CLASS_NAV &&
 			   parser.msg_id == LGPS_UBX_ID_NAV_SAT) {
-			struct lgps_gnss_sat sats[LGPS_GNSS_SAT_MAX];
+			struct lgps_nav_sat decoded[LGPS_GNSS_SAT_MAX];
 			uint8_t count = 0U;
 
-			if (lgps_ubx_decode_nav_sat(&parser, sats, (uint8_t)ARRAY_SIZE(sats),
+			if (lgps_ubx_decode_nav_sat(&parser, decoded, (uint8_t)ARRAY_SIZE(decoded),
 						    &count) == 0) {
 				k_spinlock_key_t key = k_spin_lock(&sat_lock);
 
-				memcpy(sat_list, sats, (size_t)count * sizeof(sats[0]));
+				/* The UBX type is the decoder's; the cache holds the public
+				 * struct, copied field by field so the two never alias.
+				 */
+				for (uint8_t index = 0U; index < count; index++) {
+					sat_list[index].gnss_id = decoded[index].gnss_id;
+					sat_list[index].sv_id = decoded[index].sv_id;
+					sat_list[index].cno = decoded[index].cno;
+					sat_list[index].elev = decoded[index].elev;
+					sat_list[index].quality = decoded[index].quality;
+					sat_list[index].used = decoded[index].used;
+				}
+
 				sat_count = count;
 				sat_uptime_ms = lgps_diag_uptime_ms();
 				k_spin_unlock(&sat_lock, key);

@@ -25,6 +25,7 @@ import com.lifegps.app.debug.LogSource
 import com.lifegps.app.debug.MagCalResult
 import com.lifegps.app.debug.MagStatus
 import com.lifegps.app.debug.PoiMarker
+import com.lifegps.app.debug.SatelliteInfo
 import com.lifegps.app.debug.ScannedDevice
 import com.lifegps.app.debug.TrailPoint
 import java.io.File
@@ -487,7 +488,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
      * only place the per-satellite rows come from. Azimuth and ephemeris flags are
      * not published by this firmware version and stay unset instead of zero-filled.
      */
-    private fun onSatTelemetry(telemetry: BleFrame.SatTelemetry) {
+    private fun onSatTelemetry(telemetry: SatTelemetry) {
         val rows = telemetry.rows
             .sortedWith(compareByDescending<SatTelemetryRow> { it.used }.thenByDescending { it.cno })
             .map { row ->
