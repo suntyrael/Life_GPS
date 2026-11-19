@@ -40,6 +40,7 @@
 #include <lifegps/ble.h>
 #include <lifegps/ble_frame.h>
 #include <lifegps/ble_uuid.h>
+#include <lifegps/calib.h>
 #include <lifegps/diag.h>
 #include <lifegps/flash_ring.h>
 #include <lifegps/led.h>
@@ -512,7 +513,6 @@ static uint8_t reply_not_supported(uint8_t opcode)
 	case LGPS_CMD_IMU_SNAPSHOT:
 	case LGPS_CMD_BUTTON_EVENT:
 	case LGPS_CMD_SELFTEST:
-	case LGPS_CMD_MAG_CAL:
 	case LGPS_CMD_BARO_BASELINE:
 	case LGPS_CMD_ERASE_DAY:
 	case LGPS_CMD_FACTORY_RESET:
@@ -531,7 +531,10 @@ static uint8_t cmd_get_caps(uint8_t *payload, size_t capacity, size_t *out_len)
 	struct lgps_ble_caps caps = {
 		.caps = LGPS_BLE_CAP_STATUS_NOTIFY | LGPS_BLE_CAP_LOG_NOTIFY | LGPS_BLE_CAP_POI |
 			LGPS_BLE_CAP_FLASH_INFO | LGPS_BLE_CAP_REBOOT |
-			LGPS_BLE_CAP_DEBUG_UNLOCK,
+			LGPS_BLE_CAP_DEBUG_UNLOCK |
+			(IS_ENABLED(CONFIG_LGPS_CALIB)
+				 ? (LGPS_BLE_CAP_MAG_CAL | LGPS_BLE_CAP_ACCEL_CAL)
+				 : 0U),
 		.telemetry_mask = 0U,
 		.att_mtu = (uint16_t)LGPS_PROTO_MTU,
 	};
@@ -687,6 +690,180 @@ static uint8_t cmd_poi_mark(uint8_t *payload, size_t capacity, size_t *out_len)
 	return LGPS_BLE_OK;
 }
 
+/* --- calibration (MAG_CAL 0x41 / ACCEL_CAL 0x43) -------------------------- */
+
+/*
+ * -EIO means "the coefficients took effect but the record could not be written".
+ * That is reported as OK with LGPS_CALIB_FLAG_SAVE_FAILED in the body, because
+ * the App has to show the coefficients the device will actually use; anything
+ * else is a real refusal.
+ */
+static uint8_t calib_result_status(int ret)
+{
+	switch (ret) {
+	case 0:
+	case -EIO:
+		return LGPS_BLE_OK;
+	case -EBUSY:
+		return LGPS_BLE_BUSY;
+	case -EAGAIN:
+	case -EINVAL:
+		return LGPS_BLE_INVALID_ARGUMENT;
+	default:
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+}
+
+static void calib_fill_mag_rsp(const struct lgps_calib_snapshot *snap,
+			       struct lgps_ble_mag_cal_rsp *rsp)
+{
+	uint8_t axis;
+
+	memset(rsp, 0, sizeof(*rsp));
+	rsp->progress_permille = snap->mag_progress_permille;
+	rsp->sample_count = snap->mag_sample_count;
+	rsp->state = snap->mag_state;
+	rsp->flags = snap->flags;
+	rsp->last_calib_unix_s = snap->last_calib_unix_s;
+
+	for (axis = 0U; axis < 3U; axis++) {
+		rsp->coverage_pct[axis] = snap->mag_coverage_pct[axis];
+		rsp->bias_lsb[axis] = snap->coeffs.mag_bias_lsb[axis];
+		rsp->scale_ppm[axis] = snap->coeffs.mag_scale_ppm[axis];
+	}
+}
+
+static void calib_fill_accel_rsp(const struct lgps_calib_snapshot *snap,
+				 struct lgps_ble_accel_cal_rsp *rsp)
+{
+	uint8_t axis;
+
+	memset(rsp, 0, sizeof(*rsp));
+	rsp->progress_permille = snap->accel_progress_permille;
+	rsp->face_mask = snap->accel_face_mask;
+	rsp->face_state = snap->accel_face_state;
+	rsp->rest_pct = snap->accel_rest_pct;
+	rsp->detected_face = snap->accel_detected_face;
+	rsp->state = snap->accel_state;
+	rsp->flags = snap->flags;
+	rsp->last_calib_unix_s = snap->last_calib_unix_s;
+
+	for (axis = 0U; axis < 3U; axis++) {
+		rsp->bias_ug[axis] = snap->coeffs.accel_bias_ug[axis];
+		rsp->scale_ppm[axis] = snap->coeffs.accel_scale_ppm[axis];
+		rsp->gyro_bias_mdps[axis] = snap->coeffs.gyro_bias_mdps[axis];
+	}
+}
+
+static uint8_t cmd_mag_cal(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t capacity,
+			   size_t *out_len)
+{
+	struct lgps_ble_mag_cal_req req;
+	struct lgps_ble_mag_cal_rsp rsp;
+	struct lgps_calib_snapshot snap;
+	int ret = 0;
+	int len;
+
+	if (!IS_ENABLED(CONFIG_LGPS_CALIB)) {
+		return LGPS_BLE_NOT_SUPPORTED;
+	}
+
+	if (lgps_ble_mag_cal_req_parse(cmd->payload, cmd->payload_len, &req) != 0) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	switch (req.action) {
+	case LGPS_BLE_CALIB_START:
+		ret = lgps_calib_mag_start();
+		break;
+	case LGPS_BLE_CALIB_FINISH_SAVE:
+		ret = lgps_calib_mag_finish();
+		break;
+	case LGPS_BLE_CALIB_CLEAR:
+		ret = lgps_calib_mag_clear();
+		break;
+	case LGPS_BLE_CALIB_CANCEL:
+		ret = lgps_calib_mag_cancel();
+		break;
+	case LGPS_BLE_CALIB_QUERY:
+		break;
+	default:
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	/* The snapshot goes out even when the action was refused: the coverage and the
+	 * progress in it are what tells the App why it was refused.
+	 */
+	lgps_calib_snapshot(&snap);
+	calib_fill_mag_rsp(&snap, &rsp);
+
+	if (capacity < 1U + LGPS_BLE_MAG_CAL_RSP_SIZE) {
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+
+	len = lgps_ble_mag_cal_rsp_encode(&rsp, &payload[1], capacity - 1U);
+	if (len < 0) {
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+
+	*out_len = 1U + (size_t)len;
+
+	return calib_result_status(ret);
+}
+
+static uint8_t cmd_accel_cal(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t capacity,
+			     size_t *out_len)
+{
+	struct lgps_ble_accel_cal_req req;
+	struct lgps_ble_accel_cal_rsp rsp;
+	struct lgps_calib_snapshot snap;
+	int ret = 0;
+	int len;
+
+	if (!IS_ENABLED(CONFIG_LGPS_CALIB)) {
+		return LGPS_BLE_NOT_SUPPORTED;
+	}
+
+	if (lgps_ble_accel_cal_req_parse(cmd->payload, cmd->payload_len, &req) != 0) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	switch (req.action) {
+	case LGPS_BLE_CALIB_START:
+		ret = lgps_calib_accel_start(req.position);
+		break;
+	case LGPS_BLE_CALIB_FINISH_SAVE:
+		ret = lgps_calib_accel_finish();
+		break;
+	case LGPS_BLE_CALIB_CLEAR:
+		ret = lgps_calib_accel_clear();
+		break;
+	case LGPS_BLE_CALIB_CANCEL:
+		ret = lgps_calib_accel_cancel();
+		break;
+	case LGPS_BLE_CALIB_QUERY:
+		break;
+	default:
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	lgps_calib_snapshot(&snap);
+	calib_fill_accel_rsp(&snap, &rsp);
+
+	if (capacity < 1U + LGPS_BLE_ACCEL_CAL_RSP_SIZE) {
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+
+	len = lgps_ble_accel_cal_rsp_encode(&rsp, &payload[1], capacity - 1U);
+	if (len < 0) {
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+
+	*out_len = 1U + (size_t)len;
+
+	return calib_result_status(ret);
+}
+
 static uint8_t cmd_log_subscribe(const struct lgps_ble_cmd *cmd)
 {
 	if (cmd->payload_len != 1U) {
@@ -749,6 +926,10 @@ static uint8_t dispatch(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t
 		return cmd_get_status(payload, capacity, out_len);
 	case LGPS_CMD_POI_MARK:
 		return cmd_poi_mark(payload, capacity, out_len);
+	case LGPS_CMD_MAG_CAL:
+		return cmd_mag_cal(cmd, payload, capacity, out_len);
+	case LGPS_CMD_ACCEL_CAL:
+		return cmd_accel_cal(cmd, payload, capacity, out_len);
 	case LGPS_CMD_FLASH_INFO:
 		return cmd_flash_info(payload, capacity, out_len);
 	case LGPS_CMD_LOG_SUBSCRIBE:

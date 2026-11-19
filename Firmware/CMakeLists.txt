@@ -43,6 +43,15 @@ target_sources(app PRIVATE
   src/util/time.c
 )
 
+# Calibration: pure maths + session state (src/calib/calib.c, unit tested on
+# native_sim) and the NOR record backend (src/calib/calib_store.c).
+if(CONFIG_LGPS_CALIB)
+  target_sources(app PRIVATE
+    src/calib/calib.c
+    src/calib/calib_store.c
+  )
+endif()
+
 # Keep the generated protocol header in the dependency graph so a protocol change
 # forces a rebuild instead of silently linking stale offsets.
 set_property(SOURCE src/storage/traj.c src/ble/ble_frame.c APPEND PROPERTY

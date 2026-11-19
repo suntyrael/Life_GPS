@@ -27,6 +27,7 @@
 #include <lifegps/battery.h>
 #include <lifegps/ble.h>
 #include <lifegps/board_io.h>
+#include <lifegps/calib.h>
 #include <lifegps/diag.h>
 #include <lifegps/flash_ring.h>
 #include <lifegps/gnss.h>
@@ -178,6 +179,15 @@ static int init_subsystems(void)
 		LOG_ERR("external flash ring unavailable (%d)", ret);
 	}
 
+	/* Calibration coefficients sit in their own NOR sector, so this needs the flash
+	 * to be up. A missing or CRC-bad record is not an error: the compiled-in
+	 * defaults stay in effect and GET_CAPS/mag_cal report that.
+	 */
+	ret = lgps_calib_init();
+	if (ret < 0) {
+		LOG_WRN("calibration record unavailable (%d), using defaults", ret);
+	}
+
 	lgps_zupt_reset(&zupt, lgps_diag_uptime_ms());
 	lgps_pdr_init(&pdr);
 	lgps_attitude_reset(&attitude, NULL);
@@ -209,6 +219,12 @@ static struct lgps_telemetry_snapshot *build_snapshot(uint32_t now_ms,
 	memset(&snap, 0, sizeof(snap));
 
 	lgps_gnss_get_fix(&snap.fix);
+	if (snap.fix.utc_valid) {
+		/* Only used to date a calibration record; the calibration module has no
+		 * clock of its own.
+		 */
+		lgps_calib_note_utc(snap.fix.utc_epoch_s);
+	}
 	lgps_gnss_get_counters(&snap.gnss_counters);
 	snap.gnss_state = lgps_gnss_get_state();
 	if (snap.fix.last_pvt_uptime_ms != 0U) {
@@ -257,9 +273,13 @@ static struct lgps_telemetry_snapshot *build_snapshot(uint32_t now_ms,
 		{
 			float mag_ut[3];
 
+			lgps_calib_feed_mag(mag.raw);
+
 			for (uint8_t axis = 0U; axis < 3U; axis++) {
 				mag_ut[axis] = (float)mag.raw[axis] * LGPS_LIS2MDL_UT_PER_LSB;
 			}
+
+			lgps_calib_apply_mag(mag_ut);
 
 			lgps_nav_body_from_mag(mag_ut, hub_mag_body_ut);
 			hub_mag_valid = true;
@@ -386,6 +406,9 @@ int main(void)
 		if (ret == 0) {
 			float accel_body[3];
 			float gyro_body[3];
+
+			lgps_calib_apply_imu(&sample);
+			lgps_calib_feed_imu(&sample, now_ms);
 
 			lgps_nav_body_from_imu(sample.accel_g, accel_body);
 			lgps_nav_body_from_imu(sample.gyro_dps, gyro_body);

@@ -14,3 +14,19 @@ config BOARD_LIFEGPS
 config LGPS_IMU_HUB_DIAG
 	bool "Run the sensor hub bring-up diagnostic once at boot"
 	default n
+
+# Sensor calibration: MAG_CAL (0x41) and ACCEL_CAL (0x43). The capture state
+# machines, the coefficient maths and the 80-byte record in the external NOR.
+# Coefficients are applied in software - lifegps/calib.h records why the sensor
+# offset registers (X/Y/Z_OFS_USR, LIS2MDL OFFSET_*) are not used.
+config LGPS_CALIB
+	bool "Sensor calibration (accelerometer / gyroscope / magnetometer)"
+	default y
+
+# Sector 16 is the first sector after the 16-sector trajectory ring. The record
+# is append-only inside this 4 KB sector; see Firmware/docs/PARTITIONS.md.
+config LGPS_CALIB_SECTOR_INDEX
+	int "External NOR sector holding the calibration record"
+	depends on LGPS_CALIB
+	default 16
+	range 16 4095

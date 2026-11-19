@@ -38,7 +38,7 @@
  * a phone reads cannot disagree with the layout it parses.
  */
 #define LGPS_BLE_FW_VERSION_MAJOR 0U
-#define LGPS_BLE_FW_VERSION_MINOR 2U
+#define LGPS_BLE_FW_VERSION_MINOR 3U
 #define LGPS_BLE_FW_VERSION_PATCH 0U
 
 /* Largest command frame: header + max payload + crc16. */
@@ -84,6 +84,10 @@ enum lgps_ble_status_code {
 #define LGPS_BLE_CAP_REBOOT 0x00000010U
 #define LGPS_BLE_CAP_DEBUG_UNLOCK 0x00000020U
 #define LGPS_BLE_CAP_DATA_SYNC 0x00000040U
+/* Calibration, advertised only when CONFIG_LGPS_CALIB built the handlers in. */
+#define LGPS_BLE_CAP_MAG_CAL 0x00000080U
+#define LGPS_BLE_CAP_ACCEL_CAL 0x00000100U
+#define LGPS_BLE_CAP_BARO_BASELINE 0x00000200U
 
 /* soc_pct is "unknown" until a fuel gauge or a coulomb counter exists; the app
  * derives a percentage from bat_mv instead of the firmware pretending to know.
@@ -203,6 +207,68 @@ struct lgps_ble_flash_info {
 	uint8_t sector_count;
 };
 
+/**
+ * Calibration commands (Doc/Software/BLE_Wire_v1.md 6.3~6.5, protocol 0.2.0).
+ *
+ * The bodies are byte-wise like every other payload in this header; the field
+ * order below is the offset map and nothing here may be reordered without a
+ * protocol version bump.
+ */
+#define LGPS_BLE_MAG_CAL_REQ_SIZE 1U
+#define LGPS_BLE_ACCEL_CAL_REQ_SIZE 2U
+#define LGPS_BLE_BARO_BASELINE_REQ_SIZE 5U
+#define LGPS_BLE_MAG_CAL_RSP_SIZE 30U
+#define LGPS_BLE_ACCEL_CAL_RSP_SIZE 48U
+#define LGPS_BLE_BARO_BASELINE_RSP_SIZE 8U
+
+/* Response status byte, first byte of every response payload. */
+enum lgps_ble_calib_action {
+	LGPS_BLE_CALIB_START = 0,
+	LGPS_BLE_CALIB_FINISH_SAVE = 1,
+	LGPS_BLE_CALIB_CLEAR = 2,
+	LGPS_BLE_CALIB_QUERY = 3,
+	LGPS_BLE_CALIB_CANCEL = 4,
+};
+
+struct lgps_ble_mag_cal_req {
+	uint8_t action;
+};
+
+struct lgps_ble_accel_cal_req {
+	uint8_t action;
+	uint8_t position;
+};
+
+struct lgps_ble_baro_baseline_req {
+	uint8_t action;
+	uint32_t baseline_pa_q4;
+};
+
+struct lgps_ble_mag_cal_rsp {
+	uint16_t progress_permille;
+	uint8_t sample_count;
+	uint8_t coverage_pct[3];
+	int16_t bias_lsb[3];
+	int32_t scale_ppm[3];
+	uint8_t state;
+	uint8_t flags;
+	uint32_t last_calib_unix_s;
+};
+
+struct lgps_ble_accel_cal_rsp {
+	uint16_t progress_permille;
+	uint8_t face_mask;
+	uint8_t face_state;
+	uint8_t rest_pct;
+	uint8_t detected_face;
+	int32_t bias_ug[3];
+	int32_t scale_ppm[3];
+	int32_t gyro_bias_mdps[3];
+	uint8_t state;
+	uint8_t flags;
+	uint32_t last_calib_unix_s;
+};
+
 /*
  * Validate and split a command frame.
  * Returns 0 on success, -EINVAL on NULL/short input, -EBADMSG when magic,
@@ -228,6 +294,25 @@ int lgps_ble_caps_encode(const struct lgps_ble_caps *caps, uint8_t *out, size_t 
 /* Serialise an FLASH_INFO body. Returns LGPS_BLE_FLASH_INFO_SIZE or -EINVAL/-ENOMEM. */
 int lgps_ble_flash_info_encode(const struct lgps_ble_flash_info *info, uint8_t *out,
 			       size_t out_size);
+
+/*
+ * Calibration codecs. The parse helpers return 0 on success, -EINVAL on a NULL or
+ * wrong-length payload (the dispatcher answers LGPS_BLE_INVALID_ARGUMENT) and
+ * never read past @p len_bytes. The encoders return the body length or
+ * -EINVAL / -ENOMEM.
+ */
+int lgps_ble_mag_cal_req_parse(const uint8_t *payload, uint16_t len_bytes,
+			       struct lgps_ble_mag_cal_req *out);
+int lgps_ble_accel_cal_req_parse(const uint8_t *payload, uint16_t len_bytes,
+				 struct lgps_ble_accel_cal_req *out);
+int lgps_ble_baro_baseline_req_parse(const uint8_t *payload, uint16_t len_bytes,
+				     struct lgps_ble_baro_baseline_req *out);
+int lgps_ble_mag_cal_rsp_encode(const struct lgps_ble_mag_cal_rsp *rsp, uint8_t *out,
+				size_t out_size);
+int lgps_ble_accel_cal_rsp_encode(const struct lgps_ble_accel_cal_rsp *rsp, uint8_t *out,
+				  size_t out_size);
+int lgps_ble_baro_baseline_rsp_encode(uint32_t baseline_pa_q4, int32_t rel_alt_mm,
+				      uint8_t *out, size_t out_size);
 
 /*
  * Serialise one telemetry packet (header + caller supplied payload).

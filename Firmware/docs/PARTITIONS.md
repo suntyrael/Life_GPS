@@ -93,3 +93,26 @@ CONFIG_MCUMGR_GRP_IMG=y
 3. 单槽 + 物理调试口恢复（仅救砖）。
 
 详细讨论见 [Android_App_Plan.md](../../Doc/Software/Android_App_Plan.md) §5.9 与附录 C。
+
+## 外部 NOR：标定记录（0x10000，1 个扇区）
+
+轨迹环只用前 16 个 4 KB 扇区（`LGPS_RING_SECTOR_COUNT`），第 17 个扇区
+（**偏移 `0x10000`，扇区号 16**）单独留给传感器标定记录，由
+`Firmware/src/calib/calib_store.c` 管理（Kconfig `CONFIG_LGPS_CALIB_SECTOR_INDEX`，
+默认 16，`BUILD_ASSERT` 保证它不低于环的扇区数）。
+
+| 属性 | 值 |
+| :--- | :--- |
+| 记录大小 | 80 字节（`LGPS_CALIB_RECORD_SIZE`） |
+| 每扇区槽位 | 51（`4096 / 80`） |
+| 写策略 | append-only：每次保存写下一个未编程槽位，带 magic / format_ver / seq / CRC-16 |
+| 满扇区 | 51 次保存后擦除扇区再写第 0 槽（约 45–400 ms 无有效记录窗口，掉电即回落默认值） |
+| 读取 | 启动时扫描全扇区，取 seq 最大且 CRC 通过的那条；缺失/损坏不算错误 |
+
+**为什么不用 `CONFIG_SETTINGS` + NVS**：那需要在本文件上面那张内部 RRAM 分区表里
+新增 `settings_partition`，而那张表自己写着"nRF52840 时代方案，迁到 nRF54L15 后必须
+重算、M1 出表前不得作为实现依据"。为 80 字节去动内部镜像区分区，风险与收益不成比例。
+`lifegps/calib_store.h` 只暴露 load/save/erase 三个函数，将来要换后端只换实现。
+
+**谁不能碰这个扇区**：轨迹环（16 个扇区之后才会外扩）、App 的 SYNC/FLASH_* 读取、
+`FACTORY_RESET`（将来实现时应把本扇区一并擦除，并在协议文档里写明）。

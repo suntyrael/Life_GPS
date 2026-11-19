@@ -321,3 +321,138 @@ int lgps_ble_telem_pdr_encode(uint16_t seq, const struct lgps_ble_telem_pdr *pdr
 	return lgps_ble_telem_encode((uint8_t)LGPS_BLE_TELEM_PDR, seq, payload, sizeof(payload), out,
 				     out_size);
 }
+
+/* --- calibration bodies ---------------------------------------------------- */
+
+/*
+ * Field maps are Doc/Software/BLE_Wire_v1.md 6.3~6.5. The App's CalibCodec.kt
+ * reads the same offsets; CalibCodecTest and Firmware/tests/lifegps.calib pin
+ * both sides, so a one-sided edit fails a suite instead of a phone.
+ */
+
+int lgps_ble_mag_cal_req_parse(const uint8_t *payload, uint16_t len_bytes,
+			       struct lgps_ble_mag_cal_req *out)
+{
+	if ((payload == NULL) || (out == NULL) || (len_bytes != LGPS_BLE_MAG_CAL_REQ_SIZE)) {
+		return -EINVAL;
+	}
+
+	out->action = payload[0];
+
+	return 0;
+}
+
+int lgps_ble_accel_cal_req_parse(const uint8_t *payload, uint16_t len_bytes,
+				 struct lgps_ble_accel_cal_req *out)
+{
+	if ((payload == NULL) || (out == NULL) || (len_bytes != LGPS_BLE_ACCEL_CAL_REQ_SIZE)) {
+		return -EINVAL;
+	}
+
+	out->action = payload[0];
+	out->position = payload[1];
+
+	return 0;
+}
+
+int lgps_ble_baro_baseline_req_parse(const uint8_t *payload, uint16_t len_bytes,
+				     struct lgps_ble_baro_baseline_req *out)
+{
+	if ((payload == NULL) || (out == NULL) || (len_bytes != LGPS_BLE_BARO_BASELINE_REQ_SIZE)) {
+		return -EINVAL;
+	}
+
+	out->action = payload[0];
+	out->baseline_pa_q4 = get_u16(&payload[1]) | ((uint32_t)get_u16(&payload[3]) << 16);
+
+	return 0;
+}
+
+int lgps_ble_mag_cal_rsp_encode(const struct lgps_ble_mag_cal_rsp *rsp, uint8_t *out,
+				size_t out_size)
+{
+	uint8_t axis;
+
+	if ((rsp == NULL) || (out == NULL)) {
+		return -EINVAL;
+	}
+
+	if (out_size < LGPS_BLE_MAG_CAL_RSP_SIZE) {
+		return -ENOMEM;
+	}
+
+	put_u16(&out[0], rsp->progress_permille);
+	out[2] = rsp->sample_count;
+	out[3] = rsp->coverage_pct[0];
+	out[4] = rsp->coverage_pct[1];
+	out[5] = rsp->coverage_pct[2];
+
+	for (axis = 0U; axis < 3U; axis++) {
+		put_i16(&out[6U + (2U * axis)], rsp->bias_lsb[axis]);
+	}
+
+	for (axis = 0U; axis < 3U; axis++) {
+		put_i32(&out[12U + (4U * axis)], rsp->scale_ppm[axis]);
+	}
+
+	out[24] = rsp->state;
+	out[25] = rsp->flags;
+	put_u32(&out[26], rsp->last_calib_unix_s);
+
+	return (int)LGPS_BLE_MAG_CAL_RSP_SIZE;
+}
+
+int lgps_ble_accel_cal_rsp_encode(const struct lgps_ble_accel_cal_rsp *rsp, uint8_t *out,
+				  size_t out_size)
+{
+	uint8_t axis;
+
+	if ((rsp == NULL) || (out == NULL)) {
+		return -EINVAL;
+	}
+
+	if (out_size < LGPS_BLE_ACCEL_CAL_RSP_SIZE) {
+		return -ENOMEM;
+	}
+
+	put_u16(&out[0], rsp->progress_permille);
+	out[2] = rsp->face_mask;
+	out[3] = rsp->face_state;
+	out[4] = rsp->rest_pct;
+	out[5] = rsp->detected_face;
+
+	for (axis = 0U; axis < 3U; axis++) {
+		put_i32(&out[6U + (4U * axis)], rsp->bias_ug[axis]);
+	}
+
+	for (axis = 0U; axis < 3U; axis++) {
+		put_i32(&out[18U + (4U * axis)], rsp->scale_ppm[axis]);
+	}
+
+	for (axis = 0U; axis < 3U; axis++) {
+		put_i32(&out[30U + (4U * axis)], rsp->gyro_bias_mdps[axis]);
+	}
+
+	out[42] = rsp->state;
+	out[43] = rsp->flags;
+	put_u32(&out[44], rsp->last_calib_unix_s);
+
+	return (int)LGPS_BLE_ACCEL_CAL_RSP_SIZE;
+}
+
+int lgps_ble_baro_baseline_rsp_encode(uint32_t baseline_pa_q4, int32_t rel_alt_mm, uint8_t *out,
+				      size_t out_size)
+{
+	if (out == NULL) {
+		return -EINVAL;
+	}
+
+	if (out_size < LGPS_BLE_BARO_BASELINE_RSP_SIZE) {
+		return -ENOMEM;
+	}
+
+	put_u32(&out[0], baseline_pa_q4);
+	put_i32(&out[4], rel_alt_mm);
+
+	return (int)LGPS_BLE_BARO_BASELINE_RSP_SIZE;
+}

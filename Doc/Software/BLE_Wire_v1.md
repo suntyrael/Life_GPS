@@ -181,7 +181,7 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
 | :--- | :--- | :--- |
 | 0 | u8 | `ver` = 1 |
 | 1 | u8 | `proto_major` / 2 `proto_minor` / 3 `proto_patch`（来自生成头；0.2.0 只追加了 `0x43` 与校准响应字段） |
-| 4 | u8 | `fw_major` / 5 `fw_minor` / 6 `fw_patch`（v1 = 0.2.0） |
+| 4 | u8 | `fw_major` / 5 `fw_minor` / 6 `fw_patch`（v1 = 0.3.0） |
 | 7 | u8 | `reserved` |
 | 8 | u16 | `att_mtu`（固件配置的 L2CAP TX MTU，247） |
 | 10 | u16 | `max_cmd_payload`（235） |
@@ -267,7 +267,7 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
 | 0 | u8 | `action`：0 = 取当前气压为基准，1 = 手动设置 |
 | 1 | u32 | `baseline_pa_q4`（Pa × 16，仅 `action=1` 时有效） |
 
-响应 9 字节：`u32 baseline_pa_q4`、`i32 rel_alt_mm`。
+响应 8 字节：`u32 baseline_pa_q4`、`i32 rel_alt_mm`。
 
 **前置条件**：BMP388 必须应答，且固件已完成 TPG 补偿（系数 `0x30..0x57`）。没有 Pa 就没有
 相对高度 —— 在此之前该 opcode 返回 `0x03`，App 只展示只读说明，不给可点按钮。
