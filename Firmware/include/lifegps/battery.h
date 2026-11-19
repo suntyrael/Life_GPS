@@ -63,8 +63,9 @@ int lgps_battery_init(void);
 
 /*
  * Read the pack voltage in millivolts. Returns 0 on success, negative errno
- * otherwise. No state of charge is computed: the pack discharge curve has not
- * been measured yet, so a percentage would be a made-up number.
+ * otherwise. No state of charge is computed here: with no current sense, the
+ * App applies the measured OCV table to bat_mv (see
+ * App/app/src/main/java/com/lifegps/app/ble/BatterySoc.kt).
  */
 int lgps_battery_read_mv(int32_t *millivolts);
 
