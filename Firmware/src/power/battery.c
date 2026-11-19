@@ -15,14 +15,6 @@ LOG_MODULE_REGISTER(lgps_battery, LOG_LEVEL_INF);
 
 static const struct adc_dt_spec battery_channel = ADC_DT_SPEC_GET(BATTERY_NODE);
 
-/* Divider denominator after the SAADC input resistance is taken into account. */
-static int32_t bottom_effective_ohm(void)
-{
-	uint64_t product = (uint64_t)LGPS_BATT_R_BOTTOM_OHM * LGPS_BATT_SAADC_RIN_OHM;
-
-	return (int32_t)(product / (LGPS_BATT_R_BOTTOM_OHM + LGPS_BATT_SAADC_RIN_OHM));
-}
-
 int lgps_battery_init(void)
 {
 	int ret;
@@ -38,9 +30,9 @@ int lgps_battery_init(void)
 		return ret;
 	}
 
-	LOG_INF("BAT_ADC ready: AIN4 (P1.11), R25=%u ohm, R26=%u ohm, R_in=%u ohm, "
+	LOG_INF("BAT_ADC ready: AIN4 (P1.11), divider calibrated pack:tap = %u:%u uV, "
 		"gain/reference/resolution from devicetree",
-		LGPS_BATT_R_TOP_OHM, LGPS_BATT_R_BOTTOM_OHM, LGPS_BATT_SAADC_RIN_OHM);
+		(uint32_t)LGPS_BATT_CAL_PACK_UV, (uint32_t)LGPS_BATT_CAL_TAP_UV);
 
 	return 0;
 }
@@ -49,7 +41,6 @@ int lgps_battery_read_mv(int32_t *millivolts)
 {
 	uint16_t raw = 0U;
 	int32_t pin_mv;
-	int32_t bottom_ohm;
 	struct adc_sequence sequence = { 0 };
 	int ret;
 
@@ -87,10 +78,13 @@ int lgps_battery_read_mv(int32_t *millivolts)
 		return ret;
 	}
 
-	bottom_ohm = bottom_effective_ohm();
-
-	/* vbat = vpin * (R_top + R_bottom_eff) / R_bottom_eff */
-	*millivolts = (int32_t)((int64_t)pin_mv * (LGPS_BATT_R_TOP_OHM + bottom_ohm) / bottom_ohm);
+	/*
+	 * vbat = vpin * pack calibration / tap calibration, i.e. the measured divider
+	 * ratio instead of the R25/R26/SAADC-R_in model. The product is taken in 64
+	 * bits: a 1.8 V full-scale pin reading would overflow 32 bits.
+	 */
+	*millivolts = (int32_t)((int64_t)pin_mv * (int64_t)LGPS_BATT_CAL_PACK_UV /
+				(int64_t)LGPS_BATT_CAL_TAP_UV);
 
 	/*
 	 * Raw numbers in the log: a wrong gain / reference / pin shows up here as a

@@ -122,7 +122,9 @@ static int init_subsystems(void)
 		int32_t millivolts = 0;
 
 		if (lgps_battery_read_mv(&millivolts) == 0) {
-			LOG_INF("battery: %d mV at boot (R25/R26 || R_in corrected)", millivolts);
+			LOG_INF("battery: %d mV at boot (divider calibrated pack:tap = %u:%u uV)",
+				millivolts, (uint32_t)LGPS_BATT_CAL_PACK_UV,
+				(uint32_t)LGPS_BATT_CAL_TAP_UV);
 		} else {
 			LOG_ERR("battery: first conversion failed");
 		}
