@@ -141,7 +141,13 @@ class BleFrameTest {
         assertEquals(70, StatusOffset.BARO_TEMP_RAW)
         assertEquals(74, StatusOffset.RING_SECTOR_SEQ)
         assertEquals(78, StatusOffset.RING_RECORDS)
-        assertEquals(82, StatusOffset.SIZE)
+        assertEquals(82, StatusOffset.GRAVITY_MG)
+        assertEquals(88, StatusOffset.LINEAR_MG)
+        assertEquals(94, StatusOffset.IMU_TEMP_CC)
+        assertEquals(96, StatusOffset.MAG_TEMP_CC)
+        assertEquals(98, StatusOffset.SENSOR_FLAGS)
+        assertEquals(82, StatusOffset.BASE_SIZE)
+        assertEquals(100, StatusOffset.SIZE)
     }
 
     @Test
@@ -175,6 +181,15 @@ class BleFrameTest {
         writeU32(raw, StatusOffset.BARO_TEMP_RAW, 0x000FFFFFL)
         writeU32(raw, StatusOffset.RING_SECTOR_SEQ, 7)
         writeU32(raw, StatusOffset.RING_RECORDS, 0x1234)
+        writeU16(raw, StatusOffset.GRAVITY_MG, 0)
+        writeU16(raw, StatusOffset.GRAVITY_MG + 2, 0)
+        writeU16(raw, StatusOffset.GRAVITY_MG + 4, -1000)
+        writeU16(raw, StatusOffset.LINEAR_MG, 25)
+        writeU16(raw, StatusOffset.LINEAR_MG + 2, -25)
+        writeU16(raw, StatusOffset.LINEAR_MG + 4, 0)
+        writeU16(raw, StatusOffset.IMU_TEMP_CC, 3456)
+        writeU16(raw, StatusOffset.MAG_TEMP_CC, -500)
+        raw[StatusOffset.SENSOR_FLAGS] = 0x0F
 
         val status = BleFrame.parseStatus(raw)
         assertNotNull(status)
@@ -210,9 +225,33 @@ class BleFrameTest {
         assertEquals(0x000FFFFFL, status.baroTempRaw)
         assertEquals(7L, status.ringSectorSeq)
         assertEquals(0x1234L, status.ringRecords)
+        assertEquals(listOf(0, 0, -1000), status.gravityMg)
+        assertEquals(listOf(25, -25, 0), status.linearMg)
+        assertEquals(3456, status.imuTempCc)
+        assertEquals(-500, status.magTempCc)
+        assertEquals(0x0F, status.sensorFlags)
+        assertTrue(status.hasMotionFields)
+        assertTrue(status.hasTempFields)
+        assertTrue(status.gravityValid)
+        assertTrue(status.imuTempValid)
+        assertTrue(status.magTempValid)
+        assertTrue(status.baroTempValid)
 
-        // Anything shorter than the contract is "missing", never partially parsed.
-        assertNull(BleFrame.parseStatus(raw.copyOf(StatusOffset.SIZE - 1)))
+        // Old firmware stops after ring_records: the extension stays zero/invalid.
+        val baseOnly = BleFrame.parseStatus(raw.copyOf(StatusOffset.BASE_SIZE))
+        assertNotNull(baseOnly)
+        baseOnly!!
+        assertFalse(baseOnly.hasMotionFields)
+        assertFalse(baseOnly.hasTempFields)
+        assertEquals(listOf(0, 0, 0), baseOnly.gravityMg)
+        assertEquals(listOf(0, 0, 0), baseOnly.linearMg)
+        assertEquals(0, baseOnly.imuTempCc)
+        assertEquals(0, baseOnly.magTempCc)
+        assertEquals(0, baseOnly.sensorFlags)
+        assertFalse(baseOnly.gravityValid)
+
+        // Anything shorter than the base contract is "missing", never partially parsed.
+        assertNull(BleFrame.parseStatus(raw.copyOf(StatusOffset.BASE_SIZE - 1)))
     }
 
     // --- caps / flash info ----------------------------------------------------

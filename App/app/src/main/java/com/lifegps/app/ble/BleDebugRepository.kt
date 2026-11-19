@@ -289,7 +289,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
     private fun handleStatusBytes(bytes: ByteArray) {
         val frame = BleFrame.parseStatus(bytes)
         if (frame == null) {
-            addLog(LogLevel.WARN, LogSource.BLE, "STATUS", "Status 帧长度 ${bytes.size} B < ${StatusOffset.SIZE}，已忽略")
+            addLog(LogLevel.WARN, LogSource.BLE, "STATUS", "Status 帧长度 ${bytes.size} B < ${StatusOffset.BASE_SIZE}，已忽略")
             return
         }
         if (frame.ver != BleFrame.VER) {
@@ -339,21 +339,33 @@ class BleDebugRepository(context: Context) : DebugRepository {
 
         val acc = frame.accLsb
         val gyro = frame.gyroLsb
-        _imu.value = ImuStatus(
-            ax = acc[0] * ACC_G_PER_LSB,
-            ay = acc[1] * ACC_G_PER_LSB,
-            az = acc[2] * ACC_G_PER_LSB,
-            gx = gyro[0] * GYRO_DPS_PER_LSB,
-            gy = gyro[1] * GYRO_DPS_PER_LSB,
-            gz = gyro[2] * GYRO_DPS_PER_LSB,
-            // v1 does not carry a quaternion; zeros mean "not provided".
-            qw = 0f,
-            qx = 0f,
-            qy = 0f,
-            qz = 0f,
-            steps = frame.steps.toInt().coerceAtLeast(0),
-            zupt = frame.zupt,
-        )
+        val gravity = frame.gravityMg
+        val linear = frame.linearMg
+        // Status carries the SENSOR frame; body-frame ax/ay/az stay owned by
+        // onImuTelemetry() so the two rates no longer overwrite each other.
+        _imu.update {
+            it.copy(
+                axSensor = acc[0] * ACC_G_PER_LSB,
+                aySensor = acc[1] * ACC_G_PER_LSB,
+                azSensor = acc[2] * ACC_G_PER_LSB,
+                gxSensor = gyro[0] * GYRO_DPS_PER_LSB,
+                gySensor = gyro[1] * GYRO_DPS_PER_LSB,
+                gzSensor = gyro[2] * GYRO_DPS_PER_LSB,
+                steps = frame.steps.toInt().coerceAtLeast(0),
+                zupt = frame.zupt,
+                gravityXg = gravity[0] / 1000f,
+                gravityYg = gravity[1] / 1000f,
+                gravityZg = gravity[2] / 1000f,
+                linearXg = linear[0] / 1000f,
+                linearYg = linear[1] / 1000f,
+                linearZg = linear[2] / 1000f,
+                imuTempC = frame.imuTempCc / 100f,
+                magTempC = frame.magTempCc / 100f,
+                gravityValid = frame.gravityValid,
+                imuTempValid = frame.imuTempValid,
+                magTempValid = frame.magTempValid,
+            )
+        }
 
         val mag = frame.magLsb
         val mx = mag[0] * MAG_UT_PER_LSB
@@ -572,8 +584,8 @@ class BleDebugRepository(context: Context) : DebugRepository {
                     rejectIncompatible("GET_CAPS ver=${caps.ver}，App 支持 ${BleFrame.VER}")
                     return
                 }
-                if (caps.statusSize < StatusOffset.SIZE) {
-                    rejectIncompatible("status_size=${caps.statusSize} < ${StatusOffset.SIZE}")
+                if (caps.statusSize < StatusOffset.BASE_SIZE) {
+                    rejectIncompatible("status_size=${caps.statusSize} < ${StatusOffset.BASE_SIZE}")
                     return
                 }
                 capsInfo = caps
@@ -1161,6 +1173,23 @@ class BleDebugRepository(context: Context) : DebugRepository {
         qz = 0f,
         steps = 0,
         zupt = false,
+        axSensor = 0f,
+        aySensor = 0f,
+        azSensor = 0f,
+        gxSensor = 0f,
+        gySensor = 0f,
+        gzSensor = 0f,
+        gravityXg = 0f,
+        gravityYg = 0f,
+        gravityZg = 0f,
+        linearXg = 0f,
+        linearYg = 0f,
+        linearZg = 0f,
+        imuTempC = 0f,
+        magTempC = 0f,
+        gravityValid = false,
+        imuTempValid = false,
+        magTempValid = false,
     )
 
     private fun initialMag(): MagStatus = MagStatus(

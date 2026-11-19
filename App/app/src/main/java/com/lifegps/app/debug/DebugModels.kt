@@ -69,6 +69,24 @@ data class ImuStatus(
     val qz: Float,
     val steps: Int,
     val zupt: Boolean,
+    /** Status-frame values in the firmware sensor frame (1 Hz). */
+    val axSensor: Float,
+    val aySensor: Float,
+    val azSensor: Float,
+    val gxSensor: Float,
+    val gySensor: Float,
+    val gzSensor: Float,
+    val gravityXg: Float,
+    val gravityYg: Float,
+    val gravityZg: Float,
+    val linearXg: Float,
+    val linearYg: Float,
+    val linearZg: Float,
+    val imuTempC: Float,
+    val magTempC: Float,
+    val gravityValid: Boolean,
+    val imuTempValid: Boolean,
+    val magTempValid: Boolean,
 )
 
 data class MagStatus(

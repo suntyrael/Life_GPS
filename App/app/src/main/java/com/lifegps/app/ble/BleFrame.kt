@@ -3,7 +3,7 @@ package com.lifegps.app.ble
 import java.util.Locale
 
 /**
- * Offset table of the 82-byte Status snapshot.
+ * Offset table of the Status snapshot (82-byte base, 100-byte extended).
  *
  * The values are transcribed one-to-one from `Doc/Software/BLE_Wire_v1.md` §4
  * (the contract, not this file, is the authority). Keeping them as named
@@ -37,7 +37,15 @@ object StatusOffset {
     const val BARO_TEMP_RAW = 70
     const val RING_SECTOR_SEQ = 74
     const val RING_RECORDS = 78
-    const val SIZE = 82
+    const val GRAVITY_MG = 82
+    const val LINEAR_MG = 88
+    const val IMU_TEMP_CC = 94
+    const val MAG_TEMP_CC = 96
+    const val SENSOR_FLAGS = 98
+
+    /** Old firmware bodies stop here; the fields above are always present. */
+    const val BASE_SIZE = 82
+    const val SIZE = 100
 }
 
 /** Offset table of the GET_CAPS response body (`BLE_Wire_v1.md` §6.1). */
@@ -83,6 +91,14 @@ object StatusFlags {
     const val BARO_VALID = 0x20
     const val RING_READY = 0x40
     const val UTC_VALID = 0x80
+}
+
+/** Status.sensor_flags bit mask (`BLE_Wire_v1.md` §4, offset 98). */
+object SensorFlags {
+    const val GRAVITY_VALID = 0x01
+    const val IMU_TEMP_VALID = 0x02
+    const val MAG_TEMP_VALID = 0x04
+    const val BARO_TEMP_VALID = 0x08
 }
 
 /** Command opcodes of the protocol (`protocol/lifegps_protocol.yaml`, §6 of the wire doc). */
@@ -155,7 +171,7 @@ data class Frame(
     val payload: ByteArray,
 )
 
-/** Decoded 82-byte Status snapshot. */
+/** Decoded Status snapshot; the last 18 bytes are absent on old firmware. */
 data class StatusFrame(
     val ver: Int,
     val flags: Int,
@@ -182,6 +198,12 @@ data class StatusFrame(
     val baroTempRaw: Long,
     val ringSectorSeq: Long,
     val ringRecords: Long,
+    val gravityMg: List<Int>,
+    val linearMg: List<Int>,
+    val imuTempCc: Int,
+    val magTempCc: Int,
+    val sensorFlags: Int,
+    val extendedFields: Boolean,
 ) {
     val gnssFixValid: Boolean get() = flags and StatusFlags.GNSS_FIX_VALID != 0
     val charging: Boolean get() = flags and StatusFlags.CHARGING != 0
@@ -191,6 +213,15 @@ data class StatusFrame(
     val baroValid: Boolean get() = flags and StatusFlags.BARO_VALID != 0
     val ringReady: Boolean get() = flags and StatusFlags.RING_READY != 0
     val utcValid: Boolean get() = flags and StatusFlags.UTC_VALID != 0
+
+    val gravityValid: Boolean get() = sensorFlags and SensorFlags.GRAVITY_VALID != 0
+    val imuTempValid: Boolean get() = sensorFlags and SensorFlags.IMU_TEMP_VALID != 0
+    val magTempValid: Boolean get() = sensorFlags and SensorFlags.MAG_TEMP_VALID != 0
+    val baroTempValid: Boolean get() = sensorFlags and SensorFlags.BARO_TEMP_VALID != 0
+
+    /** True when the firmware sent the appended motion/thermal fields. */
+    val hasMotionFields: Boolean get() = extendedFields
+    val hasTempFields: Boolean get() = extendedFields
 }
 
 /** Decoded GET_CAPS response body (status byte already stripped). */
@@ -356,9 +387,10 @@ object BleFrame {
         )
     }
 
-    /** Parses the 82-byte Status body; short frames are reported as missing (null). */
+    /** Parses the Status body; base-only (old firmware) bodies keep zero extension fields. */
     fun parseStatus(bytes: ByteArray): StatusFrame? {
-        if (bytes.size < StatusOffset.SIZE) return null
+        if (bytes.size < StatusOffset.BASE_SIZE) return null
+        val extended = bytes.size >= StatusOffset.SIZE
         return StatusFrame(
             ver = u8(bytes, StatusOffset.VER),
             flags = u8(bytes, StatusOffset.FLAGS),
@@ -385,6 +417,12 @@ object BleFrame {
             baroTempRaw = u32(bytes, StatusOffset.BARO_TEMP_RAW),
             ringSectorSeq = u32(bytes, StatusOffset.RING_SECTOR_SEQ),
             ringRecords = u32(bytes, StatusOffset.RING_RECORDS),
+            gravityMg = if (extended) i16Triple(bytes, StatusOffset.GRAVITY_MG) else ZERO_TRIPLE,
+            linearMg = if (extended) i16Triple(bytes, StatusOffset.LINEAR_MG) else ZERO_TRIPLE,
+            imuTempCc = if (extended) i16(bytes, StatusOffset.IMU_TEMP_CC) else 0,
+            magTempCc = if (extended) i16(bytes, StatusOffset.MAG_TEMP_CC) else 0,
+            sensorFlags = if (extended) u8(bytes, StatusOffset.SENSOR_FLAGS) else 0,
+            extendedFields = extended,
         )
     }
 
@@ -506,4 +544,6 @@ object BleFrame {
         i16(data, offset + 2),
         i16(data, offset + 4),
     )
+
+    private val ZERO_TRIPLE = listOf(0, 0, 0)
 }

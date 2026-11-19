@@ -63,14 +63,31 @@ fun SensorStatusScreen(
 
             item {
                 CardBlock("IMU · LSM6DSR") {
-                    MetricRow("加速度 X", f(imu.ax, "g"))
-                    MetricRow("加速度 Y", f(imu.ay, "g"))
-                    MetricRow("加速度 Z", f(imu.az, "g"))
-                    ValueBar("合加速度", accelMag, 2f, Cyan, f(accelMag, "g"))
+                    MetricRow("加速度 X（body frame, 26 Hz）", f(imu.ax, "g"))
+                    MetricRow("加速度 Y（body frame, 26 Hz）", f(imu.ay, "g"))
+                    MetricRow("加速度 Z（body frame, 26 Hz）", f(imu.az, "g"))
+                    ValueBar("合加速度（body frame）", accelMag, 2f, Cyan, f(accelMag, "g"))
                     Spacer(Modifier.height(6.dp))
-                    MetricRow("角速度 X", f(imu.gx, "°/s"))
-                    MetricRow("角速度 Y", f(imu.gy, "°/s"))
-                    MetricRow("角速度 Z", f(imu.gz, "°/s"))
+                    MetricRow("加速度 X（sensor frame, 1 Hz）", f(imu.axSensor, "g"))
+                    MetricRow("加速度 Y（sensor frame, 1 Hz）", f(imu.aySensor, "g"))
+                    MetricRow("加速度 Z（sensor frame, 1 Hz）", f(imu.azSensor, "g"))
+                    Spacer(Modifier.height(6.dp))
+                    MetricRow("重力 X", valueOrDash(imu.gravityValid, imu.gravityXg, "g"))
+                    MetricRow("重力 Y", valueOrDash(imu.gravityValid, imu.gravityYg, "g"))
+                    MetricRow("重力 Z", valueOrDash(imu.gravityValid, imu.gravityZg, "g"))
+                    MetricRow("线性加速度 X", valueOrDash(imu.gravityValid, imu.linearXg, "g"))
+                    MetricRow("线性加速度 Y", valueOrDash(imu.gravityValid, imu.linearYg, "g"))
+                    MetricRow("线性加速度 Z", valueOrDash(imu.gravityValid, imu.linearZg, "g"))
+                    MetricRow("IMU 温度", tempOrDash(imu.imuTempValid, imu.imuTempC))
+                    MetricRow("磁力计温度", tempOrDash(imu.magTempValid, imu.magTempC))
+                    Spacer(Modifier.height(6.dp))
+                    MetricRow("角速度 X（body frame, 26 Hz）", f(imu.gx, "°/s"))
+                    MetricRow("角速度 Y（body frame, 26 Hz）", f(imu.gy, "°/s"))
+                    MetricRow("角速度 Z（body frame, 26 Hz）", f(imu.gz, "°/s"))
+                    Spacer(Modifier.height(6.dp))
+                    MetricRow("角速度 X（sensor frame, 1 Hz）", f(imu.gxSensor, "°/s"))
+                    MetricRow("角速度 Y（sensor frame, 1 Hz）", f(imu.gySensor, "°/s"))
+                    MetricRow("角速度 Z（sensor frame, 1 Hz）", f(imu.gzSensor, "°/s"))
                     ValueBar("角速度模长", gyroMag, 300f, Amber, f(gyroMag, "°/s"))
                     Spacer(Modifier.height(6.dp))
                     MetricRow("四元数 W", String.format(Locale.US, "%.3f", attitude.qw))
@@ -167,3 +184,9 @@ private fun f(value: Float, unit: String): String {
     val text = String.format(Locale.US, "%.3f", value)
     return if (unit.isBlank()) text else "$text $unit"
 }
+
+private fun valueOrDash(valid: Boolean, value: Float, unit: String): String =
+    if (valid) f(value, unit) else "—"
+
+private fun tempOrDash(valid: Boolean, value: Float): String =
+    if (valid) String.format(Locale.US, "%.1f °C", value) else "—"

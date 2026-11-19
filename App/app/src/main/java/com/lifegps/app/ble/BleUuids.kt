@@ -13,7 +13,7 @@ object BleUuids {
     /** Primary Life_GPS service. */
     val SERVICE: UUID = UUID.fromString("4C475053-0001-4C47-5053-000000000001")
 
-    /** 82-byte Status snapshot, notified at 10 Hz while subscribed (1 Hz idle) and readable. */
+    /** Status snapshot (100-byte extended / 82-byte base), notified at 10 Hz while subscribed (1 Hz idle) and readable. */
     val STATUS: UUID = UUID.fromString("4C475053-0002-4C47-5053-000000000001")
 
     /** Command frames are written here; responses come back as notifications. */
