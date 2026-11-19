@@ -67,9 +67,10 @@ class BaroTelemetryTest {
 
         // Byte-for-byte golden: little endian u32/i32/i16 at 0/4/8, flags at 10,
         // reserved at 11, baseline_pa_q4 at 12.
-        assertEquals(0xD0, payload[0].toInt() and 0xFF)
-        assertEquals(0xBC, payload[1].toInt() and 0xFF)
-        assertEquals(0x18, payload[2].toInt() and 0xFF)
+        // press_pa = 101325 = 0x00018BCD, little endian.
+        assertEquals(0xCD, payload[0].toInt() and 0xFF)
+        assertEquals(0x8B, payload[1].toInt() and 0xFF)
+        assertEquals(0x01, payload[2].toInt() and 0xFF)
         assertEquals(0x00, payload[3].toInt() and 0xFF)
         assertEquals(0x18, payload[4].toInt() and 0xFF)
         assertEquals(0xFC, payload[5].toInt() and 0xFF)
