@@ -529,18 +529,34 @@ ZTEST(lifegps_ble, test_telemetry_sat_packet_layout)
 
 ZTEST(lifegps_ble, test_telemetry_nmea_packet_layout)
 {
-	static const char line[] = "$GNGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,";
+	static const char line[] =
+		"$GNGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*4C";
 	uint8_t out[LGPS_BLE_TELEM_HEADER_SIZE + 1U + LGPS_BLE_TELEM_NMEA_MAX];
+	size_t text_len = sizeof(line) - 1U;
+	size_t star = 0U;
 	int len;
 
-	len = lgps_ble_telem_nmea_encode(0x0007U, line, (uint8_t)(sizeof(line) - 1U), out, sizeof(out));
+	/* Locate the checksum star in the source, so the assertion cannot drift with
+	 * the test string.
+	 */
+	for (size_t index = 0U; index < text_len; index++) {
+		if (line[index] == '*') {
+			star = index;
+		}
+	}
+
+	zassert_true(star > 0U, "test sentence must carry a checksum");
+
+	len = lgps_ble_telem_nmea_encode(0x0007U, line, (uint8_t)text_len, out, sizeof(out));
 
 	zassert_equal(len, (int)(LGPS_BLE_TELEM_HEADER_SIZE + sizeof(line)), "NMEA packet length");
 	zassert_equal(out[0], 0x08U, "telemetry id NMEA");
 	zassert_equal(out[2], 7U, "seq low byte");
-	zassert_equal(out[4], (uint8_t)(sizeof(line) - 1U), "text length prefix");
+	zassert_equal(out[4], (uint8_t)text_len, "text length prefix");
 	zassert_equal(out[5], (uint8_t)'$', "text starts with the sentence delimiter");
-	zassert_equal(out[5 + (sizeof(line) - 2U)], (uint8_t)'*', "checksum star is inside the line");
+	zassert_equal(out[5 + star], (uint8_t)'*', "checksum star keeps its position");
+	zassert_equal(out[5 + text_len - 1U], (uint8_t)line[text_len - 1U],
+		      "last text byte round-trips");
 
 	zassert_equal(lgps_ble_telem_nmea_encode(0U, NULL, 4U, out, sizeof(out)), -EINVAL,
 		      "NULL line");

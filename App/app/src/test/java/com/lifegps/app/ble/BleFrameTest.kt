@@ -513,7 +513,7 @@ class BleFrameTest {
 
     @Test
     fun parseNmeaTelemetryReadsTheLengthPrefixedText() {
-        val line = "$GNGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,"
+        val line = "\$GNGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*4C"
         val payload = ByteArray(1 + line.length)
         payload[0] = line.length.toByte()
         line.toByteArray(Charsets.US_ASCII).copyInto(payload, 1)
