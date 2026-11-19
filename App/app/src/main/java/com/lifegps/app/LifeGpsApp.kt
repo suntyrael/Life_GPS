@@ -28,6 +28,8 @@ import com.lifegps.app.ble.rememberBlePermissions
 import com.lifegps.app.debug.CalibrationScreen
 import com.lifegps.app.debug.CommandConsoleScreen
 import com.lifegps.app.debug.DebugHomeScreen
+import com.lifegps.app.debug.GnssConfigScreen
+import com.lifegps.app.debug.GnssNmeaScreen
 import com.lifegps.app.debug.DeviceScanScreen
 import com.lifegps.app.debug.FlashStatusScreen
 import com.lifegps.app.debug.GnssStatusScreen

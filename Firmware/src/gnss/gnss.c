@@ -87,7 +87,7 @@ static struct k_spinlock debug_lock;
 static uint8_t debug_applied_flags;
 
 /* Newest UBX-NAV-SAT list, written by the GNSS thread. */
-static struct lgps_gnss_sat sat_list[LGPS_UBX_NAV_SAT_MAX_SV];
+static struct lgps_gnss_sat sat_list[LGPS_GNSS_SAT_MAX];
 static uint8_t sat_count;
 static uint32_t sat_uptime_ms;
 /* The GNSS thread writes the list, the main loop copies it for the BLE frame. */
@@ -1071,7 +1071,7 @@ static void gnss_process_rx(void)
 			}
 		} else if (parser.msg_class == LGPS_UBX_CLASS_NAV &&
 			   parser.msg_id == LGPS_UBX_ID_NAV_SAT) {
-			struct lgps_gnss_sat sats[LGPS_UBX_NAV_SAT_MAX_SV];
+			struct lgps_gnss_sat sats[LGPS_GNSS_SAT_MAX];
 			uint8_t count = 0U;
 
 			if (lgps_ubx_decode_nav_sat(&parser, sats, (uint8_t)ARRAY_SIZE(sats),

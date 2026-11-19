@@ -393,7 +393,7 @@ static void publish_gnss(const struct lgps_telemetry_snapshot *snap)
 static void publish_sat(void)
 {
 	static struct lgps_ble_telem_sat_entry entries[LGPS_BLE_TELEM_SAT_MAX];
-	struct lgps_gnss_sat sats[LGPS_UBX_NAV_SAT_MAX_SV];
+	struct lgps_gnss_sat sats[LGPS_GNSS_SAT_MAX];
 	uint8_t count;
 
 	count = lgps_gnss_get_satellites(sats, (uint8_t)ARRAY_SIZE(sats));

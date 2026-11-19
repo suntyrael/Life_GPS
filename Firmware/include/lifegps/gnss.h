@@ -57,6 +57,9 @@ enum lgps_gnss_state {
 #define LGPS_GNSS_DEBUG_DEFAULT_TTL_S 300U
 #define LGPS_GNSS_DEBUG_MAX_TTL_S 3600U
 
+/* Largest satellite list the firmware caches (UBX-NAV-SAT, section 3.15.13). */
+#define LGPS_GNSS_SAT_MAX 32U
+
 /* One satellite for the App table (UBX-NAV-SAT, interface description 3.15.13). */
 struct lgps_gnss_sat {
 	uint8_t gnss_id;
