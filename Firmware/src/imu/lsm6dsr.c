@@ -70,6 +70,17 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 #define LIS2MDL_CFG_A_TEMP_COMP_50HZ 0x88U /* COMP_TEMP_EN | ODR=10b | MD=00b */
 #define LIS2MDL_CFG_C_BDU 0x10U
 
+/* LIS2MDL registers used by the numop mapping test (DS12144 Rev 6 section 8).
+ * The interrupt is never enabled by this firmware, so its threshold registers
+ * are inert and safe to use as a write pattern.
+ */
+#define LIS2MDL_INT_CTRL_REG 0x63U
+#define LIS2MDL_INT_THS_L_REG 0x65U
+#define LIS2MDL_INT_THS_H_REG 0x66U
+#define LIS2MDL_INT_THS_L_PATTERN 0xA5U
+#define LIS2MDL_INT_THS_H_PATTERN 0x5AU
+#define LIS2MDL_WHO_AM_I_REG 0x4FU
+
 #define BMP388_CHIP_ID_REG 0x00U
 #define BMP388_PRESS_XLSB 0x04U
 #define BMP388_OSR 0x1CU
@@ -85,6 +96,12 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 #define BMP388_EVENT_REG 0x10U           /* Table 31 */
 #define BMP388_CMD_REG 0x7EU             /* Table 45 */
 #define BMP388_CMD_SOFTRESET 0xB6U       /* Table 46 */
+#define BMP388_IF_CONF 0x1AU             /* Table 39 */
+/* i2c_wdt_en = 1 with the long timeout: the NVM default is enabled with the
+ * 1.25 ms short timeout, which a six-byte burst at the sensor hub's MSCL rate
+ * may not fit into.
+ */
+#define BMP388_IF_CONF_WDT_LONG 0x06U
 #define BMP388_EVENT_POR_DETECTED BIT(0) /* por_detected, clear-on-read */
 /* osr_t = 101b (x32), osr_p = 011b (x8): distinguishable from both the reset
  * value (0x02) and the value this firmware programs (0x0B).
@@ -121,6 +138,14 @@ static K_MUTEX_DEFINE(imu_lock);
 static bool hub_streaming_configured;
 static uint8_t detected_who_am_i;
 static uint8_t bmp388_addr = LGPS_BMP388_I2C_ADDR;
+
+/*
+ * Last sensor hub transaction status. It has to be sampled while the master is
+ * still enabled: clearing MASTER_ON (which every helper here does on the way
+ * out) resets endop and the NACK bits, so a later read returns zeros. Written
+ * and read under imu_lock, like every other access to the auxiliary bus.
+ */
+static uint8_t last_hub_status;
 
 static int imu_read_buf(uint8_t reg, uint8_t *buf, size_t len_bytes)
 {
@@ -169,6 +194,15 @@ static int imu_write(uint8_t reg, uint8_t value)
 static int shub_bank_enable(bool enable)
 {
 	return imu_write(REG_FUNC_CFG_ACCESS, enable ? FUNC_CFG_SHUB_REG_ACCESS : 0x00U);
+}
+
+static void hub_status_capture(void)
+{
+	int ret = imu_read_buf(REG_STATUS_MASTER_MAINPAGE, &last_hub_status, 1U);
+
+	if (ret < 0) {
+		LOG_ERR("sensor hub status read failed (%d)", ret);
+	}
 }
 
 /*
@@ -222,6 +256,9 @@ static int shub_write_byte(uint8_t i2c_addr, uint8_t reg, uint8_t value)
 
 	k_msleep(SHUB_SETTLE_MS);
 
+	/* Sample endop/wr_once_done/NACK before the master is switched off. */
+	hub_status_capture();
+
 	ret = imu_write(REG_MASTER_CONFIG, 0x00U);
 	if (ret < 0) {
 		return ret;
@@ -235,77 +272,14 @@ static int shub_write_byte(uint8_t i2c_addr, uint8_t reg, uint8_t value)
 	return shub_bank_enable(false);
 }
 
-static int hub_read_bytes(uint8_t i2c0_addr, uint8_t i2c0_reg, uint8_t i2c1_addr,
-			   uint8_t i2c1_reg, uint8_t *out, size_t len_bytes)
-{
-	int ret;
-
-	ret = shub_bank_enable(true);
-	if (ret < 0) {
-		return ret;
-	}
-
-	ret = imu_write(REG_MASTER_CONFIG, MASTER_RST_REGS);
-	if (ret < 0) {
-		goto out;
-	}
-
-	ret = imu_write(REG_MASTER_CONFIG, 0x00U);
-	if (ret < 0) {
-		goto out;
-	}
-
-	ret = imu_write(REG_SLV0_ADD, (uint8_t)((i2c0_addr << 1) | SLV0_ADD_READ));
-	if (ret < 0) {
-		goto out;
-	}
-
-	ret = imu_write(REG_SLV0_SUBADD, i2c0_reg);
-	if (ret < 0) {
-		goto out;
-	}
-
-	ret = imu_write(REG_SLV0_CONFIG, 0x00U); /* numop = 0 -> one byte */
-	if (ret < 0) {
-		goto out;
-	}
-
-	ret = imu_write(REG_SLV1_ADD, (uint8_t)((i2c1_addr << 1) | SLV0_ADD_READ));
-	if (ret < 0) {
-		goto out;
-	}
-
-	ret = imu_write(REG_SLV1_SUBADD, i2c1_reg);
-	if (ret < 0) {
-		goto out;
-	}
-
-	ret = imu_write(REG_SLV1_CONFIG, 0x00U);
-	if (ret < 0) {
-		goto out;
-	}
-
-	/* AUX_SENS_ON = 01b -> two slaves (table 367). */
-	ret = imu_write(REG_MASTER_CONFIG, BIT(0) | MASTER_ON);
-	if (ret < 0) {
-		goto out;
-	}
-
-	k_msleep(SHUB_SETTLE_MS);
-
-	ret = imu_read_buf(REG_SENSOR_HUB_1, out, len_bytes);
-
-out:
-	(void)shub_bank_enable(false);
-	return ret;
-}
-
 /* --- Bring-up diagnostics for the auxiliary bus ------------------------- */
 
 /*
- * One-shot read of a single external sensor into SENSOR_HUB_1..N. Unlike
- * hub_read_bytes() this takes an explicit numop so the caller can test both a
- * one-byte and a six-byte operation, and it never configures a second slave.
+ * One-shot read of a single external sensor into SENSOR_HUB_1..N. numop is the
+ * number of read operations the hub performs; the 2026-11-19 bench log showed
+ * that 0 performs none at all, so callers ask for at least one and read the
+ * bytes they need. Only one slave is configured, which keeps the first byte at
+ * SENSOR_HUB_1 whatever the numop-to-bytes mapping turns out to be.
  */
 static int hub_single_read(uint8_t i2c_addr, uint8_t sub_reg, uint8_t numop,
 			   uint8_t *out, size_t len_bytes)
@@ -355,6 +329,9 @@ static int hub_single_read(uint8_t i2c_addr, uint8_t sub_reg, uint8_t numop,
 	k_msleep(HUB_DIAG_READ_MS);
 
 	ret = imu_read_buf(REG_SENSOR_HUB_1, out, len_bytes);
+	if (ret == 0) {
+		hub_status_capture();
+	}
 
 out:
 	(void)imu_write(REG_MASTER_CONFIG, 0x00U);
@@ -393,13 +370,18 @@ static int hub_dump_config(void)
 	return 0;
 }
 
-/* One-byte read used by the diagnostics; logs the value and returns it in *value. */
+/*
+ * One-byte read used by the diagnostics; logs the value and returns it in
+ * *value. numop is 1, not 0: a zero numop makes the sensor hub perform no read
+ * at all (the 2026-11-19 bench log returned zeros for every numop = 0 read),
+ * so a one-byte read must ask for at least one operation.
+ */
 static int hub_diag_read1(uint8_t i2c_addr, uint8_t sub_reg, uint8_t *value,
 			  const char *what)
 {
 	int ret;
 
-	ret = hub_single_read(i2c_addr, sub_reg, 0U, value, 1U);
+	ret = hub_single_read(i2c_addr, sub_reg, 1U, value, 1U);
 	if (ret < 0) {
 		LOG_ERR("hub diag: %s (dev 0x%02x reg 0x%02x) read failed (%d)", what,
 			i2c_addr, sub_reg, ret);
@@ -413,27 +395,21 @@ static int hub_diag_read1(uint8_t i2c_addr, uint8_t sub_reg, uint8_t *value,
 }
 
 /*
- * Decode STATUS_MASTER_MAINPAGE. endop tells whether a hub cycle concluded at
- * all, and the NACK bits tell whether each slave acknowledged its address:
- * together they separate "device not there" from "device there but silent"
- * from "the hub never ran".
+ * Decode STATUS_MASTER_MAINPAGE as captured by hub_status_capture() while the
+ * master was still enabled. endop tells whether a hub cycle concluded at all,
+ * and the NACK bits tell whether each slave acknowledged its address: together
+ * they separate "device not there" from "device there but silent" from "the
+ * hub never ran". Reading 0x39 here would return zeros, because every helper
+ * clears MASTER_ON before returning.
  */
 static void hub_status_log(const char *tag)
 {
-	uint8_t status = 0U;
-	int ret;
-
-	ret = imu_read_buf(REG_STATUS_MASTER_MAINPAGE, &status, 1U);
-	if (ret < 0) {
-		LOG_ERR("hub diag: %s status read failed (%d)", tag, ret);
-		return;
-	}
-
 	LOG_INF("hub diag: %s 0x39=0x%02x endop=%u wr_once_done=%u nack(s0=%u s1=%u)", tag,
-		status, (unsigned int)((status & SHUB_SENS_HUB_ENDOP) ? 1U : 0U),
-		(unsigned int)((status & SHUB_WR_ONCE_DONE) ? 1U : 0U),
-		(unsigned int)((status & SHUB_SLAVE0_NACK) ? 1U : 0U),
-		(unsigned int)((status & SHUB_SLAVE1_NACK) ? 1U : 0U));
+		last_hub_status,
+		(unsigned int)((last_hub_status & SHUB_SENS_HUB_ENDOP) ? 1U : 0U),
+		(unsigned int)((last_hub_status & SHUB_WR_ONCE_DONE) ? 1U : 0U),
+		(unsigned int)((last_hub_status & SHUB_SLAVE0_NACK) ? 1U : 0U),
+		(unsigned int)((last_hub_status & SHUB_SLAVE1_NACK) ? 1U : 0U));
 }
 
 /*
@@ -506,6 +482,9 @@ static int hub_diag_two_slave(uint8_t bmp_addr, bool pull_up)
 	k_msleep(HUB_DIAG_READ_MS);
 
 	ret = imu_read_buf(REG_SENSOR_HUB_1, block, sizeof(block));
+	if (ret == 0) {
+		hub_status_capture();
+	}
 
 out:
 	(void)imu_write(REG_MASTER_CONFIG, 0x00U);
@@ -536,33 +515,15 @@ int lgps_imu_hub_diag(void)
 
 	/* 1. Control. LIS2MDL sits on the same auxiliary bus and is known to be
 	 *    populated, so it answers the question "is the hub or the sensor
-	 *    broken". 0x4f is the LIS2MDL WHO_AM_I value.
+	 *    broken": address 0x1e, register 0x4f, value 0x40.
 	 */
-	ret = hub_single_read(LGPS_LIS2MDL_I2C_ADDR, 0x4FU, 0U, block, 1U);
+	ret = hub_single_read(LGPS_LIS2MDL_I2C_ADDR, LIS2MDL_WHO_AM_I_REG, 1U, block, 1U);
 	if (ret < 0) {
 		LOG_ERR("hub diag 1: LIS2MDL one-shot read failed (%d)", ret);
 	} else {
 		LOG_INF("hub diag 1: LIS2MDL WHO_AM_I @0x%02x[0x4f] = 0x%02x (expect 0x%02x) %s",
 			LGPS_LIS2MDL_I2C_ADDR, block[0], LGPS_LIS2MDL_WHO_AM_I,
 			(block[0] == LGPS_LIS2MDL_WHO_AM_I) ? "OK" : "MISMATCH");
-
-		if (block[0] != LGPS_LIS2MDL_WHO_AM_I) {
-			/* A mismatch on a part that is known to be populated means the
-			 * one-byte (numop = 0) operation is not what this silicon does;
-			 * repeat the same read as a six-byte burst to tell the two cases
-			 * apart before blaming the bus.
-			 */
-			ret = hub_single_read(LGPS_LIS2MDL_I2C_ADDR, 0x4FU, 5U, block,
-					      sizeof(block));
-			if (ret < 0) {
-				LOG_ERR("hub diag 1b: LIS2MDL burst read failed (%d)", ret);
-			} else {
-				LOG_INF("hub diag 1b: burst = %02x %02x %02x %02x %02x "
-					"%02x (byte 0 must be 0x%02x)", block[0], block[1],
-					block[2], block[3], block[4], block[5],
-					LGPS_LIS2MDL_WHO_AM_I);
-			}
-		}
 	}
 
 	/* 2. Prove SHUB_REG_ACCESS and the configuration writes work at all: the
@@ -575,7 +536,7 @@ int lgps_imu_hub_diag(void)
 	for (uint8_t idx = 0U; idx < 2U; idx++) {
 		uint8_t addr = (idx == 0U) ? LGPS_BMP388_I2C_ADDR : LGPS_BMP388_ALT_I2C_ADDR;
 
-		ret = hub_single_read(addr, BMP388_CHIP_ID_REG, 0U, &value, 1U);
+		ret = hub_single_read(addr, BMP388_CHIP_ID_REG, 1U, &value, 1U);
 		if (ret < 0) {
 			LOG_ERR("hub diag 3: CHIP_ID read @0x%02x failed (%d)", addr, ret);
 			continue;
@@ -605,6 +566,29 @@ int lgps_imu_hub_diag(void)
 			block[0], block[1], block[2], block[3], block[4], block[5]);
 	}
 	hub_status_log("4: BMP388 block");
+
+	/* 4b. The BMP388 I2C watchdog is enabled from NVM with the 1.25 ms short
+	 *     timeout (IF_CONF 0x1A, table 39) and this firmware never writes that
+	 *     register. A six-byte burst is roughly 80 SCL periods; at the sensor
+	 *     hub's MSCL rate that can exceed 1.25 ms, in which case the BMP388
+	 *     aborts the transfer while the shorter reads still succeed. Repeat the
+	 *     same six-byte read with the 40 ms timeout to separate that from a part
+	 *     that is not there at all.
+	 */
+	ret = shub_write_byte(bmp_addr, BMP388_IF_CONF, BMP388_IF_CONF_WDT_LONG);
+	if (ret < 0) {
+		LOG_ERR("hub diag 4b: IF_CONF write failed (%d)", ret);
+	} else {
+		ret = hub_single_read(bmp_addr, BMP388_CHIP_ID_REG, 5U, block, sizeof(block));
+		if (ret < 0) {
+			LOG_ERR("hub diag 4b: IF_CONF retry read failed (%d)", ret);
+		} else {
+			LOG_INF("hub diag 4b: after IF_CONF wdt_long = %02x %02x %02x %02x "
+				"%02x %02x (0x50 in byte 0 = watchdog was aborting the burst)",
+				block[0], block[1], block[2], block[3], block[4], block[5]);
+		}
+		hub_status_log("4b: IF_CONF retry");
+	}
 
 	/* 5. por_detected (EVENT, table 31) is set after every power-on and soft
 	 *    reset and cleared by a read, so it tells a live die from a silent bus.
@@ -640,7 +624,7 @@ int lgps_imu_hub_diag(void)
 	if (ret < 0) {
 		LOG_ERR("hub diag 7: OSR write failed (%d)", ret);
 	} else {
-		ret = hub_single_read(bmp_addr, BMP388_OSR, 0U, &value, 1U);
+		ret = hub_single_read(bmp_addr, BMP388_OSR, 1U, &value, 1U);
 		if (ret < 0) {
 			LOG_ERR("hub diag 7: OSR readback failed (%d)", ret);
 		} else {
@@ -671,7 +655,37 @@ int lgps_imu_hub_diag(void)
 	}
 	hub_status_log("8b: two slaves, SHUB_PU_EN");
 
-	LOG_INF("hub diag: summary -> LIS2MDL control above must be 0x4f; if it is, "
+	/* 9. Map numop to the number of bytes actually read. The LIS2MDL interrupt is
+	 *    never enabled by this firmware, so INT_THS_L/H are inert and safe to
+	 *    use as a write pattern: reading INT_CTRL (0x63) three bytes deep must
+	 *    show A5 at offset 2 and 5A at offset 3 when numop counts bytes + 1, and
+	 *    only A5 when numop counts bytes. The same write also re-proves that the
+	 *    one-shot write path works on a slave that acknowledges.
+	 */
+	ret = shub_write_byte(LGPS_LIS2MDL_I2C_ADDR, LIS2MDL_INT_THS_L_REG,
+			      LIS2MDL_INT_THS_L_PATTERN);
+	if (ret < 0) {
+		LOG_ERR("hub diag 9: INT_THS_L write failed (%d)", ret);
+	} else {
+		ret = shub_write_byte(LGPS_LIS2MDL_I2C_ADDR, LIS2MDL_INT_THS_H_REG,
+				      LIS2MDL_INT_THS_H_PATTERN);
+		if (ret < 0) {
+			LOG_ERR("hub diag 9: INT_THS_H write failed (%d)", ret);
+		}
+	}
+
+	ret = hub_single_read(LGPS_LIS2MDL_I2C_ADDR, LIS2MDL_INT_CTRL_REG, 3U, block,
+			      sizeof(block));
+	if (ret < 0) {
+		LOG_ERR("hub diag 9: numop = 3 read failed (%d)", ret);
+	} else {
+		LOG_INF("hub diag 9: 0x1e[0x63] numop=3 -> %02x %02x %02x %02x %02x %02x "
+			"(A5 at 2 and 5A at 3 = numop + 1 bytes)", block[0], block[1],
+			block[2], block[3], block[4], block[5]);
+	}
+	hub_status_log("9: numop mapping");
+
+	LOG_INF("hub diag: summary -> LIS2MDL control above must be 0x40; if it is, "
 		"every 0x00 from U4 is a hardware answer at 0x%02x", bmp_addr);
 
 	k_mutex_unlock(&imu_lock);
@@ -681,7 +695,8 @@ int lgps_imu_hub_diag(void)
 
 int lgps_imu_probe_hub(struct lgps_imu_hub_ids *ids)
 {
-	uint8_t hub[2] = { 0U, 0U };
+	uint8_t mag_id = 0U;
+	uint8_t baro_id = 0U;
 	int ret = 0;
 
 	if (ids == NULL) {
@@ -693,41 +708,45 @@ int lgps_imu_probe_hub(struct lgps_imu_hub_ids *ids)
 	k_mutex_lock(&imu_lock, K_FOREVER);
 
 	/*
-	 * The first hub cycle can be missed (trigger alignment), and BMP388 strapping
-	 * is only known from the netlist, so both addresses are tried. Four attempts of
-	 * 150 ms cover all of them.
+	 * One slave per hub cycle: the single slave's first byte always lands in
+	 * SENSOR_HUB_1, so the identification does not depend on how numop is
+	 * counted. (The earlier two-slave, numop = 0 read never transferred
+	 * anything and reported a false MISMATCH for both parts.) The BMP388
+	 * strapping is only known from the netlist, so both addresses are tried.
 	 */
-	for (uint8_t attempt = 0U; attempt < 4U; attempt++) {
-		ret = hub_read_bytes(LGPS_LIS2MDL_I2C_ADDR, 0x4FU, bmp388_addr,
-				     (uint8_t)BMP388_CHIP_ID_REG, hub, sizeof(hub));
+	for (uint8_t attempt = 0U; attempt < 3U; attempt++) {
+		ret = hub_single_read(LGPS_LIS2MDL_I2C_ADDR, LIS2MDL_WHO_AM_I_REG, 1U,
+				      &mag_id, 1U);
 		if (ret < 0) {
 			break;
 		}
 
-		ids->lis2mdl_who_am_i = hub[0];
-		ids->bmp388_chip_id = hub[1];
-		ids->lis2mdl_ok = (hub[0] == LGPS_LIS2MDL_WHO_AM_I);
-		ids->bmp388_ok = (hub[1] == LGPS_BMP388_CHIP_ID);
-
-		if (ids->lis2mdl_ok && ids->bmp388_ok) {
+		ret = hub_single_read(bmp388_addr, (uint8_t)BMP388_CHIP_ID_REG, 1U,
+				      &baro_id, 1U);
+		if (ret < 0) {
 			break;
 		}
 
-		if (!ids->bmp388_ok && (bmp388_addr == LGPS_BMP388_I2C_ADDR)) {
-			bmp388_addr = LGPS_BMP388_ALT_I2C_ADDR;
-			continue;
+		ids->lis2mdl_who_am_i = mag_id;
+		ids->bmp388_chip_id = baro_id;
+		ids->lis2mdl_ok = (mag_id == LGPS_LIS2MDL_WHO_AM_I);
+		ids->bmp388_ok = (baro_id == LGPS_BMP388_CHIP_ID);
+
+		if (ids->bmp388_ok) {
+			break;
 		}
 
-		if (!ids->bmp388_ok && (bmp388_addr == LGPS_BMP388_ALT_I2C_ADDR)) {
+		if (bmp388_addr == LGPS_BMP388_I2C_ADDR) {
+			bmp388_addr = LGPS_BMP388_ALT_I2C_ADDR;
+		} else {
 			bmp388_addr = LGPS_BMP388_I2C_ADDR;
 		}
 	}
 
 	if (ret == 0) {
-		LOG_INF("sensor hub probe: LIS2MDL WHO_AM_I=0x%02x (%s) BMP388 CHIP_ID=0x%02x @0x%02x "
-			"(%s)", hub[0], ids->lis2mdl_ok ? "ok" : "MISMATCH", hub[1], bmp388_addr,
-			ids->bmp388_ok ? "ok" : "MISMATCH");
-		LOG_DBG("sensor hub raw: 0x%02x 0x%02x", hub[0], hub[1]);
+		LOG_INF("sensor hub probe: LIS2MDL WHO_AM_I=0x%02x (%s) BMP388 CHIP_ID=0x%02x "
+			"@0x%02x (%s)", mag_id, ids->lis2mdl_ok ? "ok" : "MISMATCH", baro_id,
+			bmp388_addr, ids->bmp388_ok ? "ok" : "MISMATCH");
 	}
 
 	k_mutex_unlock(&imu_lock);
@@ -839,6 +858,13 @@ int lgps_imu_hub_configure(void)
 			LOG_WRN("BMP388 pressure reads 0: check PWR_CTRL write path, SDO strapping "
 				"(0x76/0x77) and that U4 is populated");
 		}
+
+		/* Master is still enabled here, so this is the streaming layout's own
+		 * verdict: SLAVE1_NACK set means U4 did not acknowledge its address
+		 * (DS11976 section 9.40). hub_status_log() only prints the snapshot.
+		 */
+		hub_status_capture();
+		hub_status_log("streaming first burst");
 	}
 
 out:

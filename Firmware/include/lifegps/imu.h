@@ -25,8 +25,14 @@
 /* LSM6DSR WHO_AM_I (0x0F), datasheet section 9.14. */
 #define LGPS_LSM6DSR_WHO_AM_I 0x6BU
 
-/* LIS2MDL / BMP388 identification values (their own datasheets). */
-#define LGPS_LIS2MDL_WHO_AM_I 0x4FU
+/* LIS2MDL / BMP388 identification values (their own datasheets).
+ *
+ * LIS2MDL: WHO_AM_I lives at register address 0x4f and reads back 0x40
+ * (DS12144 Rev 6 section 8.4 and the register map in table 20). The address and
+ * the value are easy to confuse; comparing against 0x4f made every probe report
+ * MISMATCH on a healthy sensor.
+ */
+#define LGPS_LIS2MDL_WHO_AM_I 0x40U
 #define LGPS_BMP388_CHIP_ID 0x50U
 
 /* 7-bit I2C addresses of the sensors on the auxiliary bus (netlist strapping). */
@@ -96,14 +102,16 @@ int lgps_imu_probe_hub(struct lgps_imu_hub_ids *ids);
 
 /*
  * Bring-up diagnostics for the auxiliary I2C bus, called once between the hub
- * probe and the streaming configuration. It logs, in this order: the sensor hub
- * configuration readback (proves SHUB_REG_ACCESS and the register writes), a
- * LIS2MDL WHO_AM_I control read on the same bus, the BMP388 CHIP_ID at both
- * strapping addresses, a six-byte block from register 0x00, BMP388 EVENT
- * por_detected, and finally a soft reset plus an OSR write/readback pair to
- * prove the write direction works. Every value returned by U4 the same way in
- * all steps points at U4 (population, soldering, supply), not at the hub.
- * Blocking: about 1.5 s. Returns 0 unless the last hub access failed.
+ * probe and the streaming configuration. It logs, in this order: a LIS2MDL
+ * WHO_AM_I control read, the sensor hub configuration readback (proves
+ * SHUB_REG_ACCESS and the register writes), the BMP388 CHIP_ID at both strapping
+ * addresses, a six-byte block from register 0x00, BMP388 EVENT por_detected, a
+ * soft reset plus an OSR write/readback pair, the two-slave layout with and
+ * without SHUB_PU_EN, and a numop mapping test. Every step also decodes
+ * STATUS_MASTER_MAINPAGE (endop, wr_once_done, per-slave NACK). If the LIS2MDL
+ * control returns 0x40 the bus and the hub are healthy, so anything U4 answers
+ * with 0x00 is a hardware finding at its strapping address.
+ * Blocking: about 3 s. Returns 0 unless the last hub access failed.
  */
 int lgps_imu_hub_diag(void);
 
