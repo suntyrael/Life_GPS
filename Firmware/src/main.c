@@ -247,9 +247,9 @@ static struct lgps_telemetry_snapshot *build_snapshot(uint32_t now_ms,
 		for (uint8_t axis = 0U; axis < 3U; axis++) {
 			snap.mag_lsb[axis] = mag.raw[axis];
 		}
-		/* LIS2MDL TEMP_OUT: 8 LSB/degC, no offset (DS12144 Rev 6 8.16). */
-		snap.mag_temp_cc =
-			(int16_t)(((float)mag.raw_temp / LGPS_LIS2MDL_TEMP_LSB_PER_C) * 100.0F);
+		/* LIS2MDL TEMP_OUT: 8 LSB/degC with the +25 degC zero level. */
+		snap.mag_temp_cc = (int16_t)(((float)mag.raw_temp / LGPS_LIS2MDL_TEMP_LSB_PER_C +
+					      LGPS_LIS2MDL_TEMP_OFFSET_C) * 100.0F);
 		snap.mag_temp_valid = mag.valid;
 		snap.baro_press_raw = baro.raw_pressure;
 		snap.baro_temp_raw = baro.raw_temperature;

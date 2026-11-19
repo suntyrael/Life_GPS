@@ -55,14 +55,22 @@
  */
 #define LGPS_LIS2MDL_UT_PER_LSB 0.15F
 
-/* Die temperatures, both sensors. LSM6DSR OUT_TEMP (0x20/0x21) is 16-bit two's
- * complement at 256 LSB/degC with a +25 degC offset (DS11976 section 9.30);
- * LIS2MDL TEMP_OUT (0x6e/0x6f) is 16-bit two's complement at 8 LSB/degC with no
- * offset (DS12144 Rev 6 section 8.16). Both are die temperatures, not ambient.
+/*
+ * Die temperatures, both sensors. Both are die temperatures, not ambient.
+ *
+ * LSM6DSR OUT_TEMP (0x20/0x21): 16-bit two's complement, 256 LSB/degC, +25 degC
+ * offset (DS11976 section 9.30 and the ODR/FS tables ship the same convention).
+ *
+ * LIS2MDL TEMP_OUT (0x6e/0x6f): 16-bit two's complement, 8 LSB/degC. The zero
+ * level is +25 degC, i.e. T = raw / 8 + 25 (ST LIS2MDL driver and AN5069; the
+ * datasheet section 8.16 only states the sensitivity). Bench cross-check
+ * 2026-11-19: raw 13 -> 26.6 degC while the LSM6DSR die on the same board read
+ * 26.0 degC, which rules out reading it as an absolute 1.6 degC.
  */
 #define LGPS_IMU_TEMP_LSB_PER_C 256.0F
 #define LGPS_IMU_TEMP_OFFSET_C 25.0F
 #define LGPS_LIS2MDL_TEMP_LSB_PER_C 8.0F
+#define LGPS_LIS2MDL_TEMP_OFFSET_C 25.0F
 
 /*
  * ODR programmed for both chains: 26 Hz high-performance. It is the native rate
