@@ -371,9 +371,11 @@ class BleDebugRepository(context: Context) : DebugRepository {
             headingDeg = frame.headingDdeg / 10.0,
             utcTime = formatUtc(frame.utcEpochS),
             ttff = "--",
-            // BLE_Wire_v1 §4: per-satellite C/N0, elevation and azimuth are not
-            // in the frame, so the list stays empty and the UI says "not provided".
-            satellites = emptyList(),
+            // BLE_Wire_v1 §4: the Status frame has no per-satellite data. It is
+            // published 10x per second while the satellite table (telemetry 0x09)
+            // arrives once per second, so the last known rows are kept instead of
+            // being blanked - otherwise the table flickers between rows and empty.
+            satellites = _gnss.value.satellites,
         )
 
         val acc = frame.accLsb
@@ -503,7 +505,12 @@ class BleDebugRepository(context: Context) : DebugRepository {
                 )
             }
 
-        _gnss.update { it.copy(satellites = rows, sats = if (telemetry.total > 0) telemetry.total else it.sats) }
+        /* `sats` keeps coming from the Status frame (NAV-PVT numSV, i.e. the
+         * satellites actually used); the table lists every satellite the receiver
+         * reports, which is a larger number. Overwriting both would make the
+         * header pill flip between the two rates.
+         */
+        _gnss.update { it.copy(satellites = rows) }
     }
 
     private fun onNmea(telemetry: NmeaTelemetry) {
@@ -525,7 +532,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
     override fun setGnssDebug(flags: Int, ttlSeconds: Int) {
         scope.launch {
             val result = request(Opcode.GNSS_DEBUG, GnssCodec.encodeDebug(flags, ttlSeconds))
-            val body = result?.payload?.drop(1)?.toByteArray()
+            val body = result?.payload
             val decoded = body?.let { GnssCodec.decodeDebug(it) }
             _gnssDebug.value = when {
                 result == null -> GnssDebugState(error = "链路未就绪或超时")
@@ -539,7 +546,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
     override fun refreshGnssDebug() {
         scope.launch {
             val result = request(Opcode.GNSS_DEBUG, GnssCodec.encodeDebugQuery())
-            val body = result?.payload?.drop(1)?.toByteArray()
+            val body = result?.payload
             val decoded = body?.let { GnssCodec.decodeDebug(it) }
             _gnssDebug.value = when {
                 result == null -> GnssDebugState(error = "链路未就绪或超时")
@@ -558,7 +565,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
         scope.launch {
             GnssCfgKeys.ALL.forEach { key ->
                 val result = request(Opcode.GNSS_CFG, GnssCodec.encodeCfgGet(key.key))
-                val body = result?.payload?.drop(1)?.toByteArray()
+                val body = result?.payload
                 val decoded = body?.let { GnssCodec.decodeCfg(it) }
                 val value = when {
                     result == null -> GnssCfgValue(key.key, key.len, 0, "链路未就绪或超时")
@@ -578,7 +585,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
                 Opcode.GNSS_CFG,
                 GnssCodec.encodeCfgSet(key, value, desc.len, persistToFlash),
             )
-            val body = result?.payload?.drop(1)?.toByteArray()
+            val body = result?.payload
             val decoded = body?.let { GnssCodec.decodeCfg(it) }
             val store = when {
                 result == null -> GnssCfgValue(key, desc.len, 0, "链路未就绪或超时")
@@ -1773,6 +1780,13 @@ class BleDebugRepository(context: Context) : DebugRepository {
         return 0
     }
 
+    /**
+     * One command response.
+     *
+     * [payload] is the body **after** the status byte - [handleResponseFrame] strips
+     * it, and every decoder here (GnssCodec, CalibCodec, BleFrame.parse*) expects
+     * the stripped form. Dropping another byte breaks every parse silently.
+     */
     private data class CommandResult(val status: Int, val payload: ByteArray)
 
     private fun initialDevice(): DeviceSummary = DeviceSummary(
