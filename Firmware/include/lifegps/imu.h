@@ -95,6 +95,19 @@ int lgps_imu_init(void);
 int lgps_imu_probe_hub(struct lgps_imu_hub_ids *ids);
 
 /*
+ * Bring-up diagnostics for the auxiliary I2C bus, called once between the hub
+ * probe and the streaming configuration. It logs, in this order: the sensor hub
+ * configuration readback (proves SHUB_REG_ACCESS and the register writes), a
+ * LIS2MDL WHO_AM_I control read on the same bus, the BMP388 CHIP_ID at both
+ * strapping addresses, a six-byte block from register 0x00, BMP388 EVENT
+ * por_detected, and finally a soft reset plus an OSR write/readback pair to
+ * prove the write direction works. Every value returned by U4 the same way in
+ * all steps points at U4 (population, soldering, supply), not at the hub.
+ * Blocking: about 1.5 s. Returns 0 unless the last hub access failed.
+ */
+int lgps_imu_hub_diag(void);
+
+/*
  * Program LIS2MDL (50 Hz continuous, temperature compensation, BDU) and BMP388
  * (normal mode, pressure + temperature enabled) through one-shot hub writes, then
  * switch the hub into 2-slave read mode at 52 Hz.

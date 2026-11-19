@@ -148,6 +148,14 @@ static int init_subsystems(void)
 		LOG_ERR("sensor hub probe failed (%d)", ret);
 	}
 
+	/* One-shot bring-up diagnostics: proves the hub read/write paths before
+	 * the streaming configuration overwrites them. About 1.5 s of boot time.
+	 */
+	ret = lgps_imu_hub_diag();
+	if (ret < 0) {
+		LOG_WRN("sensor hub diagnostics failed (%d)", ret);
+	}
+
 	ret = lgps_imu_hub_configure();
 	if (ret < 0) {
 		LOG_ERR("sensor hub streaming not configured (%d)", ret);
