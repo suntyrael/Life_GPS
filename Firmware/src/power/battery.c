@@ -30,9 +30,10 @@ int lgps_battery_init(void)
 		return ret;
 	}
 
-	LOG_INF("BAT_ADC ready: AIN4 (P1.11), divider calibrated pack:tap = %u:%u uV, "
+	LOG_INF("BAT_ADC ready: AIN4 (P1.11), divider pack:tap = %u:%u uV, ADC gain %u ppm, "
 		"gain/reference/resolution from devicetree",
-		(uint32_t)LGPS_BATT_CAL_PACK_UV, (uint32_t)LGPS_BATT_CAL_TAP_UV);
+		(uint32_t)LGPS_BATT_CAL_PACK_UV, (uint32_t)LGPS_BATT_CAL_TAP_UV,
+		(uint32_t)LGPS_BATT_ADC_GAIN_PPM);
 
 	return 0;
 }
@@ -41,6 +42,7 @@ int lgps_battery_read_mv(int32_t *millivolts)
 {
 	uint16_t raw = 0U;
 	int32_t pin_mv;
+	int32_t tap_effective_uv;
 	struct adc_sequence sequence = { 0 };
 	int ret;
 
@@ -79,12 +81,20 @@ int lgps_battery_read_mv(int32_t *millivolts)
 	}
 
 	/*
-	 * vbat = vpin * pack calibration / tap calibration, i.e. the measured divider
-	 * ratio instead of the R25/R26/SAADC-R_in model. The product is taken in 64
+	 * The SAADC path reports LGPS_BATT_ADC_GAIN_PPM times the real pin voltage, so
+	 * the tap it reports behaves like a larger divider: fold the measured gain into
+	 * the tap instead of into the result, which keeps the physical divider ratio and
+	 * the ADC scale error as two separately documented constants.
+	 */
+	tap_effective_uv = (int32_t)((int64_t)LGPS_BATT_CAL_TAP_UV *
+				     (int64_t)LGPS_BATT_ADC_GAIN_PPM / 1000000LL);
+
+	/*
+	 * vbat = vpin * pack calibration / tap_effective. The product is taken in 64
 	 * bits: a 1.8 V full-scale pin reading would overflow 32 bits.
 	 */
 	*millivolts = (int32_t)((int64_t)pin_mv * (int64_t)LGPS_BATT_CAL_PACK_UV /
-				(int64_t)LGPS_BATT_CAL_TAP_UV);
+				(int64_t)tap_effective_uv);
 
 	/*
 	 * Raw numbers in the log: a wrong gain / reference / pin shows up here as a
