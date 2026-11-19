@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Button
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -37,10 +36,12 @@ fun SensorStatusScreen(
     repo: DebugRepository,
     onBack: () -> Unit,
     onOpenTrail: () -> Unit,
+    onOpenCalibration: () -> Unit,
 ) {
     val imu by repo.imu.collectAsStateWithLifecycle()
     val mag by repo.mag.collectAsStateWithLifecycle()
     val attitude by repo.attitude.collectAsStateWithLifecycle()
+    val calib by repo.calib.collectAsStateWithLifecycle()
 
     val accelMag = sqrt(imu.ax * imu.ax + imu.ay * imu.ay + imu.az * imu.az)
     val gyroMag = sqrt(imu.gx * imu.gx + imu.gy * imu.gy + imu.gz * imu.gz)
@@ -156,15 +157,36 @@ fun SensorStatusScreen(
             }
 
             item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { repo.sendCommand("MAG_CAL", "") },
-                        modifier = Modifier.weight(1f),
-                    ) { Text("磁校准") }
-                    OutlinedButton(
-                        onClick = { repo.sendCommand("BARO_BASELINE", "") },
-                        modifier = Modifier.weight(1f),
-                    ) { Text("气压基准") }
+                CardBlock("传感器校准", "磁力计硬铁/软铁、加速度计六面法、气压基准") {
+                    MetricRow(
+                        "磁力计",
+                        calib.magResult?.let {
+                            CalibFormat.lastCalib(it.lastCalibUnixS, it.fromStore)
+                        } ?: if (calib.magSupported) "已支持，尚未校准" else "固件未提供 MAG_CAL",
+                        if (calib.magResult?.fromStore == true) Green else TextDim,
+                    )
+                    MetricRow(
+                        "加速度计",
+                        calib.accelResult?.let {
+                            CalibFormat.lastCalib(it.lastCalibUnixS, it.fromStore)
+                        } ?: if (calib.accelSupported) "已支持，尚未校准" else "固件未提供 ACCEL_CAL",
+                        if (calib.accelResult?.fromStore == true) Green else TextDim,
+                    )
+                    if (calib.magPhase == CalibPhase.COLLECTING ||
+                        calib.accelPhase == CalibPhase.COLLECTING
+                    ) {
+                        MetricRow("进行中", "设备正在采集，点进去可接入会话", Cyan)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = onOpenCalibration, modifier = Modifier.fillMaxWidth()) {
+                        Text("打开校准向导")
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "气压基准（0x42）待 BMP388 复活并完成 TPG 补偿后才启用，向导中暂为只读说明。",
+                        color = TextDim,
+                        fontSize = 11.sp,
+                    )
                 }
             }
 

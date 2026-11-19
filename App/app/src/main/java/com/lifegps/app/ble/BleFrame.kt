@@ -68,6 +68,24 @@ object CapsOffset {
 }
 
 /** Offset table of the FLASH_INFO response body (`BLE_Wire_v1.md` §6.2, 24 bytes). */
+/**
+ * GET_CAPS `caps` bits. A set bit means the opcode behind it really works on this
+ * firmware; the App gates its calibration UI on these instead of guessing from the
+ * protocol version alone.
+ */
+object CapsBits {
+    const val STATUS_NOTIFY = 0x00000001L
+    const val LOG_NOTIFY = 0x00000002L
+    const val POI = 0x00000004L
+    const val FLASH_INFO = 0x00000008L
+    const val REBOOT = 0x00000010L
+    const val DEBUG_UNLOCK = 0x00000020L
+    const val DATA_SYNC = 0x00000040L
+    const val MAG_CAL = 0x00000080L
+    const val ACCEL_CAL = 0x00000100L
+    const val BARO_BASELINE = 0x00000200L
+}
+
 object FlashInfoOffset {
     const val FLASH_BYTES = 0
     const val OTA_SLOT1_BYTES = 4
@@ -122,6 +140,7 @@ enum class Opcode(val code: Int, val label: String) {
     SELFTEST(0x40, "SELFTEST"),
     MAG_CAL(0x41, "MAG_CAL"),
     BARO_BASELINE(0x42, "BARO_BASELINE"),
+    ACCEL_CAL(0x43, "ACCEL_CAL"),
     ERASE_DAY(0x50, "ERASE_DAY"),
     FACTORY_RESET(0x51, "FACTORY_RESET"),
     REBOOT(0x52, "REBOOT"),

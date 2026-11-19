@@ -39,6 +39,9 @@ interface DebugRepository {
 
     val pois: StateFlow<List<PoiMarker>>
 
+    /** Sensor calibration state; the firmware owns it, the App only mirrors it. */
+    val calib: StateFlow<CalibState>
+
     fun runSelfTest()
     fun connect(device: ScannedDevice)
     fun disconnect()
@@ -53,6 +56,41 @@ interface DebugRepository {
 
     /** Queues a command frame; the returned entry is updated with the real response. */
     fun sendCommand(opcode: String, payload: String): ConsoleEntry
+
+    // --- calibration (MAG_CAL 0x41 / ACCEL_CAL 0x43) -------------------------
+
+    /**
+     * Re-syncs both calibration states from the device. Called when the wizard
+     * opens and after a reconnect: the session may already be collecting because
+     * the firmware keeps running while the App was in the background.
+     */
+    fun refreshCalibration()
+
+    fun startMagCal()
+
+    /** Computes the coefficients and writes the calibration record. */
+    fun finishMagCal()
+
+    /** Aborts a running capture; the stored record is left untouched. */
+    fun cancelMagCal()
+
+    fun clearMagCal()
+
+    /**
+     * Captures the pose the device is resting in right now. The face is identified
+     * on the device from the gravity vector - the user never selects a face, they
+     * just place the device on another side and press again.
+     */
+    fun captureAccelPose()
+
+    /** Single-face quick mode: low accuracy, only usable for one pose. */
+    fun captureAccelQuick()
+
+    fun cancelAccelFace()
+
+    fun finishAccelCal()
+
+    fun clearAccelCal()
 
     fun clearLogs()
     fun clearConsole()

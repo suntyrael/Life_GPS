@@ -8,7 +8,7 @@
 
 meta:
   name: "LIFE GPS BLE Protocol"
-  version: "0.1.0"
+  version: "0.2.0"
   status: "draft"
   endianness: "little"
   mtu: 247
@@ -163,6 +163,10 @@ commands:
   - {opcode: 0x40, name: SELFTEST, direction: app_to_dev}
   - {opcode: 0x41, name: MAG_CAL, direction: app_to_dev}
   - {opcode: 0x42, name: BARO_BASELINE, direction: app_to_dev}
+  # 0x43 只在 0.2.0 追加。校准类的请求/响应载荷不在本文件描述（YAML 目前没有
+  # payloads schema），字段表在 Doc/Software/BLE_Wire_v1.md §6.3~§6.5，App 侧的
+  # 唯一实现是 App/app/src/main/java/com/lifegps/app/ble/CalibCodec.kt。
+  - {opcode: 0x43, name: ACCEL_CAL, direction: app_to_dev}
   - {opcode: 0x50, name: ERASE_DAY, direction: app_to_dev}
   - {opcode: 0x51, name: FACTORY_RESET, direction: app_to_dev}
   - {opcode: 0x52, name: REBOOT, direction: app_to_dev}

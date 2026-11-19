@@ -1,8 +1,14 @@
 package com.lifegps.app.ble
 
 import android.content.Context
+import com.lifegps.app.debug.AccelCalResult
 import com.lifegps.app.debug.AttitudeState
 import com.lifegps.app.debug.BaroStatus
+import com.lifegps.app.debug.CalibFaces
+import com.lifegps.app.debug.CalibFormat
+import com.lifegps.app.debug.CalibJudge
+import com.lifegps.app.debug.CalibPhase
+import com.lifegps.app.debug.CalibState
 import com.lifegps.app.debug.CheckItem
 import com.lifegps.app.debug.CheckState
 import com.lifegps.app.debug.ConsoleEntry
@@ -15,6 +21,7 @@ import com.lifegps.app.debug.ImuStatus
 import com.lifegps.app.debug.LogEntry
 import com.lifegps.app.debug.LogLevel
 import com.lifegps.app.debug.LogSource
+import com.lifegps.app.debug.MagCalResult
 import com.lifegps.app.debug.MagStatus
 import com.lifegps.app.debug.PoiMarker
 import com.lifegps.app.debug.ScannedDevice
@@ -34,10 +41,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -144,6 +153,12 @@ class BleDebugRepository(context: Context) : DebugRepository {
     private val _pois = MutableStateFlow<List<PoiMarker>>(emptyList())
     override val pois: StateFlow<List<PoiMarker>> = _pois.asStateFlow()
 
+    private val _calib = MutableStateFlow(CalibState())
+    override val calib: StateFlow<CalibState> = _calib.asStateFlow()
+
+    /** Polls QUERY while a capture runs; the firmware owns the progress counter. */
+    private var calibPollJob: Job? = null
+
     private var nextPoiId = 1
 
     init {
@@ -204,6 +219,9 @@ class BleDebugRepository(context: Context) : DebugRepository {
         when (link) {
             LinkState.DISCONNECTED -> {
                 resetTelemetry(keepName = true)
+                // A capture cannot continue without the link, and the App must not
+                // keep showing a progress bar that will never move again.
+                dropCalibSession("链路已断开，校准会话结束")
                 addLog(LogLevel.WARN, LogSource.BLE, "LINK", "链路已断开")
             }
 
@@ -221,6 +239,9 @@ class BleDebugRepository(context: Context) : DebugRepository {
                 incompatibleReported = false
                 addLog(LogLevel.INFO, LogSource.BLE, "LINK", "Status/Log/Control 通知已订阅，链路就绪")
                 startHandshake()
+                // The device may already be calibrating (the App was in the
+                // background): re-sync instead of assuming an idle session.
+                refreshCalibration()
             }
 
             is LinkState.ERROR -> {
@@ -525,20 +546,28 @@ class BleDebugRepository(context: Context) : DebugRepository {
 
     // --- command transport ----------------------------------------------------
 
-    private suspend fun execute(opcode: Opcode, payload: ByteArray): CommandResult? {
-        val result = request(opcode, payload)
+    private suspend fun execute(
+        opcode: Opcode,
+        payload: ByteArray,
+        timeoutMs: Long = COMMAND_TIMEOUT_MS,
+    ): CommandResult? {
+        val result = request(opcode, payload, timeoutMs)
         applyResult(opcode, result)
         return result
     }
 
-    private suspend fun request(opcode: Opcode, payload: ByteArray): CommandResult? {
+    private suspend fun request(
+        opcode: Opcode,
+        payload: ByteArray,
+        timeoutMs: Long = COMMAND_TIMEOUT_MS,
+    ): CommandResult? {
         if (transport.state.value != LinkState.READY) return null
         val seq = nextSequence()
         val deferred = CompletableDeferred<CommandResult>()
         synchronized(pendingLock) { pending[seq] = deferred }
         transport.send(BleFrame.encodeCommand(opcode.code, seq, payload))
         val result = try {
-            withTimeoutOrNull(COMMAND_TIMEOUT_MS) { deferred.await() }
+            withTimeoutOrNull(timeoutMs) { deferred.await() }
         } finally {
             synchronized(pendingLock) { pending.remove(seq) }
         }
@@ -589,6 +618,12 @@ class BleDebugRepository(context: Context) : DebugRepository {
                     return
                 }
                 capsInfo = caps
+                _calib.update {
+                    it.copy(
+                        magSupported = caps.caps and CapsBits.MAG_CAL != 0L,
+                        accelSupported = caps.caps and CapsBits.ACCEL_CAL != 0L,
+                    )
+                }
                 _device.update {
                     it.copy(
                         firmware = "fw ${caps.firmwareText}",
@@ -617,6 +652,26 @@ class BleDebugRepository(context: Context) : DebugRepository {
             }
 
             else -> Unit
+        }
+    }
+
+    private fun calibrationCheckItem(): CheckItem {
+        val state = _calib.value
+        val caps = capsInfo
+        val supported = state.magSupported || state.accelSupported ||
+            (caps != null && caps.caps and (CapsBits.MAG_CAL or CapsBits.ACCEL_CAL) != 0L)
+        if (!supported) {
+            return CheckItem("传感器校准", "固件未声明 MAG_CAL / ACCEL_CAL 能力", CheckState.PENDING)
+        }
+        val result = state.magResult
+        return if (result != null && result.fromStore) {
+            CheckItem(
+                "传感器校准",
+                CalibFormat.lastCalib(result.lastCalibUnixS, true),
+                CheckState.PASS,
+            )
+        } else {
+            CheckItem("传感器校准", "支持校准，尚未保存系数", CheckState.PENDING)
         }
     }
 
@@ -688,8 +743,9 @@ class BleDebugRepository(context: Context) : DebugRepository {
             )
         }
 
-        // MAG_CAL is in the protocol but v1 answers NOT_SUPPORTED.
-        items += CheckItem("磁校准", "固件 v1 未提供 MAG_CAL", CheckState.PENDING)
+        // Calibration is gated on the GET_CAPS capability bits, not on a version
+        // number: a firmware can speak the opcode yet refuse to persist anything.
+        items += calibrationCheckItem()
 
         items += if (status == null) {
             CheckItem("气压计", "等待 Status 帧", CheckState.PENDING)
@@ -965,6 +1021,425 @@ class BleDebugRepository(context: Context) : DebugRepository {
         }
     }
 
+    // --- calibration (MAG_CAL 0x41 / ACCEL_CAL 0x43) -------------------------
+
+    override fun refreshCalibration() {
+        if (!calibLinkReady("CALIB")) return
+        scope.launch {
+            applyMagResponse(request(Opcode.MAG_CAL, CalibCodec.encodeMagCal(CalibAction.QUERY)))
+            applyAccelResponse(
+                request(Opcode.ACCEL_CAL, CalibCodec.encodeAccelCal(CalibAction.QUERY)),
+            )
+            resyncCalibPolling()
+        }
+    }
+
+    override fun startMagCal() {
+        if (!calibLinkReady("MAG_CAL")) return
+        scope.launch {
+            _calib.update {
+                it.copy(
+                    magPhase = CalibPhase.COLLECTING,
+                    magProgressPermille = 0,
+                    magCoveragePct = CalibState.ZERO_TRIPLE,
+                    magSampleCount = 0,
+                    magResult = null,
+                    magVerdict = null,
+                    magMessage = "正在采集：缓慢画 8 字，三条轴都要覆盖",
+                    busy = true,
+                )
+            }
+            val result = request(Opcode.MAG_CAL, CalibCodec.encodeMagCal(CalibAction.START))
+            _calib.update { it.copy(busy = false) }
+            applyMagResponse(result)
+            resyncCalibPolling()
+        }
+    }
+
+    override fun finishMagCal() {
+        if (!calibLinkReady("MAG_CAL")) return
+        cancelCalibPoll()
+        scope.launch {
+            _calib.update {
+                it.copy(magPhase = CalibPhase.SAVING, magMessage = "正在计算并写入 flash…", busy = true)
+            }
+            val result = request(
+                Opcode.MAG_CAL,
+                CalibCodec.encodeMagCal(CalibAction.FINISH_SAVE),
+                CALIB_SAVE_TIMEOUT_MS,
+            )
+            _calib.update { it.copy(busy = false) }
+            applyMagResponse(result)
+            resyncCalibPolling()
+        }
+    }
+
+    override fun cancelMagCal() {
+        if (!calibLinkReady("MAG_CAL")) return
+        cancelCalibPoll()
+        scope.launch {
+            applyMagResponse(request(Opcode.MAG_CAL, CalibCodec.encodeMagCal(CalibAction.CANCEL)))
+            resyncCalibPolling()
+        }
+    }
+
+    override fun clearMagCal() {
+        if (!calibLinkReady("MAG_CAL")) return
+        cancelCalibPoll()
+        scope.launch {
+            applyMagResponse(
+                request(
+                    Opcode.MAG_CAL,
+                    CalibCodec.encodeMagCal(CalibAction.CLEAR),
+                    CALIB_CLEAR_TIMEOUT_MS,
+                ),
+            )
+            resyncCalibPolling()
+        }
+    }
+
+    override fun captureAccelPose() = captureAccel(CalibCodec.POSITION_AUTO)
+
+    override fun captureAccelQuick() = captureAccel(CalibCodec.POSITION_QUICK)
+
+    /**
+     * Starts one capture. [position] is normally [CalibCodec.POSITION_AUTO]: the
+     * device identifies the face itself, so the user only has to place the phone on
+     * another side and press again. A concrete face index stays available for bench
+     * work where a known pose must be forced.
+     */
+    private fun captureAccel(position: Int) {
+        if (!calibLinkReady("ACCEL_CAL")) return
+        scope.launch {
+            _calib.update {
+                it.copy(
+                    accelPhase = CalibPhase.COLLECTING,
+                    accelActivePosition = position,
+                    accelProgressPermille = 0,
+                    accelRestPct = 0,
+                    accelFaceState = AccelFaceStateCode.WAIT_REST,
+                    accelMessage = if (position == CalibCodec.POSITION_QUICK) {
+                        "单面快速模式：保持设备完全静止"
+                    } else {
+                        "保持静止，设备会自己识别当前是第几面"
+                    },
+                    busy = true,
+                )
+            }
+            val result = request(
+                Opcode.ACCEL_CAL,
+                CalibCodec.encodeAccelCal(CalibAction.START, position),
+            )
+            _calib.update { it.copy(busy = false) }
+            applyAccelResponse(result)
+            resyncCalibPolling()
+        }
+    }
+
+    override fun cancelAccelFace() {
+        if (!calibLinkReady("ACCEL_CAL")) return
+        cancelCalibPoll()
+        scope.launch {
+            applyAccelResponse(
+                request(Opcode.ACCEL_CAL, CalibCodec.encodeAccelCal(CalibAction.CANCEL)),
+            )
+            resyncCalibPolling()
+        }
+    }
+
+    override fun finishAccelCal() {
+        if (!calibLinkReady("ACCEL_CAL")) return
+        cancelCalibPoll()
+        scope.launch {
+            _calib.update {
+                it.copy(
+                    accelPhase = CalibPhase.SAVING,
+                    accelMessage = "正在计算并写入 flash…",
+                    busy = true,
+                )
+            }
+            val result = request(
+                Opcode.ACCEL_CAL,
+                CalibCodec.encodeAccelCal(CalibAction.FINISH_SAVE),
+                CALIB_SAVE_TIMEOUT_MS,
+            )
+            _calib.update { it.copy(busy = false) }
+            applyAccelResponse(result)
+            resyncCalibPolling()
+        }
+    }
+
+    override fun clearAccelCal() {
+        if (!calibLinkReady("ACCEL_CAL")) return
+        cancelCalibPoll()
+        scope.launch {
+            applyAccelResponse(
+                request(
+                    Opcode.ACCEL_CAL,
+                    CalibCodec.encodeAccelCal(CalibAction.CLEAR),
+                    CALIB_CLEAR_TIMEOUT_MS,
+                ),
+            )
+            resyncCalibPolling()
+        }
+    }
+
+    private fun calibLinkReady(tag: String): Boolean {
+        if (transport.state.value == LinkState.READY) return true
+        addLog(LogLevel.WARN, LogSource.BLE, tag, "链路未就绪，校准命令未发送")
+        _calib.update { it.copy(magMessage = "链路未就绪", accelMessage = "链路未就绪") }
+        return false
+    }
+
+    private fun cancelCalibPoll() {
+        calibPollJob?.cancel()
+        calibPollJob = null
+    }
+
+    /** Ends a running capture locally; used when the link goes away. */
+    private fun dropCalibSession(message: String) {
+        cancelCalibPoll()
+        _calib.update {
+            val magStopped =
+                it.magPhase == CalibPhase.COLLECTING || it.magPhase == CalibPhase.SAVING
+            val accelStopped =
+                it.accelPhase == CalibPhase.COLLECTING || it.accelPhase == CalibPhase.SAVING
+            it.copy(
+                magPhase = if (magStopped) CalibPhase.IDLE else it.magPhase,
+                accelPhase = if (accelStopped) CalibPhase.IDLE else it.accelPhase,
+                magMessage = if (magStopped) message else it.magMessage,
+                accelMessage = if (accelStopped) message else it.accelMessage,
+                busy = false,
+            )
+        }
+    }
+
+    /**
+     * Keeps exactly one QUERY loop alive while a capture runs. The firmware owns
+     * the progress counter, so polling is the only way to see it without growing
+     * the Status frame.
+     */
+    private fun resyncCalibPolling() {
+        val state = _calib.value
+        val magCollecting = state.magPhase == CalibPhase.COLLECTING
+        val accelCollecting = state.accelPhase == CalibPhase.COLLECTING
+        if (!magCollecting && !accelCollecting) {
+            cancelCalibPoll()
+            return
+        }
+        if (calibPollJob?.isActive == true) return
+        calibPollJob = scope.launch {
+            while (isActive) {
+                delay(CALIB_POLL_PERIOD_MS)
+                val snapshot = _calib.value
+                if (snapshot.magPhase == CalibPhase.COLLECTING) {
+                    applyMagResponse(
+                        request(Opcode.MAG_CAL, CalibCodec.encodeMagCal(CalibAction.QUERY)),
+                    )
+                }
+                if (snapshot.accelPhase == CalibPhase.COLLECTING) {
+                    applyAccelResponse(
+                        request(Opcode.ACCEL_CAL, CalibCodec.encodeAccelCal(CalibAction.QUERY)),
+                    )
+                }
+                val after = _calib.value
+                if (after.magPhase != CalibPhase.COLLECTING &&
+                    after.accelPhase != CalibPhase.COLLECTING
+                ) {
+                    break
+                }
+            }
+            calibPollJob = null
+        }
+    }
+
+    private fun calibPhaseOf(state: Int, flags: Int): CalibPhase = when (state) {
+        CalibStateCode.COLLECTING -> CalibPhase.COLLECTING
+        CalibStateCode.RESULT_PENDING -> CalibPhase.REVIEW
+        else -> if (flags and CalibFlagBits.FROM_STORE != 0) CalibPhase.SAVED else CalibPhase.IDLE
+    }
+
+    private fun applyMagResponse(result: CommandResult?) {
+        if (result == null) {
+            _calib.update {
+                it.copy(magPhase = CalibPhase.FAILED, magMessage = "MAG_CAL 超时：设备没有响应")
+            }
+            return
+        }
+        when (result.status) {
+            StatusCode.OK.code -> applyMagBody(result.payload)
+            StatusCode.NOT_SUPPORTED.code, StatusCode.UNKNOWN_OPCODE.code -> _calib.update {
+                it.copy(
+                    magSupported = false,
+                    magPhase = CalibPhase.UNSUPPORTED,
+                    magMessage = "固件不支持 MAG_CAL（0x41 返回 ${StatusCode.labelOf(result.status)}）",
+                )
+            }
+            else -> _calib.update {
+                it.copy(
+                    magPhase = CalibPhase.FAILED,
+                    magMessage = "MAG_CAL 失败：${StatusCode.labelOf(result.status)}",
+                )
+            }
+        }
+    }
+
+    private fun applyMagBody(body: ByteArray) {
+        val response = CalibCodec.decodeMagCal(body)
+        if (response == null) {
+            _calib.update {
+                it.copy(
+                    magPhase = CalibPhase.FAILED,
+                    magMessage = "MAG_CAL 响应体 ${body.size} B，短于约定的 " +
+                        "${CalibCodec.MAG_RSP_SIZE} B",
+                )
+            }
+            return
+        }
+        val phase = calibPhaseOf(response.state, response.flags)
+        val result = MagCalResult(
+            biasLsb = response.biasLsb,
+            scalePpm = response.scalePpm,
+            coveragePct = response.coveragePct,
+            sampleCount = response.sampleCount,
+            fromStore = response.fromStore,
+            lastCalibUnixS = response.lastCalibUnixS,
+        )
+        val hasCoefficients = phase == CalibPhase.REVIEW || phase == CalibPhase.SAVED
+        _calib.update {
+            it.copy(
+                magSupported = true,
+                magPhase = phase,
+                magProgressPermille = response.progressPermille,
+                magCoveragePct = response.coveragePct,
+                magSampleCount = response.sampleCount,
+                magResult = if (hasCoefficients) result else it.magResult,
+                magVerdict = if (hasCoefficients) CalibJudge.judgeMag(result) else null,
+                magMessage = magMessageFor(response, phase),
+                lastCalibUnixS = if (response.lastCalibUnixS > 0L) {
+                    response.lastCalibUnixS
+                } else {
+                    it.lastCalibUnixS
+                },
+            )
+        }
+    }
+
+    private fun magMessageFor(response: MagCalResponse, phase: CalibPhase): String = when {
+        response.saveFailed -> "系数已生效，但写入 flash 失败（重启后会回到上一次的值）"
+        phase == CalibPhase.COLLECTING -> "正在采集：缓慢画 8 字，三条轴都要覆盖"
+        phase == CalibPhase.REVIEW -> "已计算，尚未保存到设备"
+        phase == CalibPhase.SAVED -> CalibFormat.lastCalib(response.lastCalibUnixS, true)
+        response.usingDefaults -> "未校准：设备当前使用编译期默认值"
+        else -> ""
+    }
+
+    private fun applyAccelResponse(result: CommandResult?) {
+        if (result == null) {
+            _calib.update {
+                it.copy(
+                    accelPhase = CalibPhase.FAILED,
+                    accelMessage = "ACCEL_CAL 超时：设备没有响应",
+                )
+            }
+            return
+        }
+        when (result.status) {
+            StatusCode.OK.code -> applyAccelBody(result.payload)
+            StatusCode.NOT_SUPPORTED.code, StatusCode.UNKNOWN_OPCODE.code -> _calib.update {
+                it.copy(
+                    accelSupported = false,
+                    accelPhase = CalibPhase.UNSUPPORTED,
+                    accelMessage = "固件不支持 ACCEL_CAL（0x43 返回 " +
+                        "${StatusCode.labelOf(result.status)}）",
+                )
+            }
+            else -> _calib.update {
+                it.copy(
+                    accelPhase = CalibPhase.FAILED,
+                    accelMessage = "ACCEL_CAL 失败：${StatusCode.labelOf(result.status)}",
+                )
+            }
+        }
+    }
+
+    private fun applyAccelBody(body: ByteArray) {
+        val response = CalibCodec.decodeAccelCal(body)
+        if (response == null) {
+            _calib.update {
+                it.copy(
+                    accelPhase = CalibPhase.FAILED,
+                    accelMessage = "ACCEL_CAL 响应体 ${body.size} B，短于约定的 " +
+                        "${CalibCodec.ACCEL_RSP_SIZE} B",
+                )
+            }
+            return
+        }
+        val phase = calibPhaseOf(response.state, response.flags)
+        // A completed face ends the session on its own: the user places the device
+        // on the next side and presses again, there is no "next face" command.
+        val effectivePhase = if (phase == CalibPhase.COLLECTING &&
+            response.faceState == AccelFaceStateCode.FACE_DONE
+        ) {
+            CalibPhase.IDLE
+        } else {
+            phase
+        }
+        val detectedFace = if (response.hasDetectedFace) response.detectedFace else CalibFaces.NONE
+        val result = AccelCalResult(
+            biasUg = response.biasUg,
+            scalePpm = response.scalePpm,
+            gyroBiasMdps = response.gyroBiasMdps,
+            faceMask = response.faceMask,
+            quickMode = response.quickMode,
+            fromStore = response.fromStore,
+            lastCalibUnixS = response.lastCalibUnixS,
+        )
+        val hasCoefficients = phase == CalibPhase.REVIEW || phase == CalibPhase.SAVED
+        _calib.update {
+            it.copy(
+                accelSupported = true,
+                accelPhase = effectivePhase,
+                accelProgressPermille = response.progressPermille,
+                accelFaceMask = response.faceMask,
+                accelFaceState = response.faceState,
+                accelRestPct = response.restPct,
+                accelDetectedFace = detectedFace,
+                accelResult = if (hasCoefficients) result else it.accelResult,
+                accelVerdict = if (hasCoefficients) CalibJudge.judgeAccel(result) else null,
+                accelMessage = accelMessageFor(response, effectivePhase),
+                accelActivePosition = if (effectivePhase == CalibPhase.COLLECTING) {
+                    it.accelActivePosition
+                } else {
+                    -1
+                },
+                lastCalibUnixS = if (response.lastCalibUnixS > 0L) {
+                    response.lastCalibUnixS
+                } else {
+                    it.lastCalibUnixS
+                },
+            )
+        }
+    }
+
+    private fun accelMessageFor(response: AccelCalResponse, phase: CalibPhase): String = when {
+        response.saveFailed -> "系数已生效，但写入 flash 失败（重启后会回到上一次的值）"
+        phase == CalibPhase.COLLECTING -> when (response.faceState) {
+            AccelFaceStateCode.WAIT_REST -> "等待设备静止…（静止余量 ${response.restPct} %）"
+            AccelFaceStateCode.COLLECTING -> "正在采集本面（${response.progressPermille / 10} %）"
+            AccelFaceStateCode.JITTER_TIMEOUT -> "本面抖动过大，请放稳后重采"
+            else -> "采集中"
+        }
+        phase == CalibPhase.IDLE && response.hasDetectedFace ->
+            "已识别并采集：${CalibFaces.label(response.detectedFace)}"
+        phase == CalibPhase.IDLE && response.faceState == AccelFaceStateCode.JITTER_TIMEOUT ->
+            "姿态抖动过大，本次未采集成功"
+        phase == CalibPhase.REVIEW -> "已计算，尚未保存到设备"
+        phase == CalibPhase.SAVED -> CalibFormat.lastCalib(response.lastCalibUnixS, true)
+        response.usingDefaults -> "未校准：设备当前使用编译期默认值"
+        else -> ""
+    }
+
     override fun clearLogs() {
         _logs.value = emptyList()
     }
@@ -1222,7 +1697,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
         CheckItem("外部 Flash", "等待 FLASH_INFO（0x60）", CheckState.PENDING),
         CheckItem("IMU", "等待 Status 帧", CheckState.PENDING),
         CheckItem("磁力计", "等待 Status 帧", CheckState.PENDING),
-        CheckItem("磁校准", "固件 v1 未提供 MAG_CAL", CheckState.PENDING),
+        CheckItem("传感器校准", "等待 GET_CAPS（0x01）", CheckState.PENDING),
         CheckItem("气压计", "等待 Status 帧", CheckState.PENDING),
         CheckItem("GNSS 模组", "等待 Status 帧", CheckState.PENDING),
         CheckItem("GNSS 天线", "固件 v1 未提供（无单星 C/N0）", CheckState.PENDING),
@@ -1235,6 +1710,14 @@ class BleDebugRepository(context: Context) : DebugRepository {
 
     private companion object {
         const val COMMAND_TIMEOUT_MS = 2_000L
+
+        /** QUERY cadence while a capture runs; 26 Hz sampling needs ~2.5 Hz of polling. */
+        const val CALIB_POLL_PERIOD_MS = 400L
+
+        /** FINISH_SAVE computes the coefficients and writes the flash record. */
+        const val CALIB_SAVE_TIMEOUT_MS = 6_000L
+
+        const val CALIB_CLEAR_TIMEOUT_MS = 4_000L
 
         /** acc_lsb unit is 0.122 mg/LSB at ±4 g; convert to g. */
         const val ACC_G_PER_LSB = 0.122f / 1000f

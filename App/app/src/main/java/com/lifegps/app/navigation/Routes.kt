@@ -5,6 +5,7 @@ object Routes {
     const val DEVICE = "device_scan"
     const val SERIAL = "serial_log"
     const val SENSORS = "sensors"
+    const val CALIB = "calibration"
     const val GNSS = "gnss"
     const val CHECK = "hardware_check"
     const val FLASH = "flash"

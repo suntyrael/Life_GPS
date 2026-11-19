@@ -158,27 +158,34 @@ yaw（并顺带学习磁力计偏置），否则用磁力计按该偏置维持 y
 | `0x02` | GET_STATUS | — | 100 字节 Status 帧 |
 | `0x12` | POI_MARK | — | `u8 written`（1 = 已写入轨迹环） |
 | `0x30` | LOG_SUBSCRIBE | `u8 level`（0=off 1=ERR 2=WRN 3=INF 4=DBG） | — |
+| `0x41` | MAG_CAL | `u8 action`（6.3） | 见 6.3 |
+| `0x42` | BARO_BASELINE | `u8 action` + `u32 baseline_pa_q4`（6.5） | 见 6.5（U4 复活前返回 `0x03`） |
+| `0x43` | ACCEL_CAL | `u8 action` + `u8 position`（6.4） | 见 6.4 |
 | `0x52` | REBOOT | — | —（响应发出后 200 ms 冷复位，需先 `DEBUG_UNLOCK`） |
 | `0x60` | FLASH_INFO | — | 见 6.2 |
 | `0x7F` | DEBUG_UNLOCK | 4 字节 ASCII `LGPS` | — |
 
 其余协议 opcode（SET_MODE / SET_TIME / SET_CONFIG / GET_CONFIG / SYNC_* / GET_DAY_INDEX /
-GET_ARCHIVE / GNSS_SNAPSHOT / IMU_SNAPSHOT / BUTTON_EVENT / SELFTEST / MAG_CAL /
-BARO_BASELINE / ERASE_DAY / FACTORY_RESET / FLASH_READ / FLASH_ERASE / GET_FAULT_LOG /
-POWER_TEST_MARK）v1 一律返回 `0x03 NOT_SUPPORTED`；完全不认识的 opcode 返回 `0x02`。
-App 必须把这两种情况显示给用户，不得伪造成功。
+GET_ARCHIVE / GNSS_SNAPSHOT / IMU_SNAPSHOT / BUTTON_EVENT / SELFTEST / ERASE_DAY /
+FACTORY_RESET / FLASH_READ / FLASH_ERASE / GET_FAULT_LOG / POWER_TEST_MARK）v1 一律返回
+`0x03 NOT_SUPPORTED`；完全不认识的 opcode 返回 `0x02`。App 必须把这两种情况显示给用户，不得伪造成功。
+
+三个校准 opcode（`0x41` / `0x42` / `0x43`）的载荷已经冻结（6.3~6.5），但**固件侧的采集与
+持久化尚未实现**：固件返回 `0x03` 之前 App 只显示“固件未提供”，不发假数据。能力一律从
+GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜测** —— 一个固件可以会说
+这个 opcode 但拒绕保存，两者是两件事。
 
 ### 6.1 GET_CAPS 响应（24 字节）
 
 | off | type | 字段 |
 | :--- | :--- | :--- |
 | 0 | u8 | `ver` = 1 |
-| 1 | u8 | `proto_major` / 2 `proto_minor` / 3 `proto_patch`（来自生成头 0.1.0） |
+| 1 | u8 | `proto_major` / 2 `proto_minor` / 3 `proto_patch`（来自生成头；0.2.0 只追加了 `0x43` 与校准响应字段） |
 | 4 | u8 | `fw_major` / 5 `fw_minor` / 6 `fw_patch`（v1 = 0.2.0） |
 | 7 | u8 | `reserved` |
 | 8 | u16 | `att_mtu`（固件配置的 L2CAP TX MTU，247） |
 | 10 | u16 | `max_cmd_payload`（235） |
-| 12 | u32 | `caps`：bit0 Status notify，bit1 Log notify，bit2 POI，bit3 FLASH_INFO，bit4 REBOOT，bit5 DEBUG_UNLOCK，bit6 Data 同步（v1 = 0） |
+| 12 | u32 | `caps`：bit0 Status notify，bit1 Log notify，bit2 POI，bit3 FLASH_INFO，bit4 REBOOT，bit5 DEBUG_UNLOCK，bit6 Data 同步（v1 = 0），bit7 MAG_CAL，bit8 ACCEL_CAL，bit9 BARO_BASELINE（三位置位条件见 6.3~6.5） |
 | 16 | u32 | `telemetry_mask`（v1 = 0，全部走 Status 帧） |
 | 20 | u16 | `status_size` = 100 |
 | 22 | u16 | `reserved` |
@@ -194,9 +201,81 @@ App 必须把这两种情况显示给用户，不得伪造成功。
 | 16 | u32 | `records_written` |
 | 20 | u8 | `records_in_sector` / 21 `erase_count_max` / 22 `sector_count` / 23 `reserved`（共 24 字节） |
 
+### 6.3 MAG_CAL 请求 / 响应（`0x41`）
+
+请求 1 字节：
+
+| off | type | 字段 |
+| :--- | :--- | :--- |
+| 0 | u8 | `action`：0 START，1 FINISH_SAVE（计算并写入记录），2 CLEAR（删除记录），3 QUERY（无副作用，用于进度与重连后重同步），4 CANCEL（中止采集，不动已存记录） |
+
+响应体（status 之后，30 字节，小端）：
+
+| off | type | 字段 |
+| :--- | :--- | :--- |
+| 0 | u16 | `progress_permille`（0..1000） |
+| 2 | u8 | `sample_count`（饱和到 255） |
+| 3 | u8 | `coverage_pct_x` / 4 `coverage_pct_y` / 5 `coverage_pct_z`（0..100） |
+| 6 | i16 | `bias_x_lsb` / 8 `bias_y_lsb` / 10 `bias_z_lsb`（LIS2MDL 原始 LSB） |
+| 12 | i32 | `scale_x_ppm` / 16 `scale_y_ppm` / 20 `scale_z_ppm` |
+| 24 | u8 | `calib_state`：0 IDLE，1 COLLECTING，2 RESULT_PENDING |
+| 25 | u8 | `calib_flags`：bit0 系数来自记录，bit1 用的是编译期默认值，bit2 单面快速，bit3 已生效但落盘失败 |
+| 26 | u32 | `last_calib_unix_s`（0 = 设备尚未同步 UTC，不代表没校准过） |
+
+**系数在固件里算**：`(raw - bias) × (1 + ppm/1e6)`。App 只做显示口径的换算（LSB → µT，
+0.15 µT/LSB），不得自己积分 min/max。`coverage_pct_*` 表示该轴范围被走了多少，供三轴进度条用；
+不足 80 % 时 App 不提供“完成并计算”，固件也应以 `0x01 INVALID_ARGUMENT` 拒绝覆盖不足的采集。
+
+### 6.4 ACCEL_CAL 请求 / 响应（`0x43`）
+
+请求 2 字节：
+
+| off | type | 字段 |
+| :--- | :--- | :--- |
+| 0 | u8 | `action`：同 6.3 的 0..4 |
+| 1 | u8 | `position`：`0xFF` = **自动识别**（默认，App 永远发这个）；0..5 = 强制指定某面（仅台架）；6 = 单面快速 |
+
+**姿态由固件识别，不由用户选。** 定义：`position p` 表示“哪条 body 轴朝上”——
+`p = 2×axis + (分量 > 0 ? 0 : 1)`，axis 0/1/2 = X/Y/Z；静止时加速度计在该轴读 +1 g。
+判据与 App 的预测实现一致：最大轴 |g| > 0.7 g 且另两轴 |g| < 0.45 g；不满足就**不许猜**，
+`detected_face` 回 `0xFF`，本次不置 `face_mask` 位。
+
+响应体（status 之后，48 字节，小端）：
+
+| off | type | 字段 |
+| :--- | :--- | :--- |
+| 0 | u16 | `progress_permille` |
+| 2 | u8 | `face_mask`：bit n = 第 n 面已采到有效样本 |
+| 3 | u8 | `face_state`：0 WAIT_REST，1 COLLECTING，2 FACE_DONE，3 JITTER_TIMEOUT |
+| 4 | u8 | `rest_pct`（0..100，当前有多稳） |
+| 5 | u8 | `detected_face`（0..5；`0xFF` = 没识别出来） |
+| 6 | i32 | `bias_x_ug` / 10 `bias_y_ug` / 14 `bias_z_ug`（1 g = 1 000 000 µg） |
+| 18 | i32 | `scale_x_ppm` / 22 `scale_y_ppm` / 26 `scale_z_ppm` |
+| 30 | i32 | `gyro_bias_x_mdps` / 34 / 38 |
+| 42 | u8 | `calib_state` |
+| 43 | u8 | `calib_flags`（同 6.3；bit2 = 单面快速） |
+| 44 | u32 | `last_calib_unix_s` |
+
+零偏存 µg 而不存传感器寄存器单位是故意的：`X/Y/Z_OFS_USR`（0x73~0x75，DS11976 §9.62~9.64）
+是 int8、单位 2⁻¹⁰ g，量程仅 ±124 mg、分辨率 0.98 mg，装不下回读校验所需的精度。是否把它
+折算并写进传感器寄存器是固件内部的实现选择，不影响本协议。
+
+### 6.5 BARO_BASELINE 请求 / 响应（`0x42`）
+
+| off | type | 字段 |
+| :--- | :--- | :--- |
+| 0 | u8 | `action`：0 = 取当前气压为基准，1 = 手动设置 |
+| 1 | u32 | `baseline_pa_q4`（Pa × 16，仅 `action=1` 时有效） |
+
+响应 9 字节：`u32 baseline_pa_q4`、`i32 rel_alt_mm`。
+
+**前置条件**：BMP388 必须应答，且固件已完成 TPG 补偿（系数 `0x30..0x57`）。没有 Pa 就没有
+相对高度 —— 在此之前该 opcode 返回 `0x03`，App 只展示只读说明，不给可点按钮。
+
 ## 7. 版本策略
 
 - `ver` 字节变更 = 不兼容改动，App 必须拒绝连接并在 UI 上说明。
-- 只追加字段时提升 `fw_*`、保持 `ver=1`，并把 `status_size` 一起提高；App 按
+- **追加 opcode 不升 `ver`**：0.2.0 只追加了 `0x43` 与三组校准载荷，`ver` 保持 1。
+- 只追加字段时提升 `proto_*` / `fw_*`，并把 `status_size` 一起提高；App 按
   `status_size` 决定解析长度，短帧按缺失处理。
 - YAML 回填 status/命令载荷后，本文件同步收缩为指针。

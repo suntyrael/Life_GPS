@@ -25,6 +25,7 @@ import androidx.navigation.compose.rememberNavController
 import com.lifegps.app.ble.BleDebugRepository
 import com.lifegps.app.ble.BlePermissionState
 import com.lifegps.app.ble.rememberBlePermissions
+import com.lifegps.app.debug.CalibrationScreen
 import com.lifegps.app.debug.CommandConsoleScreen
 import com.lifegps.app.debug.DebugHomeScreen
 import com.lifegps.app.debug.DeviceScanScreen
@@ -85,7 +86,11 @@ private fun AppNavHost(repo: BleDebugRepository) {
                 repo = repo,
                 onBack = { navController.popBackStack() },
                 onOpenTrail = { navController.navigate(Routes.SPATIAL) },
+                onOpenCalibration = { navController.navigate(Routes.CALIB) },
             )
+        }
+        composable(Routes.CALIB) {
+            CalibrationScreen(repo) { navController.popBackStack() }
         }
         composable(Routes.SPATIAL) {
             SpatialTrailScreen(repo) { navController.popBackStack() }
