@@ -751,10 +751,11 @@ int lgps_calib_accel_finish(void)
 	uint8_t faces = 0U;
 	int ret;
 
-	if (accel.state == LGPS_CALIB_STATE_COLLECTING) {
-		return -EBUSY;
-	}
-
+	/*
+	 * FINISH_SAVE is expected while the capture is still running (the host polls
+	 * the progress and then finishes), so a collecting state is not an error: the
+	 * solver below decides from what has actually been captured.
+	 */
 	if (accel.quick_valid && ((accel.face_mask & SIX_FACE_MASK) != SIX_FACE_MASK)) {
 		memcpy(coeffs.accel_bias_ug, accel.quick_bias_ug, sizeof(coeffs.accel_bias_ug));
 		for (axis = 0U; axis < 3U; axis++) {
@@ -860,10 +861,7 @@ int lgps_calib_mag_finish(void)
 	uint8_t axis;
 	int ret;
 
-	if (mag.state == LGPS_CALIB_STATE_COLLECTING) {
-		return -EBUSY;
-	}
-
+	/* Same as the accelerometer: finishing during collection is the normal flow. */
 	ret = lgps_calib_mag_math(mag.min_lsb, mag.max_lsb, bias_lsb, scale_ppm, coverage_pct);
 	if (ret < 0) {
 		return -EAGAIN;
@@ -952,7 +950,10 @@ void lgps_calib_feed_imu(const struct lgps_imu_sample *sample, uint32_t now_ms)
 	}
 
 	for (axis = 0U; axis < 3U; axis++) {
-		accel.accel_sum_lsb[axis] += accel_g[axis];
+		/* Raw counts: lgps_calib_face_math() owns the LSB -> g conversion for the
+		 * face means, so accumulating grams here would apply it twice.
+		 */
+		accel.accel_sum_lsb[axis] += (float)sample->raw_accel[axis];
 		accel.gyro_sum_lsb[axis] += (float)sample->raw_gyro[axis];
 	}
 
@@ -966,7 +967,8 @@ void lgps_calib_feed_imu(const struct lgps_imu_sample *sample, uint32_t now_ms)
 		float mean_g[3];
 
 		for (axis = 0U; axis < 3U; axis++) {
-			mean_g[axis] = accel.accel_sum_lsb[axis] / (float)accel.samples;
+			mean_g[axis] = (accel.accel_sum_lsb[axis] / (float)accel.samples) *
+				       ACCEL_G_PER_LSB;
 		}
 
 		face = lgps_calib_detect_face(mean_g);
