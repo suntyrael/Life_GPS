@@ -327,6 +327,50 @@ data class PdrTelemetry(
     val steps: Int,
 )
 
+/**
+ * GNSS receive-path diagnostics (`BLE_Wire_v1.md` §5.1, telemetry id 0x01).
+ *
+ * Counters for the UART link to the receiver, not a solution: the fix still comes
+ * from the Status frame. They exist because "no fix" has several different
+ * causes and only these numbers tell them apart (silent module, NMEA-only stream,
+ * corrupt framing, overflowing RX ring, wrong baud).
+ */
+data class GnssTelemetry(
+    val state: Int,
+    val fixType: Int,
+    val satellites: Int,
+    val fixValid: Boolean,
+    val utcValid: Boolean,
+    val pdop1e2: Int,
+    val ageMs: Long,
+    val rxBytes: Long,
+    val ubxFrames: Long,
+    val badChecksum: Long,
+    val nmeaStarts: Long,
+    val rxDropped: Long,
+    val baud: Int,
+)
+
+/** Offsets of the `0x01` GNSS telemetry payload (`BLE_Wire_v1.md` §5.1). */
+object GnssTelemetryOffset {
+    const val STATE = 0
+    const val FIX_TYPE = 1
+    const val SATELLITES = 2
+    const val FLAGS = 3
+    const val PDOP_1E2 = 4
+    const val AGE_MS = 6
+    const val RX_BYTES = 10
+    const val UBX_FRAMES = 14
+    const val BAD_CHECKSUM = 18
+    const val NMEA_STARTS = 22
+    const val RX_DROPPED = 26
+    const val BAUD = 30
+    const val SIZE = 34
+
+    const val FLAG_FIX_VALID = 0x01
+    const val FLAG_UTC_VALID = 0x02
+}
+
 /** Decoded Log notification (`BLE_Wire_v1.md` §5). */
 data class LogPacket(
     val level: Int,
@@ -512,6 +556,27 @@ object BleFrame {
             yMm = i32(payload, 4),
             headingDdeg = i16(payload, 8),
             steps = u16(payload, 10),
+        )
+    }
+
+    /** GNSS receive-path telemetry payload, 34 bytes (see [GnssTelemetryOffset]). */
+    fun parseGnssTelemetry(payload: ByteArray): GnssTelemetry? {
+        if (payload.size < GnssTelemetryOffset.SIZE) return null
+        val flags = u8(payload, GnssTelemetryOffset.FLAGS)
+        return GnssTelemetry(
+            state = u8(payload, GnssTelemetryOffset.STATE),
+            fixType = u8(payload, GnssTelemetryOffset.FIX_TYPE),
+            satellites = u8(payload, GnssTelemetryOffset.SATELLITES),
+            fixValid = flags and GnssTelemetryOffset.FLAG_FIX_VALID != 0,
+            utcValid = flags and GnssTelemetryOffset.FLAG_UTC_VALID != 0,
+            pdop1e2 = u16(payload, GnssTelemetryOffset.PDOP_1E2),
+            ageMs = u32(payload, GnssTelemetryOffset.AGE_MS),
+            rxBytes = u32(payload, GnssTelemetryOffset.RX_BYTES),
+            ubxFrames = u32(payload, GnssTelemetryOffset.UBX_FRAMES),
+            badChecksum = u32(payload, GnssTelemetryOffset.BAD_CHECKSUM),
+            nmeaStarts = u32(payload, GnssTelemetryOffset.NMEA_STARTS),
+            rxDropped = u32(payload, GnssTelemetryOffset.RX_DROPPED),
+            baud = u32(payload, GnssTelemetryOffset.BAUD).toInt(),
         )
     }
 

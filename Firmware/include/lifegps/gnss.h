@@ -67,6 +67,7 @@ struct lgps_gnss_counters {
 	uint32_t ubx_frames;      /* complete UBX frames with a valid checksum */
 	uint32_t ubx_bad_checksum;
 	uint32_t nmea_starts;     /* '$' characters: proves the module is talking NMEA */
+	uint32_t rx_dropped;      /* bytes the ISR had to drop because the ring was full */
 };
 
 /*
@@ -79,6 +80,12 @@ void lgps_gnss_get_counters(struct lgps_gnss_counters *out);
 
 /* Latest decoded solution (copy, safe to call from any thread). */
 void lgps_gnss_get_fix(struct lgps_gnss_fix *out);
+
+/* Line rate the UART is configured for right now (38400, or 9600 after the
+ * one-shot fallback). The value is what the driver really reports, not a
+ * constant, so the App can show a rate that is actually in effect.
+ */
+uint32_t lgps_gnss_baud(void);
 
 enum lgps_gnss_state lgps_gnss_get_state(void);
 

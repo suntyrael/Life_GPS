@@ -137,8 +137,32 @@ off type  field
 
 | id | payload | 字段 | 速率 |
 | :--- | :--- | :--- | :--- |
+| `0x01` GNSS | 34 B（整包 38 B） | 见下方字段表 | 1 Hz |
 | `0x02` IMU | 20 B（整包 24 B） | `i16 acc_lsb[3]`、`i16 gyro_lsb[3]`、`i16 quat_q15[4]`（w,x,y,z，32767 = 1.0） | 26 Hz（仅订阅时） |
 | `0x05` PDR | 12 B（整包 16 B） | `i32 x_mm`（东）、`i32 y_mm`（北）、`i16 heading_ddeg`、`u16 steps` | 每完成一步 + 1 Hz 心跳 |
+
+**`0x01` GNSS 是接收链路诊断，不是定位结果**：定位结果仍在 Status 帧（§4），这里只回答
+「模块到底有没有在说话」。payload 布局（小端，固件侧 `LGPS_BLE_TELEM_GNSS_PAYLOAD` 与
+App 侧 `GnssTelemetryOffset` 必须一致）：
+
+| off | type | 字段 | 说明 |
+| :--- | :--- | :--- | :--- |
+| 0 | u8 | `gnss_state` | 0 OFF / 1 COLD_START / 2 FIXED / 3 EPHEMERIS_HOLD / 4 BACKOFF |
+| 1 | u8 | `fix_type` | UBX fixType（0..5） |
+| 2 | u8 | `satellites` | NAV-PVT `numSV` |
+| 3 | u8 | `flags` | bit0 定位有效，bit1 UTC 有效 |
+| 4 | u16 | `pdop_1e2` | pDOP ×100 |
+| 6 | u32 | `age_ms` | 距上次 NAV-PVT 的毫秒，0 = 尚无 |
+| 10 | u32 | `rx_bytes` | UARTE20 收到的字节数（含 NMEA） |
+| 14 | u32 | `ubx_frames` | 校验正确的完整 UBX 帧数 |
+| 18 | u32 | `ubx_bad_checksum` | 校验错误的帧数 |
+| 22 | u32 | `nmea_starts` | 收到的 `'$'` 个数（>0 且 `ubx_frames` 不上涨 = 只吐 NMEA） |
+| 26 | u32 | `rx_dropped` | ISR 因环形缓冲满而丢弃的字节 |
+| 30 | u32 | `baud` | UART 当前实际波特率（38400，或 9600 回退后） |
+
+`GET_CAPS.telemetry_mask`（§6.1 off 16）的 bit n 表示 **id = n 的遥测组已实现**：
+bit1 GNSS、bit2 IMU、bit3 MAG、bit4 BARO、bit5 PDR、bit6 POWER、bit7 SYSTEM（bit0 未用）。
+当前固件实现 bit1|bit2|bit5（`0x26`），主机必须按位判断，不得按协议版本号推测。
 
 **IMU 包是 body 帧**（X 右 / Y 前 / Z 前脸法向），四元数把 body 映射到 world
 （X 东 / Y 北 / Z 上），所以加速度矢量可以直接和姿态一起画。
@@ -186,7 +210,7 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
 | 8 | u16 | `att_mtu`（固件配置的 L2CAP TX MTU，247） |
 | 10 | u16 | `max_cmd_payload`（235） |
 | 12 | u32 | `caps`：bit0 Status notify，bit1 Log notify，bit2 POI，bit3 FLASH_INFO，bit4 REBOOT，bit5 DEBUG_UNLOCK，bit6 Data 同步（v1 = 0），bit7 MAG_CAL，bit8 ACCEL_CAL，bit9 BARO_BASELINE（三位置位条件见 6.3~6.5） |
-| 16 | u32 | `telemetry_mask`（v1 = 0，全部走 Status 帧） |
+| 16 | u32 | `telemetry_mask`（v1 = `0x26`：bit1 GNSS、bit2 IMU、bit5 PDR，语义见 §5.1） |
 | 20 | u16 | `status_size` = 100 |
 | 22 | u16 | `reserved` |
 

@@ -56,6 +56,44 @@ data class SatelliteInfo(
     val used: Boolean,
 )
 
+/**
+ * GNSS receive-path counters from the `0x01` telemetry group.
+ *
+ * [received] is false until the first packet arrives, so the UI can tell "the
+ * firmware does not publish this" from "it publishes zero here".
+ */
+data class GnssLinkInfo(
+    val received: Boolean = false,
+    val state: String = "OFF",
+    val fixType: Int = 0,
+    val satellites: Int = 0,
+    val fixValid: Boolean = false,
+    val utcValid: Boolean = false,
+    val ageMs: Long = 0,
+    val rxBytes: Long = 0,
+    val ubxFrames: Long = 0,
+    val badChecksum: Long = 0,
+    val nmeaStarts: Long = 0,
+    val rxDropped: Long = 0,
+    val baud: Int = 0,
+) {
+    /**
+     * One-line verdict on the receive path, derived only from the counters.
+     *
+     * The order matters: a silent module makes every later test meaningless, and
+     * "NMEA only" is the shape of a receiver that ignored the configuration.
+     */
+    val verdict: String
+        get() = when {
+            !received -> "等待遥测"
+            rxBytes == 0L -> "模块没说话（rx=0）：检查 GPS_EN / UART 引脚"
+            badChecksum > 0 && ubxFrames == 0L -> "全是坏帧：波特率或接线问题"
+            ubxFrames == 0L && nmeaStarts > 0 -> "只收到 NMEA，UBX 未被打开"
+            ubxFrames > 0L -> "UBX 在收"
+            else -> "收到字节但没有帧同步"
+        }
+}
+
 data class ImuStatus(
     val ax: Float,
     val ay: Float,

@@ -28,9 +28,56 @@
 #define LGPS_UBX_CLASS_RXM 0x02U
 #define LGPS_UBX_ID_RXM_PMREQ 0x41U
 #define LGPS_UBX_CLASS_ACK 0x05U
+#define LGPS_UBX_ID_ACK_NAK 0x00U
+#define LGPS_UBX_ID_ACK_ACK 0x01U
+#define LGPS_UBX_CLASS_CFG 0x06U
+#define LGPS_UBX_ID_CFG_VALSET 0x8AU
+#define LGPS_UBX_ID_CFG_VALGET 0x8BU
 
 #define LGPS_UBX_NAV_PVT_PAYLOAD_LEN 92U
 #define LGPS_UBX_RXM_PMREQ_PAYLOAD_LEN 16U
+
+/*
+ * UBX-CFG-VALSET / UBX-CFG-VALGET (interface description sections 3.10.5 and
+ * 3.10.4). These are the only configuration messages the M10 documents: the
+ * UBX-CFG chapter of UBX-21035062 R03 contains exactly CFG-CFG, CFG-RST,
+ * CFG-VALDEL, CFG-VALGET and CFG-VALSET, and section 4.10 notes that "some
+ * legacy UBX-CFG messages may not be available for certain products" - which is
+ * why UBX-CFG-MSG (0x06 0x01) never turned NAV-PVT on.
+ */
+#define LGPS_UBX_CFG_HEADER_LEN 4U
+
+/* VALSET `layers` bits (payload offset 1, section 3.10.5.1). */
+#define LGPS_UBX_LAYER_RAM 0x01U
+#define LGPS_UBX_LAYER_BBR 0x02U
+#define LGPS_UBX_LAYER_FLASH 0x04U
+#define LGPS_UBX_LAYER_ALL (LGPS_UBX_LAYER_RAM | LGPS_UBX_LAYER_BBR | LGPS_UBX_LAYER_FLASH)
+
+/* VALGET `layer` field values (payload offset 1, section 3.10.4.1). */
+#define LGPS_UBX_VALGET_LAYER_RAM 0U
+#define LGPS_UBX_VALGET_LAYER_BBR 1U
+#define LGPS_UBX_VALGET_LAYER_FLASH 2U
+#define LGPS_UBX_VALGET_LAYER_DEFAULT 7U
+
+/*
+ * Largest value a single key we write carries. Every key in the current list is
+ * U1/U2/U4/E1/L, so four bytes cover all of them; a longer value is rejected
+ * instead of being silently truncated.
+ */
+#define LGPS_UBX_CFG_VALUE_MAX_LEN 4U
+
+/*
+ * Configuration key: output rate of UBX-NAV-PVT on UART1.
+ *
+ * Section 4.9.11 (CFG-MSGOUT) lists the three transports per message as
+ * I2C 0x20910006, SPI 0x2091000a and UART1 0x20910007; the defaults table
+ * (section 4.9.11, "configuration defaults") repeats 0x20910007 with default 0,
+ * i.e. NAV-PVT is off until the host turns it on. Our PDF copy prints the UART1
+ * row's *name* as a redacted placeholder, so the key id is derived from its two
+ * siblings and from the defaults table, and the firmware reads the value back
+ * with CFG-VALGET after writing it instead of trusting the constant.
+ */
+#define LGPS_UBX_CFG_KEY_MSGOUT_NAV_PVT_UART1 0x20910007U
 
 /* Largest payload the streaming parser accepts (NAV-PVT is the biggest we use). */
 #define LGPS_UBX_MAX_PAYLOAD_LEN 128U
@@ -153,6 +200,48 @@ int lgps_ubx_build(uint8_t *buf, size_t buf_len_bytes, uint8_t msg_class, uint8_
 
 /* Build a poll request (empty payload) for @p msg_class / @p msg_id. */
 int lgps_ubx_build_poll(uint8_t *buf, size_t buf_len_bytes, uint8_t msg_class, uint8_t msg_id);
+
+/*
+ * Build UBX-CFG-VALSET (version 0, section 3.10.5.1) carrying exactly one
+ * key/value pair.
+ *
+ * @p layers is a mask of LGPS_UBX_LAYER_*; a mask without any layer is rejected
+ * with -EINVAL because the receiver answers it with UBX-ACK-NAK and applies
+ * nothing. @p value_len must be 1..LGPS_UBX_CFG_VALUE_MAX_LEN.
+ *
+ * Returns the number of bytes written, -EINVAL for a bad argument or -ENOSPC
+ * when @p buf_len_bytes is too small.
+ */
+int lgps_ubx_build_valset_item(uint8_t *buf, size_t buf_len_bytes, uint8_t layers, uint32_t key,
+			       const uint8_t *value, uint8_t value_len);
+
+/*
+ * Build UBX-CFG-VALGET (version 0, section 3.10.4.1) asking for exactly one key.
+ * @p layer is one of LGPS_UBX_VALGET_LAYER_*.
+ */
+int lgps_ubx_build_valget_item(uint8_t *buf, size_t buf_len_bytes, uint8_t layer, uint32_t key);
+
+/*
+ * Classify a UBX-ACK frame (section 3.9): @p accepted is true for ACK-ACK and
+ * false for ACK-NAK; @p msg_class / @p msg_id identify the message that was
+ * acknowledged, so the caller can name it instead of guessing.
+ *
+ * Returns 0 on success, -EINVAL on a NULL argument or a frame that is not a
+ * well-formed ACK (wrong class/id or payload length other than 2).
+ */
+int lgps_ubx_decode_ack(const struct lgps_ubx_parser *parser, bool *accepted, uint8_t *msg_class,
+			uint8_t *msg_id);
+
+/*
+ * Read the value of one U1 item out of a UBX-CFG-VALGET response (section
+ * 3.10.4.1: version, layer, position u2, then key/value pairs). Only the first
+ * key of a single-key response is considered; @p key must match it.
+ *
+ * Returns 0 on success, -EINVAL for a NULL argument, a non-VALGET frame, a
+ * truncated payload or a different key, and -ENOENT when the requested key is
+ * not the one the receiver answered with.
+ */
+int lgps_ubx_decode_valget_u1(const struct lgps_ubx_parser *parser, uint32_t key, uint8_t *value);
 
 /*
  * Build UBX-RXM-PMREQ (16-byte payload, version 0).

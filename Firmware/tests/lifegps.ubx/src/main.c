@@ -258,4 +258,128 @@ ZTEST(lifegps_ubx, test_rxm_pmreq_duration_clamped)
 		      "duration must be clamped to 12 days");
 }
 
+/* Golden UBX-CFG-VALSET / VALGET frames for key 0x20910007 (NAV-PVT rate on
+ * UART1), assembled by hand from section 3.10.5.1 / 3.10.4.1 so the test does
+ * not share a code path with the implementation it checks.
+ */
+#define CFG_KEY_NAV_PVT_UART1 0x20910007U
+#define VALSET_FRAME_LEN (LGPS_UBX_HEADER_LEN + LGPS_UBX_CFG_HEADER_LEN + 5U + LGPS_UBX_TRAILER_LEN)
+#define VALGET_FRAME_LEN (LGPS_UBX_HEADER_LEN + LGPS_UBX_CFG_HEADER_LEN + 4U + LGPS_UBX_TRAILER_LEN)
+
+ZTEST(lifegps_ubx, test_valset_u1_golden_frame)
+{
+	/* version 0, layers = RAM, reserved 0, key, value 1. */
+	static const uint8_t expected[] = {
+		0xB5U, 0x62U, 0x06U, 0x8AU, 0x09U, 0x00U, 0x00U, 0x01U, 0x00U,
+		0x00U, 0x07U, 0x00U, 0x91U, 0x20U, 0x01U, 0x53U, 0x48U,
+	};
+	uint8_t frame[VALSET_FRAME_LEN];
+	const uint8_t value = 1U;
+	int ret;
+
+	ret = lgps_ubx_build_valset_item(frame, sizeof(frame), LGPS_UBX_LAYER_RAM,
+					CFG_KEY_NAV_PVT_UART1, &value, 1U);
+	zassert_equal(ret, (int)sizeof(expected), "VALSET frame must be 17 bytes");
+	zassert_equal(sizeof(frame), sizeof(expected), "test buffer must match the golden vector");
+	zassert_mem_equal(frame, expected, sizeof(expected),
+			  "VALSET frame must match section 3.10.5.1");
+}
+
+ZTEST(lifegps_ubx, test_valset_rejects_what_the_receiver_would_nak)
+{
+	uint8_t frame[VALSET_FRAME_LEN];
+	const uint8_t value = 1U;
+
+	/* A layers mask without a target layer is NAK'd on the wire; catch it here. */
+	zassert_equal(lgps_ubx_build_valset_item(frame, sizeof(frame), 0U, CFG_KEY_NAV_PVT_UART1,
+						 &value, 1U),
+		      -EINVAL, "empty layers mask");
+	/* Zero-length and over-long values are argument errors, not silent truncation. */
+	zassert_equal(lgps_ubx_build_valset_item(frame, sizeof(frame), LGPS_UBX_LAYER_RAM,
+						 CFG_KEY_NAV_PVT_UART1, &value, 0U),
+		      -EINVAL, "zero-length value");
+	zassert_equal(lgps_ubx_build_valset_item(frame, sizeof(frame), LGPS_UBX_LAYER_RAM,
+						 CFG_KEY_NAV_PVT_UART1, &value,
+						 LGPS_UBX_CFG_VALUE_MAX_LEN + 1U),
+		      -EINVAL, "over-long value");
+	zassert_equal(lgps_ubx_build_valset_item(frame, sizeof(frame) - 1U, LGPS_UBX_LAYER_RAM,
+						 CFG_KEY_NAV_PVT_UART1, &value, 1U),
+		      -ENOSPC, "one byte short");
+}
+
+ZTEST(lifegps_ubx, test_valget_u1_golden_frame)
+{
+	/* version 0, layer = RAM, position 0, then the single key. */
+	static const uint8_t expected[] = {
+		0xB5U, 0x62U, 0x06U, 0x8BU, 0x08U, 0x00U, 0x00U, 0x00U,
+		0x00U, 0x00U, 0x07U, 0x00U, 0x91U, 0x20U, 0x51U, 0xEFU,
+	};
+	uint8_t frame[VALGET_FRAME_LEN];
+	int ret;
+
+	ret = lgps_ubx_build_valget_item(frame, sizeof(frame), LGPS_UBX_VALGET_LAYER_RAM,
+					CFG_KEY_NAV_PVT_UART1);
+	zassert_equal(ret, (int)sizeof(expected), "VALGET request must be 16 bytes");
+	zassert_equal(sizeof(frame), sizeof(expected), "test buffer must match the golden vector");
+	zassert_mem_equal(frame, expected, sizeof(expected),
+			  "VALGET request must match section 3.10.4.1");
+	/* 0/1/2/7 are the only defined layer values. */
+	zassert_equal(lgps_ubx_build_valget_item(frame, sizeof(frame), 3U, CFG_KEY_NAV_PVT_UART1),
+		      -EINVAL, "layer 3 is not defined");
+}
+
+ZTEST(lifegps_ubx, test_ack_and_nak_classification)
+{
+	static const uint8_t ack_frame[] = {
+		0xB5U, 0x62U, 0x05U, 0x01U, 0x02U, 0x00U, 0x06U, 0x8AU, 0x98U, 0xC1U,
+	};
+	static const uint8_t nak_frame[] = {
+		0xB5U, 0x62U, 0x05U, 0x00U, 0x02U, 0x00U, 0x06U, 0x8AU, 0x97U, 0xBCU,
+	};
+	struct lgps_ubx_parser parser;
+	uint8_t msg_class = 0U;
+	uint8_t msg_id = 0U;
+	bool accepted = false;
+
+	lgps_ubx_parser_reset(&parser);
+	feed_expect_ready(ack_frame, sizeof(ack_frame), &parser);
+	zassert_equal(lgps_ubx_decode_ack(&parser, &accepted, &msg_class, &msg_id), 0,
+		      "ACK-ACK must decode");
+	zassert_true(accepted, "ACK-ACK means accepted");
+	/* The acknowledged message is the payload, not the ACK's own id. */
+	zassert_equal(msg_class, LGPS_UBX_CLASS_CFG, "acknowledged class");
+	zassert_equal(msg_id, LGPS_UBX_ID_CFG_VALSET, "acknowledged id");
+
+	lgps_ubx_parser_reset(&parser);
+	feed_expect_ready(nak_frame, sizeof(nak_frame), &parser);
+	zassert_equal(lgps_ubx_decode_ack(&parser, &accepted, &msg_class, &msg_id), 0,
+		      "ACK-NAK must decode");
+	zassert_false(accepted, "ACK-NAK means refused");
+}
+
+ZTEST(lifegps_ubx, test_valget_response_readback)
+{
+	/* Response: version 0, layer RAM, position 0, key, value 1. */
+	static const uint8_t response[] = {
+		0xB5U, 0x62U, 0x06U, 0x8BU, 0x09U, 0x00U, 0x00U, 0x00U, 0x00U,
+		0x00U, 0x07U, 0x00U, 0x91U, 0x20U, 0x01U, 0x53U, 0x4CU,
+	};
+	struct lgps_ubx_parser parser;
+	uint8_t value = 0U;
+
+	lgps_ubx_parser_reset(&parser);
+	feed_expect_ready(response, sizeof(response), &parser);
+	zassert_equal(lgps_ubx_decode_valget_u1(&parser, CFG_KEY_NAV_PVT_UART1, &value), 0,
+		      "single-key VALGET response must decode");
+	zassert_equal(value, 1U, "readback value");
+
+	/* A response for another key must not be mistaken for ours. */
+	zassert_equal(lgps_ubx_decode_valget_u1(&parser, 0x20910016U, &value), -ENOENT,
+		      "different key must be reported, not ignored");
+	/* Truncated payload: 8 bytes cannot hold key plus value. */
+	parser.payload_len = 8U;
+	zassert_equal(lgps_ubx_decode_valget_u1(&parser, CFG_KEY_NAV_PVT_UART1, &value), -EINVAL,
+		      "truncated payload must be rejected");
+}
+
 ZTEST_SUITE(lifegps_ubx, NULL, NULL, NULL, NULL, NULL);

@@ -426,6 +426,58 @@ ZTEST(lifegps_ble, test_telemetry_pdr_packet_layout)
 	zassert_equal(out[15], 0x04U, "steps high byte (1234)");
 }
 
+ZTEST(lifegps_ble, test_telemetry_gnss_packet_layout)
+{
+	/* One distinct constant per field so a swapped offset cannot pass. */
+	const struct lgps_ble_telem_gnss gnss = {
+		.state = 2U,
+		.fix_type = 3U,
+		.satellites = 11U,
+		.flags = LGPS_BLE_TELEM_GNSS_FLAG_FIX_VALID | LGPS_BLE_TELEM_GNSS_FLAG_UTC_VALID,
+		.pdop_1e2 = 0x0123U,
+		.age_ms = 0x11223344U,
+		.rx_bytes = 0x55667788U,
+		.ubx_frames = 9U,
+		.ubx_bad_checksum = 1U,
+		.nmea_starts = 0x42U,
+		.rx_dropped = 0U,
+		.baud = 38400U,
+	};
+	uint8_t out[LGPS_BLE_TELEM_GNSS_SIZE];
+	int len;
+
+	len = lgps_ble_telem_gnss_encode(0x1234U, &gnss, out, sizeof(out));
+
+	zassert_equal(len, LGPS_BLE_TELEM_GNSS_SIZE, "GNSS telemetry packet length");
+	zassert_equal(LGPS_BLE_TELEM_GNSS_SIZE, 38, "GNSS telemetry packet stays 38 bytes");
+	zassert_equal(out[0], 0x01U, "telemetry id GNSS");
+	zassert_equal(out[1], 0x01U, "telemetry version");
+	zassert_equal(out[2], 0x34U, "seq low byte");
+	zassert_equal(out[3], 0x12U, "seq high byte");
+
+	zassert_equal(out[4], 2U, "gnss_state");
+	zassert_equal(out[5], 3U, "fix_type");
+	zassert_equal(out[6], 11U, "satellites");
+	zassert_equal(out[7], 0x03U, "flags fix+utc");
+	zassert_equal(out[8], 0x23U, "pdop low byte");
+	zassert_equal(out[9], 0x01U, "pdop high byte");
+	zassert_equal(out[10], 0x44U, "age_ms byte 0");
+	zassert_equal(out[13], 0x11U, "age_ms byte 3");
+	zassert_equal(out[14], 0x88U, "rx_bytes byte 0");
+	zassert_equal(out[17], 0x55U, "rx_bytes byte 3");
+	zassert_equal(out[18], 9U, "ubx_frames");
+	zassert_equal(out[22], 1U, "ubx_bad_checksum");
+	zassert_equal(out[26], 0x42U, "nmea_starts");
+	zassert_equal(out[30], 0U, "rx_dropped");
+	zassert_equal(out[34], 0x00U, "baud byte 0");
+	zassert_equal(out[35], 0x96U, "baud byte 1 (38400)");
+
+	zassert_equal(lgps_ble_telem_gnss_encode(0U, NULL, out, sizeof(out)), -EINVAL,
+		      "NULL payload must be refused");
+	zassert_equal(lgps_ble_telem_gnss_encode(0U, &gnss, out, LGPS_BLE_TELEM_GNSS_SIZE - 1U),
+		      -ENOMEM, "short output buffer must be refused");
+}
+
 ZTEST(lifegps_ble, test_telemetry_generic_encoder_bounds)
 {
 	uint8_t payload[2] = { 0xAA, 0xBB };

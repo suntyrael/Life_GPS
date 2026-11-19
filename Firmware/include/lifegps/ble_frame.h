@@ -89,6 +89,20 @@ enum lgps_ble_status_code {
 #define LGPS_BLE_CAP_ACCEL_CAL 0x00000100U
 #define LGPS_BLE_CAP_BARO_BASELINE 0x00000200U
 
+/*
+ * GET_CAPS.telemetry_mask bits: bit n set means the telemetry group whose id is
+ * n is implemented (bit 0 is unused because no group has id 0). The App reads
+ * this instead of guessing from the protocol version, the same rule the caps
+ * bits already follow.
+ */
+#define LGPS_BLE_TELEM_MASK_GNSS 0x00000002U /* id 0x01 */
+#define LGPS_BLE_TELEM_MASK_IMU 0x00000004U  /* id 0x02 */
+#define LGPS_BLE_TELEM_MASK_MAG 0x00000008U  /* id 0x03 */
+#define LGPS_BLE_TELEM_MASK_BARO 0x00000010U /* id 0x04 */
+#define LGPS_BLE_TELEM_MASK_PDR 0x00000020U  /* id 0x05 */
+#define LGPS_BLE_TELEM_MASK_POWER 0x00000040U  /* id 0x06 */
+#define LGPS_BLE_TELEM_MASK_SYSTEM 0x00000080U /* id 0x07 */
+
 /* soc_pct is "unknown" until a fuel gauge or a coulomb counter exists; the app
  * derives a percentage from bat_mv instead of the firmware pretending to know.
  */
@@ -115,6 +129,8 @@ enum lgps_ble_status_code {
 #define LGPS_BLE_TELEM_IMU_SIZE (LGPS_BLE_TELEM_HEADER_SIZE + LGPS_BLE_TELEM_IMU_PAYLOAD)
 #define LGPS_BLE_TELEM_PDR_PAYLOAD 12U
 #define LGPS_BLE_TELEM_PDR_SIZE (LGPS_BLE_TELEM_HEADER_SIZE + LGPS_BLE_TELEM_PDR_PAYLOAD)
+#define LGPS_BLE_TELEM_GNSS_PAYLOAD 34U
+#define LGPS_BLE_TELEM_GNSS_SIZE (LGPS_BLE_TELEM_HEADER_SIZE + LGPS_BLE_TELEM_GNSS_PAYLOAD)
 
 /* Telemetry ids, mirroring protocol/lifegps_protocol.yaml `telemetry:`. */
 enum lgps_ble_telem_id {
@@ -140,6 +156,28 @@ struct lgps_ble_telem_pdr {
 	int32_t y_mm;
 	int16_t heading_ddeg;
 	uint16_t steps;
+};
+
+/* GNSS receive path, not the solution: the Status frame already carries the
+ * solution, this group answers "is the receiver talking to us at all".
+ * Layout is documented in Doc/Software/BLE_Wire_v1.md section 5.1.
+ */
+#define LGPS_BLE_TELEM_GNSS_FLAG_FIX_VALID 0x01U
+#define LGPS_BLE_TELEM_GNSS_FLAG_UTC_VALID 0x02U
+
+struct lgps_ble_telem_gnss {
+	uint8_t state;
+	uint8_t fix_type;
+	uint8_t satellites;
+	uint8_t flags;
+	uint16_t pdop_1e2;
+	uint32_t age_ms;
+	uint32_t rx_bytes;
+	uint32_t ubx_frames;
+	uint32_t ubx_bad_checksum;
+	uint32_t nmea_starts;
+	uint32_t rx_dropped;
+	uint32_t baud;
 };
 
 /* Status snapshot, field semantics in Doc/Software/BLE_Wire_v1.md section 4. */
@@ -329,5 +367,11 @@ int lgps_ble_telem_imu_encode(uint16_t seq, const struct lgps_ble_telem_imu *imu
 /* PDR telemetry packet. Returns LGPS_BLE_TELEM_PDR_SIZE or a negative errno. */
 int lgps_ble_telem_pdr_encode(uint16_t seq, const struct lgps_ble_telem_pdr *pdr, uint8_t *out,
 			      size_t out_size);
+
+/* GNSS receive-path telemetry packet. Returns LGPS_BLE_TELEM_GNSS_SIZE or a
+ * negative errno.
+ */
+int lgps_ble_telem_gnss_encode(uint16_t seq, const struct lgps_ble_telem_gnss *gnss, uint8_t *out,
+			       size_t out_size);
 
 #endif /* LIFEGPS_BLE_FRAME_H_ */

@@ -16,6 +16,7 @@ import com.lifegps.app.debug.DebugRepository
 import com.lifegps.app.debug.DeviceSummary
 import com.lifegps.app.debug.FlashStatus
 import com.lifegps.app.debug.GeoPoint
+import com.lifegps.app.debug.GnssLinkInfo
 import com.lifegps.app.debug.GnssStatus
 import com.lifegps.app.debug.ImuStatus
 import com.lifegps.app.debug.LogEntry
@@ -104,6 +105,9 @@ class BleDebugRepository(context: Context) : DebugRepository {
 
     private val _gnss = MutableStateFlow(initialGnss())
     override val gnss: StateFlow<GnssStatus> = _gnss.asStateFlow()
+
+    private val _gnssLink = MutableStateFlow(GnssLinkInfo())
+    override val gnssLink: StateFlow<GnssLinkInfo> = _gnssLink.asStateFlow()
 
     private val _imu = MutableStateFlow(initialImu())
     override val imu: StateFlow<ImuStatus> = _imu.asStateFlow()
@@ -287,6 +291,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
             )
         }
         _gnss.value = initialGnss()
+        _gnssLink.value = GnssLinkInfo()
         _imu.value = initialImu()
         _mag.value = initialMag()
         _baro.value = initialBaro()
@@ -423,16 +428,42 @@ class BleDebugRepository(context: Context) : DebugRepository {
     }
 
     /** Telemetry characteristic: IMU packets carry the attitude, PDR packets the
-     *  dead-reckoned position. Anything else is a group this app does not draw yet.
+     *  dead-reckoned position, GNSS packets the receiver link counters. Anything
+     *  else is a group this app does not draw yet.
      */
     private fun handleTelemetry(bytes: ByteArray) {
         val packet = BleFrame.parseTelemetry(bytes) ?: return
 
         when (packet.id) {
+            TelemetryId.GNSS -> BleFrame.parseGnssTelemetry(packet.payload)?.let { onGnssTelemetry(it) }
             TelemetryId.IMU -> BleFrame.parseImuTelemetry(packet.payload)?.let { onImuTelemetry(it) }
             TelemetryId.PDR -> BleFrame.parsePdrTelemetry(packet.payload)?.let { onPdrTelemetry(it) }
             else -> Unit
         }
+    }
+
+    /**
+     * GNSS link counters, 1 Hz.
+     *
+     * Deliberately kept apart from [gnss]: this carries the receive path, not the
+     * solution, and the two must never be mixed into one number on screen.
+     */
+    private fun onGnssTelemetry(telemetry: GnssTelemetry) {
+        _gnssLink.value = GnssLinkInfo(
+            received = true,
+            state = BleFrame.gnssStateName(telemetry.state),
+            fixType = telemetry.fixType,
+            satellites = telemetry.satellites,
+            fixValid = telemetry.fixValid,
+            utcValid = telemetry.utcValid,
+            ageMs = telemetry.ageMs,
+            rxBytes = telemetry.rxBytes,
+            ubxFrames = telemetry.ubxFrames,
+            badChecksum = telemetry.badChecksum,
+            nmeaStarts = telemetry.nmeaStarts,
+            rxDropped = telemetry.rxDropped,
+            baud = telemetry.baud,
+        )
     }
 
     /**

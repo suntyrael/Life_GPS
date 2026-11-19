@@ -175,6 +175,7 @@ static uint8_t status_frame[LGPS_BLE_STATUS_SIZE];
  */
 static uint16_t telem_seq_imu;
 static uint16_t telem_seq_pdr;
+static uint16_t telem_seq_gnss;
 static bool status_frame_valid;
 static struct k_spinlock status_lock;
 
@@ -535,7 +536,8 @@ static uint8_t cmd_get_caps(uint8_t *payload, size_t capacity, size_t *out_len)
 			(IS_ENABLED(CONFIG_LGPS_CALIB)
 				 ? (LGPS_BLE_CAP_MAG_CAL | LGPS_BLE_CAP_ACCEL_CAL)
 				 : 0U),
-		.telemetry_mask = 0U,
+		.telemetry_mask = LGPS_BLE_TELEM_MASK_GNSS | LGPS_BLE_TELEM_MASK_IMU |
+				  LGPS_BLE_TELEM_MASK_PDR,
 		.att_mtu = (uint16_t)LGPS_PROTO_MTU,
 	};
 	int len;
@@ -1252,6 +1254,23 @@ void lgps_ble_publish_pdr(int32_t x_mm, int32_t y_mm, int16_t heading_ddeg, uint
 	telem_seq_pdr++;
 
 	if (len == (int)LGPS_BLE_TELEM_PDR_SIZE) {
+		notify_guarded(telem_attr, packet, (uint16_t)len);
+	}
+}
+
+void lgps_ble_publish_gnss(const struct lgps_ble_telem_gnss *gnss)
+{
+	uint8_t packet[LGPS_BLE_TELEM_GNSS_SIZE];
+	int len;
+
+	if (!telem_subscribed || (gnss == NULL)) {
+		return;
+	}
+
+	len = lgps_ble_telem_gnss_encode(telem_seq_gnss, gnss, packet, sizeof(packet));
+	telem_seq_gnss++;
+
+	if (len == (int)LGPS_BLE_TELEM_GNSS_SIZE) {
 		notify_guarded(telem_attr, packet, (uint16_t)len);
 	}
 }

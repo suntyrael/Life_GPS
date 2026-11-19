@@ -421,4 +421,51 @@ class BleFrameTest {
 
         assertNull(BleFrame.parsePdrTelemetry(ByteArray(11)))
     }
+
+    @Test
+    fun parseGnssTelemetryMatchesTheDocumentedOffsets() {
+        val payload = ByteArray(GnssTelemetryOffset.SIZE)
+        payload[GnssTelemetryOffset.STATE] = 2
+        payload[GnssTelemetryOffset.FIX_TYPE] = 3
+        payload[GnssTelemetryOffset.SATELLITES] = 11
+        payload[GnssTelemetryOffset.FLAGS] =
+            (GnssTelemetryOffset.FLAG_FIX_VALID or GnssTelemetryOffset.FLAG_UTC_VALID).toByte()
+        writeU16(payload, GnssTelemetryOffset.PDOP_1E2, 0x0123)
+        writeU32(payload, GnssTelemetryOffset.AGE_MS, 0x11223344L)
+        writeU32(payload, GnssTelemetryOffset.RX_BYTES, 0x55667788L)
+        writeU32(payload, GnssTelemetryOffset.UBX_FRAMES, 9)
+        writeU32(payload, GnssTelemetryOffset.BAD_CHECKSUM, 1)
+        writeU32(payload, GnssTelemetryOffset.NMEA_STARTS, 0x42)
+        writeU32(payload, GnssTelemetryOffset.RX_DROPPED, 0)
+        writeU32(payload, GnssTelemetryOffset.BAUD, 38400)
+
+        val gnss = BleFrame.parseGnssTelemetry(payload)
+        assertNotNull(gnss)
+        gnss!!
+        assertEquals(2, gnss.state)
+        assertEquals(3, gnss.fixType)
+        assertEquals(11, gnss.satellites)
+        assertTrue(gnss.fixValid)
+        assertTrue(gnss.utcValid)
+        assertEquals(0x0123, gnss.pdop1e2)
+        assertEquals(0x11223344L, gnss.ageMs)
+        assertEquals(0x55667788L, gnss.rxBytes)
+        assertEquals(9L, gnss.ubxFrames)
+        assertEquals(1L, gnss.badChecksum)
+        assertEquals(0x42L, gnss.nmeaStarts)
+        assertEquals(0L, gnss.rxDropped)
+        assertEquals(38400, gnss.baud)
+
+        // The packet size is pinned on the firmware side too
+        // (LGPS_BLE_TELEM_GNSS_SIZE == 38 -> 34 payload bytes).
+        assertEquals(34, GnssTelemetryOffset.SIZE)
+        assertNull(BleFrame.parseGnssTelemetry(ByteArray(GnssTelemetryOffset.SIZE - 1)))
+
+        // A flag byte without the fix bit must not report a fix.
+        payload[GnssTelemetryOffset.FLAGS] = GnssTelemetryOffset.FLAG_UTC_VALID.toByte()
+        val utcOnly = BleFrame.parseGnssTelemetry(payload)
+        assertNotNull(utcOnly)
+        assertFalse(utcOnly!!.fixValid)
+        assertTrue(utcOnly.utcValid)
+    }
 }

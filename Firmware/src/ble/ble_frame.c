@@ -322,6 +322,35 @@ int lgps_ble_telem_pdr_encode(uint16_t seq, const struct lgps_ble_telem_pdr *pdr
 				     out_size);
 }
 
+int lgps_ble_telem_gnss_encode(uint16_t seq, const struct lgps_ble_telem_gnss *gnss, uint8_t *out,
+			       size_t out_size)
+{
+	uint8_t payload[LGPS_BLE_TELEM_GNSS_PAYLOAD];
+
+	if (gnss == NULL) {
+		return -EINVAL;
+	}
+
+	/* Offsets are frozen in Doc/Software/BLE_Wire_v1.md section 5.1: u8 fields
+	 * first, then u16 pdop, then the four 32-bit counters, then the line rate.
+	 */
+	payload[0] = gnss->state;
+	payload[1] = gnss->fix_type;
+	payload[2] = gnss->satellites;
+	payload[3] = gnss->flags;
+	put_u16(&payload[4], gnss->pdop_1e2);
+	put_u32(&payload[6], gnss->age_ms);
+	put_u32(&payload[10], gnss->rx_bytes);
+	put_u32(&payload[14], gnss->ubx_frames);
+	put_u32(&payload[18], gnss->ubx_bad_checksum);
+	put_u32(&payload[22], gnss->nmea_starts);
+	put_u32(&payload[26], gnss->rx_dropped);
+	put_u32(&payload[30], gnss->baud);
+
+	return lgps_ble_telem_encode((uint8_t)LGPS_BLE_TELEM_GNSS, seq, payload, sizeof(payload), out,
+				     out_size);
+}
+
 /* --- calibration bodies ---------------------------------------------------- */
 
 /*

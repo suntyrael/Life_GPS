@@ -63,4 +63,13 @@ void lgps_ble_publish_imu(const int16_t acc_lsb[3], const int16_t gyro_lsb[3],
  */
 void lgps_ble_publish_pdr(int32_t x_mm, int32_t y_mm, int16_t heading_ddeg, uint16_t steps);
 
+/* GNSS receive-path telemetry, called once per second.
+ *
+ * Carries the counters that answer "why is there no fix": silent receiver
+ * (rx_bytes stuck), NMEA-only stream (nmea_starts growing, ubx_frames flat),
+ * corrupt framing (ubx_bad_checksum) or an overflowing RX ring (rx_dropped).
+ * The solution itself stays in the Status frame.
+ */
+void lgps_ble_publish_gnss(const struct lgps_ble_telem_gnss *gnss);
+
 #endif /* LIFEGPS_BLE_H_ */

@@ -4,7 +4,9 @@
  *
  * Wire format, class/id and field offsets come from
  * Doc/Hardware/Datasheets/UBLOX/u-blox-M10-SPG-5.10_InterfaceDescription_UBX-21035062.pdf
- * (frame section 2, UBX-NAV-PVT section 3.15.11, UBX-RXM-PMREQ section 3.16.6).
+ * (frame section 2, UBX-NAV-PVT section 3.15.11, UBX-RXM-PMREQ section 3.16.6,
+ * UBX-CFG-VALSET section 3.10.5, UBX-CFG-VALGET section 3.10.4, UBX-ACK
+ * section 3.9).
  * The module keeps no global state and logs nothing: the caller owns the UART
  * and decides how to report a rejected frame.
  *
@@ -15,6 +17,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <lifegps/ubx.h>
 
@@ -70,6 +73,15 @@ enum ubx_rxm_pmreq_offset {
 	PMREQ_OFF_DURATION_MS = 4,
 	PMREQ_OFF_FLAGS = 8,
 	PMREQ_OFF_WAKEUP_SOURCES = 12,
+};
+
+/* UBX-CFG-VALSET/VALGET payload offsets in bytes, sections 3.10.5.1/3.10.4.1. */
+enum ubx_cfg_offset {
+	CFG_OFF_VERSION = 0,
+	CFG_OFF_LAYERS = 1,
+	CFG_OFF_RESERVED_OR_POSITION = 2,
+	CFG_OFF_KEY = 4,
+	CFG_OFF_VALUE = 8,
 };
 
 static uint16_t get_le16(const uint8_t *src)
@@ -313,4 +325,111 @@ int lgps_ubx_build_rxm_pmreq(uint8_t *buf, size_t buf_len_bytes, uint32_t durati
 	put_le32(&payload[PMREQ_OFF_WAKEUP_SOURCES], wakeup_sources);
 	return lgps_ubx_build(buf, buf_len_bytes, LGPS_UBX_CLASS_RXM, LGPS_UBX_ID_RXM_PMREQ,
 			      payload, LGPS_UBX_RXM_PMREQ_PAYLOAD_LEN);
+}
+
+int lgps_ubx_build_valset_item(uint8_t *buf, size_t buf_len_bytes, uint8_t layers, uint32_t key,
+			       const uint8_t *value, uint8_t value_len)
+{
+	uint8_t payload[LGPS_UBX_CFG_HEADER_LEN + 4U + LGPS_UBX_CFG_VALUE_MAX_LEN];
+
+	if ((buf == NULL) || (value == NULL)) {
+		return -EINVAL;
+	}
+
+	/* Section 3.10.5.1: a layers mask without a target layer is answered with
+	 * UBX-ACK-NAK and nothing is applied - catch it here instead of on the wire.
+	 */
+	if ((layers & LGPS_UBX_LAYER_ALL) == 0U) {
+		return -EINVAL;
+	}
+
+	if ((value_len == 0U) || (value_len > LGPS_UBX_CFG_VALUE_MAX_LEN)) {
+		return -EINVAL;
+	}
+
+	memset(payload, 0, sizeof(payload));
+	payload[CFG_OFF_VERSION] = 0U;
+	payload[CFG_OFF_LAYERS] = layers;
+	put_le32(&payload[CFG_OFF_KEY], key);
+	memcpy(&payload[CFG_OFF_VALUE], value, value_len);
+
+	return lgps_ubx_build(buf, buf_len_bytes, LGPS_UBX_CLASS_CFG, LGPS_UBX_ID_CFG_VALSET,
+			      payload, (uint16_t)((size_t)CFG_OFF_VALUE + (size_t)value_len));
+}
+
+int lgps_ubx_build_valget_item(uint8_t *buf, size_t buf_len_bytes, uint8_t layer, uint32_t key)
+{
+	uint8_t payload[LGPS_UBX_CFG_HEADER_LEN + 4U] = {0};
+
+	if (buf == NULL) {
+		return -EINVAL;
+	}
+
+	/* Section 3.10.4.1: only 0 (RAM), 1 (BBR), 2 (Flash) and 7 (default) are
+	 * defined; any other value is answered with UBX-ACK-NAK.
+	 */
+	if ((layer != LGPS_UBX_VALGET_LAYER_RAM) && (layer != LGPS_UBX_VALGET_LAYER_BBR) &&
+	    (layer != LGPS_UBX_VALGET_LAYER_FLASH) && (layer != LGPS_UBX_VALGET_LAYER_DEFAULT)) {
+		return -EINVAL;
+	}
+
+	payload[CFG_OFF_VERSION] = 0U;
+	payload[CFG_OFF_LAYERS] = layer;
+	/* position stays 0: start from the first key-value pair. */
+	put_le32(&payload[CFG_OFF_KEY], key);
+
+	return lgps_ubx_build(buf, buf_len_bytes, LGPS_UBX_CLASS_CFG, LGPS_UBX_ID_CFG_VALGET,
+			      payload, (uint16_t)sizeof(payload));
+}
+
+int lgps_ubx_decode_ack(const struct lgps_ubx_parser *parser, bool *accepted, uint8_t *msg_class,
+			uint8_t *msg_id)
+{
+	if ((parser == NULL) || (accepted == NULL) || (msg_class == NULL) || (msg_id == NULL)) {
+		return -EINVAL;
+	}
+
+	if ((parser->msg_class != LGPS_UBX_CLASS_ACK) || (parser->payload_len != 2U)) {
+		return -EINVAL;
+	}
+
+	if (parser->msg_id == LGPS_UBX_ID_ACK_ACK) {
+		*accepted = true;
+	} else if (parser->msg_id == LGPS_UBX_ID_ACK_NAK) {
+		*accepted = false;
+	} else {
+		return -EINVAL;
+	}
+
+	/* ACK payload is the class and id of the message being acknowledged. */
+	*msg_class = parser->payload[0];
+	*msg_id = parser->payload[1];
+
+	return 0;
+}
+
+int lgps_ubx_decode_valget_u1(const struct lgps_ubx_parser *parser, uint32_t key, uint8_t *value)
+{
+	if ((parser == NULL) || (value == NULL)) {
+		return -EINVAL;
+	}
+
+	if ((parser->msg_class != LGPS_UBX_CLASS_CFG) || (parser->msg_id != LGPS_UBX_ID_CFG_VALGET)) {
+		return -EINVAL;
+	}
+
+	/* version, layer, position u2, then one key and its value. A 4-byte-wide item
+	 * would need 12 bytes; anything shorter than 9 cannot even hold a U1 value.
+	 */
+	if (parser->payload_len < (uint16_t)(CFG_OFF_VALUE + 1U)) {
+		return -EINVAL;
+	}
+
+	if (get_le32(&parser->payload[CFG_OFF_KEY]) != key) {
+		return -ENOENT;
+	}
+
+	*value = parser->payload[CFG_OFF_VALUE];
+
+	return 0;
 }

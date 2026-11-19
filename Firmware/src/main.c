@@ -352,6 +352,40 @@ static void publish_pdr(void)
 }
 
 /*
+ * Publish the GNSS receive path at the 1 Hz telemetry cadence.
+ *
+ * Everything here is read from the snapshot the caller already built, so this
+ * adds no bus traffic and no locking: the counters are atomic on the ISR side
+ * and thread-written on the GNSS side (see gnss.h).
+ */
+static void publish_gnss(const struct lgps_telemetry_snapshot *snap)
+{
+	struct lgps_ble_telem_gnss gnss = {
+		.state = (uint8_t)snap->gnss_state,
+		.fix_type = snap->fix.fix_type,
+		.satellites = snap->fix.satellites,
+		.pdop_1e2 = snap->fix.pdop_1e2,
+		.age_ms = snap->gnss_age_ms,
+		.rx_bytes = snap->gnss_counters.rx_bytes,
+		.ubx_frames = snap->gnss_counters.ubx_frames,
+		.ubx_bad_checksum = snap->gnss_counters.ubx_bad_checksum,
+		.nmea_starts = snap->gnss_counters.nmea_starts,
+		.rx_dropped = snap->gnss_counters.rx_dropped,
+		.baud = lgps_gnss_baud(),
+	};
+
+	if (snap->fix.valid) {
+		gnss.flags |= LGPS_BLE_TELEM_GNSS_FLAG_FIX_VALID;
+	}
+
+	if (snap->fix.utc_valid) {
+		gnss.flags |= LGPS_BLE_TELEM_GNSS_FLAG_UTC_VALID;
+	}
+
+	lgps_ble_publish_gnss(&gnss);
+}
+
+/*
  * One step detector update per IMU sample. Steps are only counted while the
  * device is moving (ZUPT unlocked); the detector itself additionally enforces a
  * 260 ms minimum interval.
@@ -504,6 +538,7 @@ int main(void)
 				 * device stands after a pause in walking.
 				 */
 				publish_pdr();
+				publish_gnss(snap);
 			}
 		}
 

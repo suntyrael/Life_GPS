@@ -42,6 +42,7 @@ fun GnssStatusScreen(
     onBack: () -> Unit,
 ) {
     val gnss by repo.gnss.collectAsStateWithLifecycle()
+    val link by repo.gnssLink.collectAsStateWithLifecycle()
     val device by repo.device.collectAsStateWithLifecycle()
 
     val fixColor = if (gnss.fix) Green else Red
@@ -96,6 +97,31 @@ fun GnssStatusScreen(
                 }
             }
 
+            /* Receive path, i.e. "is the receiver talking at all" (telemetry 0x01).
+             * Kept above the solution on purpose: when nothing works, these five
+             * counters say which of the five causes it is.
+             */
+            item {
+                val linkColor = when {
+                    !link.received -> TextDim
+                    link.ubxFrames > 0 -> Green
+                    link.badChecksum > 0 -> Red
+                    link.rxBytes > 0 -> Amber
+                    else -> Red
+                }
+                CardBlock("接收链路（UBX / NMEA）") {
+                    MetricRow("判定", link.verdict, linkColor)
+                    MetricRow("状态机", link.state, Cyan)
+                    MetricRow("接收字节", "${link.rxBytes}")
+                    MetricRow("UBX 帧", "${link.ubxFrames}", if (link.ubxFrames > 0) Green else TextDim)
+                    MetricRow("校验错误", "${link.badChecksum}", if (link.badChecksum > 0) Red else TextDim)
+                    MetricRow("NMEA 起始符计数", "${link.nmeaStarts}")
+                    MetricRow("环形丢字节", "${link.rxDropped}", if (link.rxDropped > 0) Amber else TextDim)
+                    MetricRow("波特率", if (link.baud > 0) "${link.baud} 8N1" else "—")
+                    MetricRow("PVT 龄期", if (link.received) "${link.ageMs} ms" else "—")
+                }
+            }
+
             item {
                 CardBlock("位置 / 运动") {
                     MetricRow("纬度", if (gnss.fix) fmtSix(gnss.latitude) else "—")
@@ -142,7 +168,7 @@ fun GnssStatusScreen(
 
             item {
                 Text(
-                    "数值来自 Status 帧的 gnss_state / satellites / pdop / 位置字段；单星 C/N0、仰角方位与 TTFF 不在 v1 帧内，因此显示 “—”，不伪造。",
+                    "定位数值来自 Status 帧的 gnss_state / satellites / pdop / 位置字段；接收链路卡片来自 1 Hz 遥测组 0x01（rx/ubx/ckerr/nmea/丢字节/波特率）。单星 C/N0、仰角方位与 TTFF 仍不在当前帧内，因此显示 “—”，不伪造。",
                     color = TextDim,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(bottom = 20.dp),

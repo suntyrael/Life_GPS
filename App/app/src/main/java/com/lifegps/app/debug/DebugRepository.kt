@@ -13,6 +13,11 @@ import kotlinx.coroutines.flow.StateFlow
 interface DebugRepository {
     val device: StateFlow<DeviceSummary>
     val gnss: StateFlow<GnssStatus>
+
+    /** GNSS receive-path counters (telemetry group 0x01); the solution stays in
+     *  [gnss]. [GnssLinkInfo.received] is false until the first packet arrives.
+     */
+    val gnssLink: StateFlow<GnssLinkInfo>
     val imu: StateFlow<ImuStatus>
     val mag: StateFlow<MagStatus>
     val baro: StateFlow<BaroStatus>

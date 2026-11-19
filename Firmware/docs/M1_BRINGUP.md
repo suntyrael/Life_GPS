@@ -22,7 +22,7 @@
 | 电源状态机 | `src/power/power_sm.c` | 长按 8 s → 关机灯语 → `sys_poweroff()`；KEY1 短按 = POI 打点请求；KEY2 短按 = 高精模式标志 |
 | 看门狗 | `src/power/wdt.c` | WDT30 30 s，分层喂狗（主循环线程 + GNSS 线程，每个 5 s 窗口各签到至少一次才喂；窗口结束即清掩码） |
 | 电池 | `src/power/battery.c` | SAADC AIN4（P1.11）；两段标定：分压实测 0.2861（`LGPS_BATT_CAL_PACK_UV/TAP_UV`）+ ADC 通道 +4.18 % 标度误差（`LGPS_BATT_ADC_GAIN_PPM`），2.5–4.4 V 误差 ≤ ±2 mV；**不输出百分比**（放电曲线未实测） |
-| GNSS | `src/gnss/gnss.c`, `src/gnss/ubx.c` | UARTE20 38400（M10 出厂默认，与设备树 `current-speed` 一致）、UBX-CFG-MSG 打开 NAV-PVT、解析 NAV-PVT、冷启动 60 s → 首定 → 星历保持 35 s → PMREQ 备份 + 断电 → 退避 120/300/900 s |
+| GNSS | `src/gnss/gnss.c`, `src/gnss/ubx.c` | UARTE20 38400（M10 出厂默认，与设备树 `current-speed` 一致）、**UBX-CFG-VALSET 打开 NAV-PVT（key `0x20910007`，RAM 层）+ CFG-VALGET 回读确认**、解析 NAV-PVT、冷启动 60 s → 首定 → 星历保持 35 s → PMREQ 备份 + 断电 → 退避 120/300/900 s；ACK-NAK 以 WRN 打印（class/id 取自 ACK 载荷） |
 | IMU | `src/imu/lsm6dsr.c` | LSM6DSR 软复位、WHO_AM_I=0x6B 校验、±4 g/±1000 dps @26 Hz 高性能（数据就绪位驱动采样）、INT1=DRDY；sensor hub 探测 LIS2MDL/BMP388 并配置 12 字节串流 |
 | 导航数学 | `src/nav/nav.c` | 机体坐标旋转、ZUPT 双判据（σ²<0.005 g²、‖ω‖<0.08 rad/s、持续 10 s）、Weinberg 步长、磁异常判据 |
 | 存储 | `src/storage/flash_ring.c` | W25Q512 暂存环形：16×4 KB 扇区、16 B 扇头（magic/seq/erase_count/commit_flags/CRC16）、127 条 32 B 记录/扇区、写满轮转 + 擦除 |
@@ -160,7 +160,7 @@ grep 'lgps_tele: GNSS' log.txt | sed -n 's/.*fix=\([0-9]*\).*/\1/p'
 | WDT 不再刷屏 | ✅ 已修 | 监督窗口生效：`WDT30 armed: ... 5000 ms supervision window` 之后无 `withheld` |
 | `keys=1,1`；自检 `up=0 down=0` | ⚠️ 硬件（见下） | 网表：`SW7.1` 走 R20 到 P1.06，而 **`SW7.2`/`SW7.3` 接地**；`SW1.1` 走 R21 到 P1.08，**`SW1.2`/`SW1.3` 接地**。4 脚轻触开关内部 1-2 与 3-4 各自短接，因此信号脚 1 与接地脚 2 是**同一侧，长期短地** → 按键永远读 0，按与不按没有区别。这是原理图/BOM 层面的接线错误，固件无法修 |
 | 自检结论已细化 | ✅ 改进 | 现在打印 `dt_flags` 与两种**显式**上下拉读数，可区分"外部拉低 / 设备树标志丢失 / 驱动无效"三种情况 |
-| GNSS 全程 `age_ms=0` | ✅ 已加诊断 | 新增 `rx/ubx/ckerr/nmea` 计数：`rx=0` = 模块完全没说话；`nmea>0 ubx=0` = 只吐 NMEA、CFG-MSG 未被接受；`ckerr>0` = 波特率/连线问题。同时把 CFG-MSG 改为**每 2 s 重发、收到第一个 UBX 帧或 10 s 后停止**（模块上电 >100 ms 才启动，首次配置容易被忽略） |
+| GNSS 全程 `age_ms=0` | ✅ 已修（根因） | `UBX-CFG-MSG (0x06 0x01)` **不在 M10 的 UBX-CFG 章节里**（UBX-21035062 R03 §3.10 只有 CFG-CFG / CFG-RST / CFG-VALDEL / CFG-VALGET / CFG-VALSET；§4.10 表 58 注明部分 legacy CFG 报文在某些产品上不可用），所以 NAV-PVT 从未被打开，模块只按出厂配置吐 NMEA。现改为 `CFG-VALSET`（key `0x20910007` = NAV-PVT on UART1，RAM 层）+ `CFG-VALGET` 回读，并新增 `ACK-ACK/ACK-NAK` 分级日志与新增 `rx_dropped` / `baud` 计数（新增遥测组 `0x01 GNSS`，见 `BLE_Wire_v1.md` §5.1） |
 | `bat_mv=134…161`，缓慢上升 | ⚠️ 待确认（大概率无电池） | 140 mV 反算：引脚 ≈26 mV、raw ≈89 计数，符合"分压端没有电池、只剩漏电给 C14 充电"。已在日志中加入 `raw/vref/vpin` 与"低于 2500 mV 视为无电池/分压开路"的一次性告警 |
 | `sensor hub probe 0x00/0x00` 但 MAG 有数据 | ✅ 观察正确，待定位 | 12 字节 burst `35 ff 07 ff 27 00 | 00 00 00 00 00 00` 说明 **LIS2MDL 确实在出数（-203/-249/39 LSB ≈ -30 µT）**，BMP388 三个压力字节全 0。1 字节探测路径仍返回 0，需下一版日志确认是否为读时序问题；BMP388 更像 U4 未贴件或地址/焊接问题 |
 | `reset: software (0x00000002)` | ℹ️ 正常 | 上一轮 `sys_poweroff()` 之后的复位路径 |

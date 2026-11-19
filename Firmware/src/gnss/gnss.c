@@ -25,10 +25,18 @@ LOG_MODULE_REGISTER(lgps_gnss, LOG_LEVEL_INF);
 #define GNSS_RX_RING_SIZE 512
 #define GNSS_PVT_LOG_PERIOD_MS 5000U
 
-/* UBX-CFG-MSG (0x06 0x01) payload: msgClass, msgID, rate (interface description). */
-#define UBX_CFG_MSG_CLASS 0x06U
-#define UBX_CFG_MSG_ID 0x01U
-#define UBX_RATE_ON 0x01U
+/*
+ * Configuration path: UBX-CFG-VALSET / UBX-CFG-VALGET.
+ *
+ * The previous code sent UBX-CFG-MSG (0x06 0x01), which the M10 does not
+ * document at all - the UBX-CFG chapter of UBX-21035062 R03 holds only CFG-CFG,
+ * CFG-RST, CFG-VALDEL, CFG-VALGET and CFG-VALSET (section 3.10), and section
+ * 4.10 warns that some legacy UBX-CFG messages are unavailable on some products.
+ * A receiver that ignores the frame keeps streaming the factory NMEA set and
+ * never emits NAV-PVT, which is exactly what the M1 logs showed (nmea>0, ubx=0,
+ * age_ms=0).
+ */
+#define UBX_CFG_LAYERS LGPS_UBX_LAYER_RAM
 
 static const struct device *gnss_uart = DEVICE_DT_GET(DT_NODELABEL(uart20));
 
@@ -42,6 +50,19 @@ static uint32_t last_pvt_log_ms;
 static uint32_t next_reconfig_ms;
 static uint32_t current_baud = LGPS_GNSS_BAUD_DEFAULT;
 static bool baud_fallback_done;
+
+/*
+ * True once CFG-VALGET read the NAV-PVT output rate back as non-zero.
+ *
+ * This is the state the state machine actually cares about: not "we sent the
+ * command" but "the receiver reports the rate". A UBX-ACK-ACK alone would also
+ * mean "received", while turning NAV-PVT on has failed before, and an ACK-NAK
+ * would otherwise look like progress because it is still a UBX frame.
+ */
+static bool nav_pvt_rate_verified;
+
+/* One-shot warning per cold-start window; reset together with the verification. */
+static bool nav_pvt_rate_failure_logged;
 
 /*
  * Receive-path counters, split by the thread that owns them.
@@ -82,6 +103,12 @@ void lgps_gnss_get_counters(struct lgps_gnss_counters *out)
 	out->ubx_frames = ubx_frames;
 	out->ubx_bad_checksum = ubx_bad_checksum;
 	out->nmea_starts = (uint32_t)atomic_get(&isr_nmea_starts);
+	out->rx_dropped = (uint32_t)atomic_get(&isr_rx_dropped);
+}
+
+uint32_t lgps_gnss_baud(void)
+{
+	return current_baud;
 }
 
 static uint32_t rx_bytes_total(void)
@@ -212,19 +239,19 @@ static int gnss_uart_send(const uint8_t *data, size_t len_bytes)
 	return 0;
 }
 
-static int gnss_configure_output(void)
+static int gnss_enable_nav_pvt(void)
 {
-	/* Keep the receiver's default 1 Hz navigation rate and only switch on
-	 * UBX-NAV-PVT, which carries everything the trajectory record needs.
-	 */
-	static const uint8_t payload[3] = { LGPS_UBX_CLASS_NAV, LGPS_UBX_ID_NAV_PVT, UBX_RATE_ON };
-	uint8_t frame[LGPS_UBX_HEADER_LEN + 3U + LGPS_UBX_TRAILER_LEN];
+	/* Section 3.10.5.1: version 0, layers, 2 reserved bytes, then key + value. */
+	static const uint8_t rate_on = 1U;
+	uint8_t frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_CFG_HEADER_LEN + 4U + 1U +
+		      LGPS_UBX_TRAILER_LEN];
 	int ret;
 
-	ret = lgps_ubx_build(frame, sizeof(frame), UBX_CFG_MSG_CLASS, UBX_CFG_MSG_ID, payload,
-			     sizeof(payload));
+	ret = lgps_ubx_build_valset_item(frame, sizeof(frame), UBX_CFG_LAYERS,
+					LGPS_UBX_CFG_KEY_MSGOUT_NAV_PVT_UART1, &rate_on,
+					(uint8_t)sizeof(rate_on));
 	if (ret < 0) {
-		LOG_ERR("UBX-CFG-MSG build failed (%d)", ret);
+		LOG_ERR("UBX-CFG-VALSET build failed (%d)", ret);
 		return ret;
 	}
 
@@ -235,7 +262,37 @@ static int gnss_configure_output(void)
 		return ret;
 	}
 
-	LOG_INF("sent UBX-CFG-MSG: NAV-PVT on port 1 at 1 Hz (%d bytes)", len);
+	LOG_INF("sent UBX-CFG-VALSET: NAV-PVT UART1 rate = 1 (key 0x%08x, RAM layer, %d bytes)",
+		LGPS_UBX_CFG_KEY_MSGOUT_NAV_PVT_UART1, len);
+
+	return 0;
+}
+
+/*
+ * Ask the receiver what it thinks the NAV-PVT output rate is.
+ *
+ * The answer, not the ACK, is what tells us the link works: it proves the key id
+ * this firmware uses is the one the receiver knows (our interface-description
+ * copy redacts that row's name) and that the value really is in the RAM layer.
+ */
+static int gnss_request_rate_readback(void)
+{
+	uint8_t frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_CFG_HEADER_LEN + 4U + LGPS_UBX_TRAILER_LEN];
+	int ret;
+
+	ret = lgps_ubx_build_valget_item(frame, sizeof(frame), LGPS_UBX_VALGET_LAYER_RAM,
+					LGPS_UBX_CFG_KEY_MSGOUT_NAV_PVT_UART1);
+	if (ret < 0) {
+		LOG_ERR("UBX-CFG-VALGET build failed (%d)", ret);
+		return ret;
+	}
+
+	int len = ret;
+
+	ret = gnss_uart_send(frame, (size_t)len);
+	if (ret < 0) {
+		return ret;
+	}
 
 	return 0;
 }
@@ -310,6 +367,61 @@ static void handle_nav_pvt(const struct lgps_nav_pvt *pvt)
 	}
 }
 
+/*
+ * UBX-ACK (section 3.9): ACK-ACK confirms the receiver understood our message,
+ * ACK-NAK says it will not apply it. The NAK is the interesting one - it is the
+ * only on-wire evidence that a key or a message is unsupported on this product,
+ * and the previous code logged both at debug level and printed the payload of
+ * the frame as if it were the class id.
+ */
+static void handle_ubx_ack(void)
+{
+	bool accepted = false;
+	uint8_t ack_class = 0U;
+	uint8_t ack_id = 0U;
+
+	if (lgps_ubx_decode_ack(&parser, &accepted, &ack_class, &ack_id) != 0) {
+		return;
+	}
+
+	if (accepted) {
+		LOG_DBG("UBX-ACK-ACK for class 0x%02x id 0x%02x", ack_class, ack_id);
+		return;
+	}
+
+	LOG_WRN("UBX-ACK-NAK for class 0x%02x id 0x%02x: the receiver refused it "
+		"(unknown key, bad layer, or message not available on this product)",
+		ack_class, ack_id);
+}
+
+/*
+ * UBX-CFG-VALGET response (section 3.10.4.1): version, layer, position, then
+ * key/value pairs. We request one U1 key, so the answer is 9 bytes.
+ */
+static void handle_cfg_valget(void)
+{
+	uint8_t value = 0U;
+
+	if (lgps_ubx_decode_valget_u1(&parser, LGPS_UBX_CFG_KEY_MSGOUT_NAV_PVT_UART1, &value) != 0) {
+		LOG_WRN("CFG-VALGET response without key 0x%08x (%u payload bytes)",
+			LGPS_UBX_CFG_KEY_MSGOUT_NAV_PVT_UART1, (unsigned int)parser.payload_len);
+		return;
+	}
+
+	LOG_INF("CFG-VALGET readback: NAV-PVT UART1 rate = %u (key 0x%08x)", value,
+		LGPS_UBX_CFG_KEY_MSGOUT_NAV_PVT_UART1);
+
+	if (value == 0U) {
+		nav_pvt_rate_verified = false;
+		return;
+	}
+
+	if (!nav_pvt_rate_verified) {
+		nav_pvt_rate_verified = true;
+		LOG_INF("NAV-PVT output confirmed by the receiver, UBX configuration path works");
+	}
+}
+
 static void gnss_process_rx(void)
 {
 	uint8_t byte;
@@ -336,8 +448,10 @@ static void gnss_process_rx(void)
 				handle_nav_pvt(&pvt);
 			}
 		} else if (parser.msg_class == LGPS_UBX_CLASS_ACK) {
-			LOG_DBG("UBX-ACK id 0x%02x for class 0x%02x", parser.msg_id,
-				parser.payload_len > 0U ? parser.payload[0] : 0U);
+			handle_ubx_ack();
+		} else if (parser.msg_class == LGPS_UBX_CLASS_CFG &&
+			   parser.msg_id == LGPS_UBX_ID_CFG_VALGET) {
+			handle_cfg_valget();
 		}
 	}
 }
@@ -388,7 +502,7 @@ static void gnss_power_up(void)
 	k_msleep(100);
 
 	/* Drop whatever the previous power cycle left in the ring: replaying stale
-	 * bytes re-enters the parser mid-frame and shifts the first CFG-MSG / NAV-PVT.
+	 * bytes re-enters the parser mid-frame and shifts the first VALSET / NAV-PVT.
 	 */
 	ring_buf_reset(&gnss_rx_ring);
 	lgps_ubx_parser_reset(&parser);
@@ -401,9 +515,18 @@ static void gnss_power_up(void)
 	 */
 	uart_irq_rx_enable(gnss_uart);
 
+	/*
+	 * The RAM layer is the only layer this firmware writes, and RXM-PMREQ clears
+	 * it (integration manual section 3.6.3.2: "Entering the software standby mode
+	 * clears the RAM memory including the receiver configuration"), so every power
+	 * cycle starts with NAV-PVT off again and the readback has to be redone.
+	 */
+	nav_pvt_rate_verified = false;
+	nav_pvt_rate_failure_logged = false;
 	next_reconfig_ms = 0U;
 	baud_probe_base_bytes = rx_bytes_total();
-	(void)gnss_configure_output();
+	(void)gnss_enable_nav_pvt();
+	(void)gnss_request_rate_readback();
 
 	LOG_INF("GNSS RX counters: rx_bytes=%u ubx=%u ckerr=%u nmea=%u ring_drop=%u baud=%u",
 		rx_bytes_total(), ubx_frames, ubx_bad_checksum,
@@ -462,9 +585,14 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 		switch (gnss_state) {
 		case LGPS_GNSS_STATE_COLD_START: {
 			/*
-			 * A receiver that finished booting after our first CFG-MSG ignores it
-			 * and keeps streaming NMEA only. Re-send every 2 s for the first 10 s
-			 * until any UBX frame arrives, then stop.
+			 * A receiver that finished booting after our first VALSET ignores it and
+			 * keeps streaming the factory NMEA set. Re-send every 2 s for the first
+			 * 10 s and keep asking for the readback until the receiver reports a
+			 * non-zero NAV-PVT rate.
+			 *
+			 * The retry condition used to be "no UBX frame yet", which stopped as
+			 * soon as any ACK arrived - including an ACK-NAK, i.e. exactly the case
+			 * where the configuration did not take.
 			 */
 			/*
 			 * Bytes arriving without a single '$' and without a UBX sync mean the
@@ -487,10 +615,23 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 				next_reconfig_ms = 0U;
 			}
 
-			if ((ubx_frames == 0U) && (elapsed < 10000U) &&
+			if (!nav_pvt_rate_verified && (elapsed < 10000U) &&
 			    (lgps_diag_uptime_ms() >= next_reconfig_ms)) {
 				next_reconfig_ms = lgps_diag_uptime_ms() + 2000U;
-				(void)gnss_configure_output();
+				(void)gnss_enable_nav_pvt();
+				(void)gnss_request_rate_readback();
+			}
+
+			/* One-shot report: after 10 s of retrying, either the key is wrong for
+			 * this product or the receiver never answered. Say so instead of
+			 * letting the cold start run the remaining 50 s in silence.
+			 */
+			if (!nav_pvt_rate_verified && (elapsed >= 10000U) &&
+			    !nav_pvt_rate_failure_logged) {
+				nav_pvt_rate_failure_logged = true;
+				LOG_WRN("NAV-PVT output rate never confirmed after 10 s: NAV-PVT stays off, "
+					"only NMEA will be received (ubx=%u nmea=%u)",
+					ubx_frames, (uint32_t)atomic_get(&isr_nmea_starts));
 			}
 
 			if (elapsed >= LGPS_GNSS_COLD_START_TIMEOUT_MS) {
