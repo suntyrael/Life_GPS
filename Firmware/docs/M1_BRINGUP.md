@@ -101,7 +101,7 @@
 | | `acc_lsb` `gyro_lsb` | 原始 16 位计数 | 精确值，便于换算/复核 |
 | | `acc_g` `gyro_dps` | `LSB × 0.122 mg` / `× 35 mdps` | 灵敏度取自 DS11976 Table 3 |
 | `MAG` | `lsb` / `ut` | LIS2MDL 0x68..0x6D | `1 LSB = 1.5 mG = 0.15 µT`（LIS2MDL Table 3 `So`） |
-| `BARO` | `press_pa` `temp_C` | BMP388 0x04..0x09 + TPG 系数 0x31..0x45 | 已做补偿（DS BST-BMP388-DS001-07 §9.2/§9.3）：Pa / °C 是物理值；同一行保留 `press_raw` `temp_raw` 便于复核。系数读不到时 `press_pa`/`temp_C` 打 `---` 并注明 `no TPG coefficients` |
+| `BARO` | `press_pa` `temp_C` `rel_alt_mm` | BMP388 0x04..0x09 + TPG 系数 0x31..0x45 + 基准扇区 17 | 已做补偿（DS BST-BMP388-DS001-07 §9.2/§9.3）：Pa / °C 是物理值；`rel_alt_mm` 是相对基准的高度（无基准时 `---`，见 `lifegps/baro.h`）。同一行保留 `press_raw` `temp_raw` 便于复核 |
 | `SYS` | `bat_mv` | SAADC AIN4 + 分压实测标定 + ADC 标度修正 | 每 10 s 采样一次，期间沿用缓存 |
 | | `chg` | SGM4056 `/CHG` | `1` = 正在充电 |
 | | `keys` | 消抖后的电平 | `K1,K2`，`1` = 按下（用来看按键是否卡死） |
@@ -120,7 +120,7 @@ grep 'lgps_tele: GNSS' log.txt | sed -n 's/.*fix=\([0-9]*\).*/\1/p'
 [00:00:08.210] <inf> lgps_tele: GNSS st=COLD_START fix=0 sats=0 pdop_e2=--- lat_e7=--- lon_e7=--- hmsl_mm=--- spd_cms=--- hdg_ddeg=--- utc_s=--- age_ms=0
 [00:00:08.225] <inf> lgps_tele: IMU id=0x6b acc_lsb=115,-25,9016 gyro_lsb=19,-13,-151 acc_g=0.014,-0.003,1.100 gyro_dps=0.67,-0.46,-5.29
 [00:00:08.240] <inf> lgps_tele: MAG lsb=1234,-567,890 ut=185.1,-85.0,133.5
-[00:00:08.255] <inf> lgps_tele: BARO press_pa=101177 temp_C=23.00 press_raw=7277088 temp_raw=8535808 (TPG compensated, BMP388 9.2/9.3)
+[00:00:08.255] <inf> lgps_tele: BARO press_pa=101177 temp_C=23.00 rel_alt_mm=--- press_raw=7277088 temp_raw=8535808 (TPG compensated, BMP388 9.2/9.3)
 [00:00:08.270] <inf> lgps_tele: SYS bat_mv=4021 chg=1 keys=0,0 zupt=move var_mg2=30 steps=0 ring_seq=1 ring_rec=0
 ```
 

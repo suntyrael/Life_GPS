@@ -96,6 +96,7 @@ void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 	char utc[16];
 	char imu_txt[10];
 	char mag_txt[10];
+	char baro_txt[10];
 
 	if (snap == NULL) {
 		return;
@@ -166,10 +167,10 @@ void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 			"(attitude not running yet)");
 	}
 
-	LOG_INF("TEMP imu_C=%s mag_C=%s baro=--- (die temperatures; baro needs TPG "
-		"compensation, see BARO)", fmt_cc(imu_txt, sizeof(imu_txt),
-						  snap->imu_temp_cc, snap->imu_temp_valid),
-		fmt_cc(mag_txt, sizeof(mag_txt), snap->mag_temp_cc, snap->mag_temp_valid));
+	LOG_INF("TEMP imu_C=%s mag_C=%s baro_C=%s (die temperatures)",
+		fmt_cc(imu_txt, sizeof(imu_txt), snap->imu_temp_cc, snap->imu_temp_valid),
+		fmt_cc(mag_txt, sizeof(mag_txt), snap->mag_temp_cc, snap->mag_temp_valid),
+		fmt_cc(baro_txt, sizeof(baro_txt), snap->baro_temp_cc, snap->baro_temp_valid));
 
 	if (snap->mag_valid) {
 		LOG_INF("MAG  sensor: lsb=%d,%d,%d ut=%.1f,%.1f,%.1f |B|=%.1f",
@@ -183,11 +184,28 @@ void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 	}
 
 	if (snap->baro_valid) {
-		LOG_INF("BARO raw: press=%u temp=%u (uncompensated, needs TPG)",
-			snap->baro_press_raw, snap->baro_temp_raw);
+		char alt_txt[16];
+
+		if (snap->baro_alt_valid) {
+			(void)snprintk(alt_txt, sizeof(alt_txt), "%d", snap->baro_rel_alt_mm);
+		} else {
+			(void)snprintk(alt_txt, sizeof(alt_txt), "---");
+		}
+
+		if (snap->baro_comp_valid) {
+			LOG_INF("BARO press_pa=%d temp_C=%s rel_alt_mm=%s press_raw=%u temp_raw=%u "
+				"(TPG compensated, BMP388 9.2/9.3)", snap->baro_press_pa,
+				fmt_cc(baro_txt, sizeof(baro_txt), snap->baro_temp_cc,
+				       snap->baro_temp_valid),
+				alt_txt, snap->baro_press_raw, snap->baro_temp_raw);
+		} else {
+			LOG_INF("BARO press_pa=--- temp_C=--- rel_alt_mm=--- press_raw=%u "
+				"temp_raw=%u (raw counts: no TPG coefficients)",
+				snap->baro_press_raw, snap->baro_temp_raw);
+		}
 	} else {
-		LOG_INF("BARO raw: press=--- temp=--- (BMP388 never acknowledged its "
-			"identification read)");
+		LOG_INF("BARO press_pa=--- temp_C=--- rel_alt_mm=--- press_raw=--- temp_raw=--- "
+			"(BMP388 never acknowledged its identification read)");
 	}
 
 	if (snap->bat_valid) {

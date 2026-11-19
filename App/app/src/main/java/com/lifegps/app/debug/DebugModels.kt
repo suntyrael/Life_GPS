@@ -138,11 +138,38 @@ data class MagStatus(
     val anomaly: Boolean,
 )
 
+/**
+ * Barometer state, filled from the `0x04` BARO telemetry packet (1 Hz).
+ *
+ * The four leading fields are the historical ones; the appended ones carry what
+ * the packet makes explicit. [valid] / [tempValid] / [baselineValid] mirror the
+ * packet flags, so a zero [pressureHpa] means "no compensated pressure yet" and
+ * is drawn as "—" instead of 0.0 hPa. `floor` has no firmware source and stays 0.
+ */
 data class BaroStatus(
     val pressureHpa: Float,
     val temperatureC: Float,
     val altitudeM: Float,
     val floor: Int,
+    val valid: Boolean = false,
+    val tempValid: Boolean = false,
+    val baselineHpa: Float = 0f,
+    val baselineAuto: Boolean = false,
+    val relAltM: Float = 0f,
+    val baselineValid: Boolean = false,
+)
+
+/**
+ * Outcome of one BARO_BASELINE (0x42) interaction, rendered by the wizard.
+ *
+ * [supported] is false only when the firmware refused the opcode itself
+ * (`0x03` NOT_SUPPORTED / `0x02` UNKNOWN_OPCODE): the card then keeps its buttons
+ * disabled instead of offering a command that cannot work on this firmware.
+ */
+data class BaroBaselineResult(
+    val ok: Boolean,
+    val supported: Boolean,
+    val message: String,
 )
 
 data class FlashStatus(

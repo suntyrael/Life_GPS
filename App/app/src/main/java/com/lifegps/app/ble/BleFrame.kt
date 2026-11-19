@@ -418,6 +418,51 @@ object GnssTelemetryOffset {
     const val FLAG_UTC_VALID = 0x02
 }
 
+/**
+ * BMP388 barometer telemetry (`BLE_Wire_v1.md` §5.1, telemetry id 0x04, 16 bytes).
+ *
+ * Every value is already compensated on the device: [pressPa] is a real pressure in
+ * pascals and [relAltMm] is the height above the baseline the firmware holds, both 0
+ * when the matching validity flag is clear. The App deliberately does not turn the
+ * uncompensated `baro_press_raw` / `baro_temp_raw` of the Status frame into hPa —
+ * without the TPG coefficients that would be a plausible-looking wrong number.
+ */
+data class BaroTelemetry(
+    val pressPa: Long,
+    val relAltMm: Int,
+    val tempCc: Int,
+    val flags: Int,
+    val baselinePaQ4: Long,
+) {
+    val pressValid: Boolean get() = flags and BaroTelemetryOffset.FLAG_PRESS_VALID != 0
+    val tempValid: Boolean get() = flags and BaroTelemetryOffset.FLAG_TEMP_VALID != 0
+    val baselineValid: Boolean get() = flags and BaroTelemetryOffset.FLAG_BASELINE_VALID != 0
+    val baselineAuto: Boolean get() = flags and BaroTelemetryOffset.FLAG_BASELINE_AUTO != 0
+
+    val pressureHpa: Float get() = pressPa / 100f
+    val temperatureC: Float get() = tempCc / 100f
+    val relAltM: Float get() = relAltMm / 1000f
+
+    /** `baseline_pa_q4` is Pa × 16 (`BLE_Wire_v1.md` §6.5), i.e. 1/1600 hPa per count. */
+    val baselineHpa: Float get() = baselinePaQ4 / 16f / 100f
+}
+
+/** Offsets of the `0x04` BARO telemetry payload (`BLE_Wire_v1.md` §5.1). */
+object BaroTelemetryOffset {
+    const val PRESS_PA = 0
+    const val REL_ALT_MM = 4
+    const val TEMP_CC = 8
+    const val FLAGS = 10
+    const val RESERVED = 11
+    const val BASELINE_PA_Q4 = 12
+    const val SIZE = 16
+
+    const val FLAG_PRESS_VALID = 0x01
+    const val FLAG_TEMP_VALID = 0x02
+    const val FLAG_BASELINE_VALID = 0x04
+    const val FLAG_BASELINE_AUTO = 0x08
+}
+
 /** Decoded Log notification (`BLE_Wire_v1.md` §5). */
 data class LogPacket(
     val level: Int,
@@ -624,6 +669,18 @@ object BleFrame {
             nmeaStarts = u32(payload, GnssTelemetryOffset.NMEA_STARTS),
             rxDropped = u32(payload, GnssTelemetryOffset.RX_DROPPED),
             baud = u32(payload, GnssTelemetryOffset.BAUD).toInt(),
+        )
+    }
+
+    /** BARO telemetry payload, 16 bytes (see [BaroTelemetryOffset]). */
+    fun parseBaroTelemetry(payload: ByteArray): BaroTelemetry? {
+        if (payload.size < BaroTelemetryOffset.SIZE) return null
+        return BaroTelemetry(
+            pressPa = u32(payload, BaroTelemetryOffset.PRESS_PA),
+            relAltMm = i32(payload, BaroTelemetryOffset.REL_ALT_MM),
+            tempCc = i16(payload, BaroTelemetryOffset.TEMP_CC),
+            flags = u8(payload, BaroTelemetryOffset.FLAGS),
+            baselinePaQ4 = u32(payload, BaroTelemetryOffset.BASELINE_PA_Q4),
         )
     }
 

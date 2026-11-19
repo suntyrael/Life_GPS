@@ -10,7 +10,7 @@
 | 分支 | `diag/hub-bmp388`（HEAD `271826e`；`main` 由另一会话推进，未见冲突） |
 | CI | `firmware` success（75/75 twister）、`app` success；最近一次 FLASH 241464 B / RAM 55440 B |
 | 硬件 | Main_V0.2，U12 = **LSM6DSRTR**（不是网表写的 LSM6DSV16X），U3 = LIS2MDL，U4 = BMP388 |
-| **U4(BMP388) 现状** | **I2C 无 ACK**（`0x76`/`0x77` 都试过，`STATUS_MASTER(0x39)` = `nack(s0)=1`）。气压相关功能全部被它挡住，需硬件侧先量 `U4.10`(VDD)/`U4.1`(VDDIO)=1.9 V、`U4.6`(CSB) 应为高、`U4.5`(SDO) 对地导通、确认贴件 |
+| **U4(BMP388) 现状** | **已恢复**：重新焊接后 `0x76` 有 ACK（`CHIP_ID=0x50`），TPG 系数已能通过 hub 读出。首轮数据：气压原值 ~7.27e6、温度原值 ~8.53e6，低 5/7 位恒为 0 —— 这是 `osr_p=x8`/`osr_t=x2` 的有效位（16+log2(osr)），不是驱动 bug |
 
 已落地（不要重复实现）：IMU 采样含裸片温度、重力/线性加速度拆分、磁力计温度、Status 帧 82→100 字节、
 App 侧 sensor/body 坐标系分离（±1 g 抖动已修）、hub 状态位解码、诊断收进 Kconfig。
@@ -25,7 +25,9 @@ App 侧 sensor/body 坐标系分离（±1 g 抖动已修）、hub 状态位解�
 4. **Status 帧里 `acc_lsb/gyro_lsb` 是传感器系**，`gravity_mg/linear_mg` 与 Telemetry `0x02` 的 `acc_lsb` 是**体坐标系**。
    同一 UI 字段不得跨坐标系写入（这正是 −1 g/+1 g 跳动的根因）。
 5. **hub 周期被 IMU data-ready 钳制在 26 Hz**（DS11976 Table 373），`SHUB_ODR` 写 52 Hz 不生效。
-6. 温度/气压：BMP388 只有未补偿 24 位原值；换算成 hPa/°C 需要读它的标定系数（`0x30..0x57`，DS 第 4.3.21 节 / 第 9.1 节给了浮点参考实现），**尚未实现**。
+6. 温度/气压：BMP388 的 TPG 补偿**已实现**（`Firmware/src/imu/bmp388.c`：读 `0x31..0x45` 的 21 字节系数，
+   再按 DS §9.2/§9.3 的参考实现算 Pa/°C）；单测 `Firmware/tests/lifegps.bmp388`。
+   原值不是 20 位、不能右移 4 位（§3.10 是 24 位）；`0x800000` 也**不是** 0 °C（那是寄存器复位值，不是刻度）。
 
 ## 3. 待做（按优先级）
 
@@ -59,8 +61,8 @@ BARO_BASELINE req  {u8 action, u32 baseline_pa_q4}  action: 0=取当前为基准
 - 加速度计零偏：LSM6DSR `X/Y/Z_OFS_USR`（`0x73/0x74/0x75`，主页面直接可写），
   `CTRL6_C(0x15).USR_OFF_W` 选择权重（0 = 2⁻¹⁰ g/LSB），`CTRL9_XL(0x18).USR_OFF_ON_OUT=1` 打开补偿。
   六面法每个姿态采样得到 `offset_axis = -(measured) / 2`，注意符号与 LSB 权重。
-- 气压基准：`BARO_BASELINE` 只在 U4 复活后才有意义；先实现"取当前压力为基准 + 相对高度"，
-  且必须先把 TPG 补偿（读 `0x30..0x57` 系数、按 BMP388 §3.11 / §9.1 的参考实现）做完。
+- 气压基准：`BARO_BASELINE` 的前置 TPG 补偿**已完成**；剩下的是「取当前压力为基准 + 相对高程」，
+  并且要把 Pa 放进帧（协议改动）。
 
 **系数持久化（新的一个子系统）**：目前 `CONFIG_SETTINGS` 未启用，`prj.conf` 只有 `CONFIG_FLASH_MAP=y`。
 需要决定：启用 `CONFIG_SETTINGS` + `CONFIG_SETTINGS_NVS`（占用一块 flash 分区，注意 `Firmware/docs/PARTITIONS.md`
@@ -76,9 +78,14 @@ BARO_BASELINE req  {u8 action, u32 baseline_pa_q4}  action: 0=取当前为基准
 - `Firmware/docs/M1_BRINGUP.md` 与 `Doc/Hardware/Pinmap_Main_V0.2.md` 仍把 U12 写成 LSM6DSV16X，需另开一次"文档校正"（要单独批准）。
 
 ### P2 BMP388 复活后的收尾
-- `IF_CONF(0x1A)` 的 I²C 看门狗超时显式配置（默认 NVM 1.25 ms short）。
-- TPG 补偿（`0x30..0x57`）+ 真实 hPa/°C 上报 + `BARO_BASELINE`。
-- 把 `BARO raw: press=---` 那行恢复成数值。
+- [x] `IF_CONF(0x1A)` 的 I²C 看门狗超时显式配置（默认 NVM 1.25 ms short；现在读系数前先写 40 ms）。
+- [x] TPG 补偿（系数 `0x31..0x45`）+ 串口遥测的 Pa/°C 上报。
+- [x] `BARO_BASELINE`（0x42）：手动输入 / 取当前，以及 GNSS 条件自动基准（`fixType≥3`、
+      `numSV≥8`、pDOP≤2.0、地速<0.3 m/s，连续 30 s、窗口气压 σ<0.3 hPa，>1 hPa 才重设）。
+- [x] 相对高程：ISA 公式（`Firmware/src/nav/baro.c`），`0x42` 响应与 `0x04` 遥测包都有 `rel_alt_mm`。
+- [x] 基准持久化：独立扇区 17（`Firmware/src/nav/baro_store.c`，20 B 记录 + CRC-16），与标定扇区 16 分开。
+- [x] App：`0x04` BARO 遥测解析 + 气压基准卡片（取当前 / 手动输入 / rel_alt 显示）。
+- [x] 把 `BARO raw: press=---` 那行换成了 `BARO press_pa=… temp_C=… rel_alt_mm=… press_raw=… temp_raw=…`。
 
 ## 4. 验收方式
 

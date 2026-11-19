@@ -38,6 +38,7 @@
 
 #include <generated/lifegps_protocol.h>
 #include <lifegps/ble.h>
+#include <lifegps/baro.h>
 #include <lifegps/ble_frame.h>
 #include <lifegps/ble_uuid.h>
 #include <lifegps/calib.h>
@@ -177,6 +178,7 @@ static uint8_t status_frame[LGPS_BLE_STATUS_SIZE];
 static uint16_t telem_seq_imu;
 static uint16_t telem_seq_pdr;
 static uint16_t telem_seq_gnss;
+static uint16_t telem_seq_baro;
 static uint16_t telem_seq_sat;
 static uint16_t telem_seq_nmea;
 static bool status_frame_valid;
@@ -517,7 +519,6 @@ static uint8_t reply_not_supported(uint8_t opcode)
 	case LGPS_CMD_IMU_SNAPSHOT:
 	case LGPS_CMD_BUTTON_EVENT:
 	case LGPS_CMD_SELFTEST:
-	case LGPS_CMD_BARO_BASELINE:
 	case LGPS_CMD_ERASE_DAY:
 	case LGPS_CMD_FACTORY_RESET:
 	case LGPS_CMD_FLASH_READ:
@@ -536,10 +537,12 @@ static uint8_t cmd_get_caps(uint8_t *payload, size_t capacity, size_t *out_len)
 		.caps = LGPS_BLE_CAP_STATUS_NOTIFY | LGPS_BLE_CAP_LOG_NOTIFY | LGPS_BLE_CAP_POI |
 			LGPS_BLE_CAP_FLASH_INFO | LGPS_BLE_CAP_REBOOT |
 			LGPS_BLE_CAP_DEBUG_UNLOCK | LGPS_BLE_CAP_GNSS_DEBUG | LGPS_BLE_CAP_GNSS_CFG |
+			LGPS_BLE_CAP_BARO_BASELINE |
 			(IS_ENABLED(CONFIG_LGPS_CALIB)
 				 ? (LGPS_BLE_CAP_MAG_CAL | LGPS_BLE_CAP_ACCEL_CAL)
 				 : 0U),
 		.telemetry_mask = LGPS_BLE_TELEM_MASK_GNSS | LGPS_BLE_TELEM_MASK_IMU |
+				  LGPS_BLE_TELEM_MASK_BARO |
 				  LGPS_BLE_TELEM_MASK_PDR | LGPS_BLE_TELEM_MASK_NMEA |
 				  LGPS_BLE_TELEM_MASK_SAT,
 		.att_mtu = (uint16_t)LGPS_PROTO_MTU,
@@ -718,6 +721,64 @@ static uint8_t calib_result_status(int ret)
 	default:
 		return LGPS_BLE_INTERNAL_ERROR;
 	}
+}
+
+/*
+ * BARO_BASELINE (0x42): the pressure the relative height is measured against.
+ * Action 0 installs the current compensated pressure, action 1 installs the value
+ * carried in the request; both persist the baseline in the external NOR
+ * (lifegps/baro_store.h).
+ *
+ * A unit whose BMP388 does not answer, or whose TPG coefficients could not be
+ * read, has no pressure at all and therefore answers NOT_SUPPORTED: the App then
+ * keeps the read-only explanation instead of claiming a baseline was set.
+ */
+static uint8_t cmd_baro_baseline(const struct lgps_ble_cmd *cmd, uint8_t *payload,
+				 size_t capacity, size_t *out_len)
+{
+	struct lgps_ble_baro_baseline_req req;
+	float pressure_pa = 0.0F;
+	int len;
+	int ret;
+
+	if (lgps_ble_baro_baseline_req_parse(cmd->payload, cmd->payload_len, &req) != 0) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	/* The probe is also what makes the NOT_SUPPORTED answer truthful. */
+	if (!lgps_baro_pressure(&pressure_pa)) {
+		return LGPS_BLE_NOT_SUPPORTED;
+	}
+
+	switch (req.action) {
+	case LGPS_BLE_BARO_ACTION_CURRENT:
+		ret = lgps_baro_take_current();
+		break;
+	case LGPS_BLE_BARO_ACTION_MANUAL:
+		ret = lgps_baro_set_baseline(req.baseline_pa_q4, false);
+		break;
+	default:
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	if (ret < 0) {
+		return calib_result_status(ret);
+	}
+
+	if (capacity < 1U + LGPS_BLE_BARO_BASELINE_RSP_SIZE) {
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+
+	len = lgps_ble_baro_baseline_rsp_encode(lgps_baro_baseline_pa_q4(),
+						lgps_baro_rel_alt_mm(), &payload[1],
+						capacity - 1U);
+	if (len < 0) {
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+
+	*out_len = 1U + (size_t)len;
+
+	return LGPS_BLE_OK;
 }
 
 static void calib_fill_mag_rsp(const struct lgps_calib_snapshot *snap,
@@ -1068,6 +1129,8 @@ static uint8_t dispatch(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t
 		return cmd_mag_cal(cmd, payload, capacity, out_len);
 	case LGPS_CMD_ACCEL_CAL:
 		return cmd_accel_cal(cmd, payload, capacity, out_len);
+	case LGPS_CMD_BARO_BASELINE:
+		return cmd_baro_baseline(cmd, payload, capacity, out_len);
 	case LGPS_CMD_FLASH_INFO:
 		return cmd_flash_info(payload, capacity, out_len);
 	case LGPS_CMD_LOG_SUBSCRIBE:
@@ -1394,6 +1457,51 @@ void lgps_ble_publish_pdr(int32_t x_mm, int32_t y_mm, int16_t heading_ddeg, uint
 	telem_seq_pdr++;
 
 	if (len == (int)LGPS_BLE_TELEM_PDR_SIZE) {
+		notify_guarded(telem_attr, packet, (uint16_t)len);
+	}
+}
+
+void lgps_ble_publish_baro(const struct lgps_telemetry_snapshot *snap)
+{
+	uint8_t packet[LGPS_BLE_TELEM_BARO_SIZE];
+	struct lgps_ble_telem_baro baro;
+	float pressure_pa = 0.0F;
+	int len;
+
+	if (!telem_subscribed || (snap == NULL)) {
+		return;
+	}
+
+	memset(&baro, 0, sizeof(baro));
+
+	/* Pressure and height belong to the baro module (it owns the baseline), the
+	 * die temperature is already in the snapshot the caller built.
+	 */
+	if (lgps_baro_pressure(&pressure_pa)) {
+		baro.press_pa = (uint32_t)(pressure_pa + 0.5F);
+		baro.flags |= LGPS_BLE_BARO_FLAG_PRESS_VALID;
+	}
+
+	if (snap->baro_temp_valid) {
+		baro.temp_cc = snap->baro_temp_cc;
+		baro.flags |= LGPS_BLE_BARO_FLAG_TEMP_VALID;
+	}
+
+	if (lgps_baro_baseline_set()) {
+		baro.flags |= LGPS_BLE_BARO_FLAG_BASELINE_VALID;
+		baro.baseline_pa_q4 = lgps_baro_baseline_pa_q4();
+
+		if (lgps_baro_baseline_auto()) {
+			baro.flags |= LGPS_BLE_BARO_FLAG_BASELINE_AUTO;
+		}
+
+		baro.rel_alt_mm = lgps_baro_rel_alt_mm();
+	}
+
+	len = lgps_ble_telem_baro_encode(telem_seq_baro, &baro, packet, sizeof(packet));
+	telem_seq_baro++;
+
+	if (len == (int)LGPS_BLE_TELEM_BARO_SIZE) {
 		notify_guarded(telem_attr, packet, (uint16_t)len);
 	}
 }

@@ -9,9 +9,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -20,10 +22,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -40,9 +44,11 @@ import com.lifegps.app.ui.theme.Green
 import com.lifegps.app.ui.theme.Red
 import com.lifegps.app.ui.theme.TextDim
 import java.util.Locale
+import kotlin.math.abs
+import kotlinx.coroutines.launch
 
 /**
- * Sensor calibration wizard (MAG_CAL 0x41 / ACCEL_CAL 0x43).
+ * Sensor calibration wizard (MAG_CAL 0x41 / ACCEL_CAL 0x43 / BARO_BASELINE 0x42).
  *
  * The screen never computes a coefficient: the firmware owns the sampling, the
  * maths and the persistence, and the App mirrors the state it reports. What the
@@ -58,6 +64,7 @@ fun CalibrationScreen(
     val calib by repo.calib.collectAsStateWithLifecycle()
     val imu by repo.imu.collectAsStateWithLifecycle()
     val mag by repo.mag.collectAsStateWithLifecycle()
+    val baro by repo.baro.collectAsStateWithLifecycle()
     val view = LocalView.current
     var confirmLeave by remember { mutableStateOf(false) }
 
@@ -69,8 +76,13 @@ fun CalibrationScreen(
     }
 
     // The device keeps calibrating while the App is backgrounded, so the page
-    // re-syncs on entry instead of assuming a fresh session.
-    LaunchedEffect(repo) { repo.refreshCalibration() }
+    // re-syncs on entry instead of assuming a fresh session. The barometer has no
+    // query command (`0x42` action 0 is a side effect), so its state is re-rendered
+    // from the last BARO telemetry packet without any BLE traffic.
+    LaunchedEffect(repo) {
+        repo.refreshCalibration()
+        repo.refreshBaroBaseline()
+    }
 
     val collecting = calib.magPhase == CalibPhase.COLLECTING ||
         calib.accelPhase == CalibPhase.COLLECTING
@@ -156,7 +168,13 @@ fun CalibrationScreen(
                 )
             }
 
-            item { BaroBaselineCard() }
+            item {
+                BaroBaselineCard(
+                    baro = baro,
+                    onTakeCurrent = repo::takeBaroBaseline,
+                    onSetManual = repo::setBaroBaselineManual,
+                )
+            }
 
             item {
                 Text(
@@ -439,20 +457,217 @@ private fun MagCalCard(
     }
 }
 
+/**
+ * Barometric baseline card.
+ *
+ * `BARO_BASELINE` (0x42) has no query variant - action 0 means "take the pressure
+ * you measure right now" - so the live state comes from the `0x04` telemetry packet
+ * and the buttons are disabled while there is no valid pressure or while the
+ * firmware answered NOT_SUPPORTED (no BMP388 / no TPG compensation).
+ */
 @Composable
-private fun BaroBaselineCard() {
+private fun BaroBaselineCard(
+    baro: BaroStatus,
+    onTakeCurrent: suspend () -> BaroBaselineResult,
+    onSetManual: suspend (Long) -> BaroBaselineResult,
+) {
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var unsupported by remember { mutableStateOf(false) }
+    var lastOk by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf("") }
+    var manualDialog by remember { mutableStateOf(false) }
+
+    fun applyResult(result: BaroBaselineResult) {
+        busy = false
+        unsupported = !result.supported
+        lastOk = result.ok
+        message = result.message
+    }
+
+    val canOperate = baro.valid && !unsupported && !busy
+
     CardBlock(
         title = "气压基准 · BARO_BASELINE",
-        hint = "需要 BMP388 应答且固件完成 TPG 补偿（0x30..0x57 系数）之后才有物理意义。",
+        hint = "相对高度 = 当前气压 − 基准气压，由固件计算；基准存在设备里，App 只负责设置。",
     ) {
-        Text(
-            "当前禁用：U4(BMP388) 在 I2C 上无 ACK，固件只能给出未补偿原始值，" +
-                "没有 Pa 就没有相对高度。协议负载已冻结（0x42），固件在 P2 之前返回 03 NOT_SUPPORTED，" +
-                "App 不提供可点按钮，避免误以为设置成功。",
-            color = TextDim,
-            fontSize = 12.sp,
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            StatusPill(
+                text = if (baro.valid) "气压有效" else "无有效气压",
+                color = if (baro.valid) Green else TextDim,
+                filled = baro.valid,
+            )
+            StatusPill(
+                text = when {
+                    unsupported -> "0x42 不可用"
+                    !baro.baselineValid -> "未设基准"
+                    baro.baselineAuto -> "基准：固件自动"
+                    else -> "基准：手动"
+                },
+                color = if (baro.baselineValid && !unsupported) Cyan else TextDim,
+                filled = baro.baselineValid && !unsupported,
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        MetricRow(
+            "气压",
+            if (baro.valid) String.format(Locale.US, "%.1f hPa", baro.pressureHpa) else "—",
+            if (baro.valid) Cyan else TextDim,
+        )
+        if (baro.tempValid) {
+            MetricRow("温度", String.format(Locale.US, "%.1f °C", baro.temperatureC))
+        } else {
+            MetricRow("温度", "—", TextDim)
+        }
+        MetricRow(
+            "相对高度",
+            if (baro.baselineValid) String.format(Locale.US, "%+.1f m", baro.relAltM) else "—",
+            if (baro.baselineValid) Cyan else TextDim,
+        )
+        MetricRow(
+            "基准气压",
+            if (baro.baselineValid) String.format(Locale.US, "%.1f hPa", baro.baselineHpa) else "—",
+            if (baro.baselineValid) Cyan else TextDim,
+        )
+        if (baro.baselineValid) {
+            MetricRow(
+                "基准来源",
+                if (baro.baselineAuto) "固件自动（GNSS 静止）" else "取当前值 / 手动输入",
+            )
+            ValueBar(
+                label = "偏离基准（量程 ±100 m）",
+                value = abs(baro.relAltM),
+                max = 100f,
+                color = Cyan,
+                valueText = String.format(Locale.US, "%+.1f m", baro.relAltM),
+            )
+        } else {
+            MetricRow("基准来源", "—", TextDim)
+        }
+
+        if (message.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                message,
+                color = when {
+                    unsupported -> Red
+                    lastOk -> Green
+                    else -> Amber
+                },
+                fontSize = 12.sp,
+            )
+        }
+        if (unsupported) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "固件返回 03 NOT_SUPPORTED：BMP388 未应答，或 TPG 补偿不可用。" +
+                    "没有 Pa 就没有相对高度，按钮保持禁用。",
+                color = Red,
+                fontSize = 11.sp,
+            )
+        } else if (!baro.valid) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "还没有收到有效气压（Telemetry 0x04 flags.bit0 = 0）。BARO 包只在 " +
+                    "Telemetry 特征被订阅时以 1 Hz 下发，没有 Pa 时不能取基准。",
+                color = Amber,
+                fontSize = 11.sp,
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = {
+                busy = true
+                message = ""
+                scope.launch { applyResult(onTakeCurrent()) }
+            },
+            enabled = canOperate,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("取当前为基准") }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = { manualDialog = true },
+            enabled = canOperate,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("手动输入基准气压…") }
+    }
+
+    if (manualDialog) {
+        BaroManualDialog(
+            current = if (baro.valid) baro.pressureHpa else 0f,
+            busy = busy,
+            onDismiss = { manualDialog = false },
+            onApply = { hpa ->
+                manualDialog = false
+                busy = true
+                message = ""
+                scope.launch { applyResult(onSetManual(CalibCodec.hpaToPaQ4(hpa))) }
+            },
         )
     }
+}
+
+/**
+ * Manual baseline dialog. The field is in **hPa** (300.0..1250.0), the unit printed
+ * on every weather report; it is converted to the wire unit (Pa × 16) only when the
+ * button is pressed.
+ */
+@Composable
+private fun BaroManualDialog(
+    current: Float,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onApply: (Float) -> Unit,
+) {
+    var text by remember {
+        mutableStateOf(if (current > 0f) String.format(Locale.US, "%.1f", current) else "")
+    }
+    val value = text.trim().replace(',', '.').toFloatOrNull()
+    val inRange = value != null && value >= BARO_BASELINE_HPA_MIN && value <= BARO_BASELINE_HPA_MAX
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("手动设置气压基准", fontSize = 15.sp) },
+        text = {
+            Column {
+                Text(
+                    "输入站点/海平面气压，单位 hPa（1 hPa = 100 Pa）。",
+                    color = TextDim,
+                    fontSize = 12.sp,
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text("基准气压（hPa）") },
+                    placeholder = { Text("例如 1013.2") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "范围 300.0..1250.0 hPa；发送时换算成 u32 的 Pa × 16，" +
+                        "超出范围固件会回 01 INVALID_ARGUMENT。",
+                    color = TextDim,
+                    fontSize = 11.sp,
+                )
+                if (text.isNotBlank() && !inRange) {
+                    Text("不是数字或超出范围", color = Amber, fontSize = 11.sp)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { value?.let(onApply) },
+                enabled = inRange && !busy,
+            ) { Text("写入基准") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
 }
 
 @Composable
@@ -577,3 +792,10 @@ private fun gravityVectorText(gravityG: List<Float>): String = String.format(
     gravityG.getOrElse(1) { 0f },
     gravityG.getOrElse(2) { 0f },
 )
+
+/**
+ * hPa window the wizard accepts for a manual baseline, i.e. the firmware's
+ * 30000..125000 Pa (`BLE_Wire_v1.md` §6.5) divided by 100.
+ */
+private const val BARO_BASELINE_HPA_MIN = 300f
+private const val BARO_BASELINE_HPA_MAX = 1250f

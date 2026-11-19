@@ -1,7 +1,8 @@
 package com.lifegps.app.ble
 
 /**
- * Codec for the two calibration commands (`MAG_CAL` 0x41, `ACCEL_CAL` 0x43).
+ * Codec for the calibration commands (`MAG_CAL` 0x41, `ACCEL_CAL` 0x43,
+ * `BARO_BASELINE` 0x42).
  *
  * Pure Kotlin with no Android types, so the byte offsets are checked in CI by
  * `CalibCodecTest` and nowhere else. The firmware side implements the same
@@ -55,6 +56,20 @@ package com.lifegps.app.ble
  *   [43] u8  calib_flags
  *   [44] u32 last_calib_unix_s
  *
+ * BARO_BASELINE request (5 B)
+ *   [0] u8  action            0 = take the current pressure as baseline,
+ *                             1 = manual set (the value below is then used)
+ *   [1] u32 baseline_pa_q4    Pa × 16
+ *
+ * BARO_BASELINE response body (8 B)
+ *   [0] u32 baseline_pa_q4    Pa × 16, 0 when the device has no baseline
+ *   [4] i32 rel_alt_mm        altitude relative to that baseline, millimetres
+ *
+ * `0x42` status codes: `0x00` OK, `0x01` INVALID_ARGUMENT (unknown action or a
+ * pressure outside 30000..125000 Pa), `0x03` NOT_SUPPORTED (BMP388 absent or TPG
+ * compensation not available). The App validates the range client-side as well so
+ * an obvious typo never reaches the device.
+ *
  * Biases are stored in engineering units (µg, LSB) rather than in the sensor's
  * `X/Y/Z_OFS_USR` register units on purpose: that register is an int8 in units of
  * 2^-10 g, i.e. ±124 mg with a 0.98 mg quantum, which cannot even round-trip the
@@ -66,10 +81,26 @@ object CalibCodec {
     /** Request payloads. */
     const val MAG_REQ_SIZE = 1
     const val ACCEL_REQ_SIZE = 2
+    const val BARO_REQ_SIZE = 5
 
     /** Response bodies, status byte excluded. */
     const val MAG_RSP_SIZE = 30
     const val ACCEL_RSP_SIZE = 48
+    const val BARO_RSP_SIZE = 8
+
+    /** `baseline_pa_q4` scale: 1 Pa of pressure is 16 counts on the wire. */
+    const val BARO_Q4 = 16L
+
+    /**
+     * Pressure window the App validates before sending: the BMP388 full-accuracy
+     * range (30000..125000 Pa, BLE_Wire_v1.md 6.5 and lifegps/baro.h). Outside it
+     * `0x42` answers `0x01` INVALID_ARGUMENT anyway; this is a typo guard that
+     * keeps an obviously wrong number off the air, not the authority.
+     */
+    const val BARO_PA_MIN = 30_000L
+    const val BARO_PA_MAX = 125_000L
+    const val BARO_PA_Q4_MIN = BARO_PA_MIN * BARO_Q4
+    const val BARO_PA_Q4_MAX = BARO_PA_MAX * BARO_Q4
 
     /**
      * Face indices: 0..5 are the six faces, 6 selects the single-face quick mode.
@@ -86,6 +117,45 @@ object CalibCodec {
     const val FACE_NONE = 0xFF
 
     fun encodeMagCal(action: CalibAction): ByteArray = byteArrayOf(action.code.toByte())
+
+    /**
+     * BARO_BASELINE request. [baselinePaQ4] is only read for
+     * [BaroBaselineAction.MANUAL]; the take-current variant carries 0.
+     */
+    fun encodeBaroBaseline(
+        action: BaroBaselineAction,
+        baselinePaQ4: Long = 0L,
+    ): ByteArray {
+        require(action == BaroBaselineAction.TAKE_CURRENT || baselinePaQ4 >= 0L) {
+            "baselinePaQ4 $baselinePaQ4 is negative"
+        }
+        val out = ByteArray(BARO_REQ_SIZE)
+        out[0] = action.code.toByte()
+        for (index in 0 until 4) {
+            out[1 + index] = ((baselinePaQ4 ushr (8 * index)) and 0xFF).toByte()
+        }
+        return out
+    }
+
+    /**
+     * hPa to Pa × 16, rounding to the nearest 1/16 Pa.
+     *
+     * The wizard asks the user for hPa because that is the unit on every weather
+     * report; the wire only speaks Pa × 16.
+     */
+    fun hpaToPaQ4(hpa: Float): Long = Math.round(hpa.toDouble() * 100.0 * BARO_Q4)
+
+    /** Pa × 16 back to hPa, for echoing the stored baseline. */
+    fun paQ4ToHpa(paQ4: Long): Float = paQ4 / BARO_Q4.toFloat() / 100f
+
+    /** Returns null when the body is shorter than [BARO_RSP_SIZE]; never throws. */
+    fun decodeBaroBaseline(body: ByteArray): BaroBaselineResponse? {
+        if (body.size < BARO_RSP_SIZE) return null
+        return BaroBaselineResponse(
+            baselinePaQ4 = BleFrame.u32(body, 0),
+            relAltMm = BleFrame.i32(body, 4),
+        )
+    }
 
     fun encodeAccelCal(action: CalibAction, position: Int = POSITION_AUTO): ByteArray {
         require(position in 0..POSITION_QUICK || position == POSITION_AUTO) {
@@ -167,6 +237,16 @@ enum class CalibAction(val code: Int) {
     CANCEL(4),
 }
 
+/**
+ * `BARO_BASELINE` action byte (`BLE_Wire_v1.md` §6.5). `TAKE_CURRENT` freezes the
+ * pressure the device measures right now; `MANUAL` uses the value the App sends,
+ * which is how a known sea-level/station pressure gets in.
+ */
+enum class BaroBaselineAction(val code: Int) {
+    TAKE_CURRENT(0),
+    MANUAL(1),
+}
+
 /** `calib_state` byte: what the firmware is currently doing. */
 object CalibStateCode {
     const val IDLE = 0
@@ -246,4 +326,16 @@ data class AccelCalResponse(
     private companion object {
         const val SIX_FACE_MASK = 0x3F
     }
+}
+
+/** Decoded BARO_BASELINE body (`BLE_Wire_v1.md` §6.5). */
+data class BaroBaselineResponse(
+    val baselinePaQ4: Long,
+    val relAltMm: Int,
+) {
+    val baselineHpa: Float get() = CalibCodec.paQ4ToHpa(baselinePaQ4)
+    val relAltM: Float get() = relAltMm / 1000f
+
+    /** `0` is the wire value for "no baseline set". */
+    val baselineValid: Boolean get() = baselinePaQ4 > 0L
 }

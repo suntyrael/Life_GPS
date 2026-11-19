@@ -76,6 +76,12 @@ void lgps_ble_publish_gnss(const struct lgps_ble_telem_gnss *gnss);
 void lgps_ble_publish_sat(const struct lgps_ble_telem_sat_entry *entries, uint8_t count,
 			  uint8_t total);
 
+/* Barometer (telemetry 0x04), once per second: compensated pressure, height above
+ * the baseline and the baseline itself. The die temperature is read from the
+ * snapshot, so the caller passes the one it just built.
+ */
+void lgps_ble_publish_baro(const struct lgps_telemetry_snapshot *snap);
+
 /* One raw NMEA sentence (telemetry 0x08). Cheap no-op when nobody subscribes. */
 void lgps_ble_publish_nmea(const char *line, uint8_t len);
 

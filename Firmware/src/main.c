@@ -25,8 +25,10 @@
 #include <string.h>
 
 #include <lifegps/battery.h>
+#include <lifegps/baro.h>
 #include <lifegps/ble.h>
 #include <lifegps/board_io.h>
+#include <lifegps/bmp388.h>
 #include <lifegps/calib.h>
 #include <lifegps/diag.h>
 #include <lifegps/flash_ring.h>
@@ -192,6 +194,16 @@ static int init_subsystems(void)
 		LOG_WRN("calibration record unavailable (%d), using defaults", ret);
 	}
 
+	/* Barometric baseline: its own NOR sector, loaded after the ring so the flash
+	 * is up. No record (or a corrupted one) just means "no height reference yet",
+	 * which the GNSS gate or BARO_BASELINE can fix at any time.
+	 */
+	lgps_baro_init();
+	ret = lgps_baro_load();
+	if (ret < 0) {
+		LOG_INF("no barometric baseline stored (%d); height relative to nothing", ret);
+	}
+
 	lgps_zupt_reset(&zupt, lgps_diag_uptime_ms());
 	lgps_pdr_init(&pdr);
 	lgps_attitude_reset(&attitude, NULL);
@@ -273,6 +285,25 @@ static struct lgps_telemetry_snapshot *build_snapshot(uint32_t now_ms,
 		snap.mag_temp_valid = mag.valid;
 		snap.baro_press_raw = baro.raw_pressure;
 		snap.baro_temp_raw = baro.raw_temperature;
+		snap.baro_comp_valid = baro.compensated;
+
+		if (baro.compensated) {
+			/* BMP388 TPG output is already Pa and degC. Clamp to the part's
+			 * specified range before the integer casts: a float outside int16
+			 * range is undefined behaviour on Cortex-M, and anything outside the
+			 * range is a fault the driver has already warned about.
+			 */
+			const float temp_c = CLAMP(baro.temperature_c,
+						   LGPS_BMP388_TEMP_MIN_C,
+						   LGPS_BMP388_TEMP_MAX_C);
+			const float press_pa = CLAMP(baro.pressure_pa,
+						     LGPS_BMP388_PRESS_MIN_PA,
+						     LGPS_BMP388_PRESS_MAX_PA);
+
+			snap.baro_temp_cc = (int16_t)(temp_c * 100.0F);
+			snap.baro_press_pa = (int32_t)press_pa;
+			snap.baro_temp_valid = true;
+		}
 
 		{
 			float mag_ut[3];
@@ -302,6 +333,12 @@ static struct lgps_telemetry_snapshot *build_snapshot(uint32_t now_ms,
 
 	snap.bat_valid = bat_valid;
 	snap.bat_mv = bat_mv;
+
+	/* Barometric height: the module owns the baseline (BARO_BASELINE 0x42 or the
+	 * GNSS gate), the snapshot only carries the resulting number.
+	 */
+	snap.baro_alt_valid = snap.baro_comp_valid && lgps_baro_baseline_set();
+	snap.baro_rel_alt_mm = snap.baro_alt_valid ? lgps_baro_rel_alt_mm() : 0;
 	(void)lgps_charger_charging(&charging);
 	snap.charging = charging;
 	snap.key_levels = lgps_keys_levels();
@@ -387,6 +424,14 @@ static void publish_gnss(const struct lgps_telemetry_snapshot *snap)
 	}
 
 	lgps_ble_publish_gnss(&gnss);
+}
+
+/* Barometer packet: the module owns pressure/height/baseline, the snapshot owns
+ * the die temperature, lgps_ble_publish_baro() joins the two.
+ */
+static void publish_baro(const struct lgps_telemetry_snapshot *snap)
+{
+	lgps_ble_publish_baro(snap);
 }
 
 /* Satellite table (telemetry 0x09), 1 Hz while the debug session collects it. */
@@ -591,12 +636,21 @@ int main(void)
 				last_telemetry_ms = now_ms;
 				lgps_telemetry_emit(snap);
 
+				/* Barometer, once per second: this cadence is what the automatic
+				 * baseline gate counts (30 samples = 30 s), so it must not run in
+				 * build_snapshot(), which also runs at the BLE rate.
+				 */
+				lgps_baro_note_utc(snap->fix.utc_epoch_s);
+				(void)lgps_baro_feed(snap->baro_comp_valid,
+						     (float)snap->baro_press_pa, &snap->fix);
+
 				/* Position heartbeat, so the phone still knows where the
 				 * device stands after a pause in walking.
 				 */
 				publish_pdr();
 				publish_gnss(snap);
 				publish_sat();
+				publish_baro(snap);
 			}
 		}
 

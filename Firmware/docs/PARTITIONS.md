@@ -116,3 +116,19 @@ CONFIG_MCUMGR_GRP_IMG=y
 
 **谁不能碰这个扇区**：轨迹环（16 个扇区之后才会外扩）、App 的 SYNC/FLASH_* 读取、
 `FACTORY_RESET`（将来实现时应把本扇区一并擦除，并在协议文档里写明）。
+
+## 外部 NOR：气压基准记录（0x11000，1 个扇区）
+
+第 18 个扇区（**偏移 `0x11000`，扇区号 17**）独立存放气压基准，由
+`Firmware/src/nav/baro_store.c` 管理（Kconfig `CONFIG_LGPS_BARO_SECTOR_INDEX`，默认 17，
+`BUILD_ASSERT` 保证它不在环内、也不等于标定扇区）。
+
+| 属性 | 值 |
+| :--- | :--- |
+| 记录大小 | 20 字节（`LGPS_BARO_RECORD_SIZE`：magic `LBAR` / version / flags / `baseline_pa_q4` / unix_s / CRC-16） |
+| 每扇区槽位 | 204（`4096 / 20`） |
+| 写策略 | append-only；新的基准才写（`u32` 值变化 > 1 hPa 或手动设定） |
+| 读取 | 取最后一条 CRC 通过的记录（槽号大的更新） |
+
+**为什么不和标定记录共用一个扇区**：`lgps_calib_store_erase()` 是“删光整个 4 KB 扇区”，
+共用时“清除校准”或“扇区写满后擦除”会默默把高度参考一起丢掉；分成两个扇区后两边互不影响。

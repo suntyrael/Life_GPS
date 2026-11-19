@@ -3,6 +3,7 @@ package com.lifegps.app.ble
 import android.content.Context
 import com.lifegps.app.debug.AccelCalResult
 import com.lifegps.app.debug.AttitudeState
+import com.lifegps.app.debug.BaroBaselineResult
 import com.lifegps.app.debug.BaroStatus
 import com.lifegps.app.debug.CalibFaces
 import com.lifegps.app.debug.CalibFormat
@@ -83,7 +84,11 @@ class BleDebugRepository(context: Context) : DebugRepository {
     private var lastLink: LinkState = LinkState.DISCONNECTED
     private var wasScanning = false
     private var handshakeJob: Job? = null
-    private var baroExplained = false
+
+    /** Last `0x04` BARO packet; [refreshBaroBaseline] re-renders [baro] from it. */
+    @Volatile
+    private var lastBaro: BaroTelemetry? = null
+
     private var incompatibleReported = false
 
     // Latest telemetry: the firmware owns the attitude filter and the PDR, this
@@ -308,12 +313,12 @@ class BleDebugRepository(context: Context) : DebugRepository {
         _imu.value = initialImu()
         _mag.value = initialMag()
         _baro.value = initialBaro()
+        lastBaro = null
         _flash.value = initialFlash()
         _checks.value = pendingChecks()
         capsInfo = null
         flashInfo = null
         lastStatus = null
-        baroExplained = false
         latestQw = 1f
         latestQx = 0f
         latestQy = 0f
@@ -349,7 +354,11 @@ class BleDebugRepository(context: Context) : DebugRepository {
                 firmware = caps?.let { c -> "fw ${c.firmwareText}" } ?: it.firmware,
                 protocol = caps?.let { c -> "proto ${c.protocolText}" } ?: it.protocol,
                 batteryMv = batteryMv,
-                batteryPct = if (batteryMv > 0) batteryPercent(batteryMv) else 0,
+                batteryPct = if (batteryMv > 0) {
+                    BatterySoc.percent(batteryMv, frame.charging)
+                } else {
+                    0
+                },
                 charging = frame.charging,
                 // v1 has no "work mode" field in the Status frame.
                 mode = "—",
@@ -421,17 +430,10 @@ class BleDebugRepository(context: Context) : DebugRepository {
             anomaly = false,
         )
 
-        if (!baroExplained) {
-            baroExplained = true
-            addLog(
-                LogLevel.WARN,
-                LogSource.BLE,
-                "BARO",
-                "Status 帧只带 BMP388 未补偿原始值（press=${frame.baroPressRaw} temp=${frame.baroTempRaw}）；" +
-                    "固件 v1 不下发 hPa/°C，界面保持 “—”，不做换算",
-            )
-        }
-        _baro.value = BaroStatus(pressureHpa = 0f, temperatureC = 0f, altitudeM = 0f, floor = 0)
+        // Pressure and temperature come from the 0x04 BARO telemetry packet, never
+        // from this frame: baro_press_raw / baro_temp_raw are uncompensated 24-bit
+        // counts, and converting them here would invent a plausible wrong hPa. The
+        // raw counts stay out of the UI; [baro] keeps what the last packet said.
 
         if (frame.gnssFixValid && _liveTracking.value) {
             val tick = frame.uptimeMs / 1000L
@@ -443,8 +445,8 @@ class BleDebugRepository(context: Context) : DebugRepository {
     }
 
     /** Telemetry characteristic: IMU packets carry the attitude, PDR packets the
-     *  dead-reckoned position, GNSS packets the receiver link counters. Anything
-     *  else is a group this app does not draw yet.
+     *  dead-reckoned position, GNSS packets the receiver link counters, BARO the
+     *  compensated pressure. Anything else is a group this app does not draw yet.
      */
     private fun handleTelemetry(bytes: ByteArray) {
         val packet = BleFrame.parseTelemetry(bytes) ?: return
@@ -452,6 +454,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
         when (packet.id) {
             TelemetryId.GNSS -> BleFrame.parseGnssTelemetry(packet.payload)?.let { onGnssTelemetry(it) }
             TelemetryId.IMU -> BleFrame.parseImuTelemetry(packet.payload)?.let { onImuTelemetry(it) }
+            TelemetryId.BARO -> BleFrame.parseBaroTelemetry(packet.payload)?.let { onBaroTelemetry(it) }
             TelemetryId.PDR -> BleFrame.parsePdrTelemetry(packet.payload)?.let { onPdrTelemetry(it) }
             TelemetryId.SAT -> BleFrame.parseSatTelemetry(packet.payload)?.let { onSatTelemetry(it) }
             TelemetryId.NMEA -> BleFrame.parseNmeaTelemetry(packet.payload)?.let { onNmea(it) }
@@ -515,6 +518,36 @@ class BleDebugRepository(context: Context) : DebugRepository {
 
     private fun onNmea(telemetry: NmeaTelemetry) {
         _nmea.update { lines -> (lines + telemetry.text).takeLast(MAX_NMEA_LINES) }
+    }
+
+    /**
+     * BMP388 telemetry, 1 Hz while the Telemetry characteristic is subscribed.
+     *
+     * The device compensates pressure and die temperature itself, so the App only
+     * rescales (Pa -> hPa, 0.01 °C -> °C, mm -> m). A clear flag means "no value",
+     * not zero: the screen then draws "—".
+     */
+    private fun onBaroTelemetry(telemetry: BaroTelemetry) {
+        lastBaro = telemetry
+        _baro.value = baroStatusOf(telemetry)
+    }
+
+    /** Maps one BARO packet onto the UI model; the flags decide what is real. */
+    private fun baroStatusOf(telemetry: BaroTelemetry): BaroStatus {
+        val hasBaseline = telemetry.baselineValid
+        return BaroStatus(
+            pressureHpa = if (telemetry.pressValid) telemetry.pressureHpa else 0f,
+            temperatureC = if (telemetry.tempValid) telemetry.temperatureC else 0f,
+            // v1 has no floor estimator, so "altitude" means "above the baseline".
+            altitudeM = if (hasBaseline) telemetry.relAltM else 0f,
+            floor = 0,
+            valid = telemetry.pressValid,
+            tempValid = telemetry.tempValid,
+            baselineHpa = if (hasBaseline) telemetry.baselineHpa else 0f,
+            baselineAuto = hasBaseline && telemetry.baselineAuto,
+            relAltM = if (hasBaseline) telemetry.relAltM else 0f,
+            baselineValid = hasBaseline,
+        )
     }
 
     private fun gnssSystemName(gnssId: Int): String = when (gnssId) {
@@ -1356,6 +1389,127 @@ class BleDebugRepository(context: Context) : DebugRepository {
         }
     }
 
+    // --- barometric baseline (BARO_BASELINE 0x42) -----------------------------
+
+    /**
+     * Re-renders [baro] from the last `0x04` packet. Deliberately sends nothing:
+     * `0x42` action 0 is "take the current pressure as baseline", not a query.
+     */
+    override suspend fun refreshBaroBaseline(): BaroBaselineResult {
+        val telemetry = lastBaro
+            ?: return BaroBaselineResult(
+                ok = false,
+                supported = true,
+                message = "还没有收到 BARO 遥测（Telemetry 0x04）",
+            )
+        _baro.value = baroStatusOf(telemetry)
+        return BaroBaselineResult(
+            ok = telemetry.pressValid,
+            supported = true,
+            message = when {
+                !telemetry.pressValid -> "BARO 遥测没有有效气压（flags.bit0 = 0）"
+                !telemetry.baselineValid -> "尚未设置基准"
+                telemetry.baselineAuto -> "基准由固件自动建立（GNSS 静止）"
+                else -> "基准来自取当前值或手动输入"
+            },
+        )
+    }
+
+    override suspend fun takeBaroBaseline(): BaroBaselineResult =
+        sendBaroBaseline(BaroBaselineAction.TAKE_CURRENT, 0L, "取当前气压为基准")
+
+    override suspend fun setBaroBaselineManual(paQ4: Long): BaroBaselineResult {
+        if (paQ4 < CalibCodec.BARO_PA_Q4_MIN || paQ4 > CalibCodec.BARO_PA_Q4_MAX) {
+            val text = String.format(
+                Locale.US,
+                "%.1f hPa 超出 %d..%d Pa，固件会回 INVALID_ARGUMENT，未发送",
+                CalibCodec.paQ4ToHpa(paQ4),
+                CalibCodec.BARO_PA_MIN,
+                CalibCodec.BARO_PA_MAX,
+            )
+            addLog(LogLevel.WARN, LogSource.BLE, "BARO", "手动基准 $text")
+            return BaroBaselineResult(ok = false, supported = true, message = text)
+        }
+        return sendBaroBaseline(BaroBaselineAction.MANUAL, paQ4, "手动设置基准")
+    }
+
+    /** One BARO_BASELINE round trip; the response is the new firmware state. */
+    private suspend fun sendBaroBaseline(
+        action: BaroBaselineAction,
+        paQ4: Long,
+        what: String,
+    ): BaroBaselineResult {
+        if (transport.state.value != LinkState.READY) {
+            addLog(LogLevel.WARN, LogSource.BLE, "BARO", "链路未就绪，$what 未发送")
+            return BaroBaselineResult(ok = false, supported = true, message = "链路未就绪，命令未发送")
+        }
+        val result = request(Opcode.BARO_BASELINE, CalibCodec.encodeBaroBaseline(action, paQ4))
+        return applyBaroBaselineResult(result, what)
+    }
+
+    private fun applyBaroBaselineResult(
+        result: CommandResult?,
+        what: String,
+    ): BaroBaselineResult {
+        if (result == null) {
+            addLog(LogLevel.WARN, LogSource.BLE, "BARO", "$what：2 s 内没有响应")
+            return BaroBaselineResult(ok = false, supported = true, message = "$what：设备没有响应")
+        }
+        if (result.status == StatusCode.NOT_SUPPORTED.code ||
+            result.status == StatusCode.UNKNOWN_OPCODE.code
+        ) {
+            addLog(
+                LogLevel.WARN,
+                LogSource.BLE,
+                "BARO",
+                "$what -> ${StatusCode.labelOf(result.status)}（BMP388 未应答或 TPG 补偿不可用）",
+            )
+            return BaroBaselineResult(
+                ok = false,
+                supported = false,
+                message = "固件不支持 BARO_BASELINE（${StatusCode.labelOf(result.status)}）：" +
+                    "BMP388 未应答或 TPG 补偿不可用",
+            )
+        }
+        if (result.status != StatusCode.OK.code) {
+            val text = "$what 失败：${StatusCode.labelOf(result.status)}（当前气压不在 30000..125000 Pa）"
+            addLog(LogLevel.WARN, LogSource.BLE, "BARO", text)
+            return BaroBaselineResult(ok = false, supported = true, message = text)
+        }
+        val response = CalibCodec.decodeBaroBaseline(result.payload)
+        if (response == null) {
+            val text = "$what：响应体 ${result.payload.size} B，短于约定的 ${CalibCodec.BARO_RSP_SIZE} B"
+            addLog(LogLevel.WARN, LogSource.BLE, "BARO", text)
+            return BaroBaselineResult(ok = false, supported = true, message = text)
+        }
+        // The response is newer than the last 1 Hz packet, so mirror it right away
+        // instead of waiting up to a second for the telemetry to catch up. `0x42`
+        // always stores a user baseline, so baseline_auto is cleared; only the
+        // firmware's own GNSS-triggered baseline sets it.
+        _baro.update {
+            it.copy(
+                baselineHpa = response.baselineHpa,
+                baselineValid = response.baselineValid,
+                baselineAuto = false,
+                relAltM = if (response.baselineValid) response.relAltM else 0f,
+                altitudeM = if (response.baselineValid) response.relAltM else 0f,
+            )
+        }
+        val text = if (response.baselineValid) {
+            String.format(
+                Locale.US,
+                "%s：基准 %.1f hPa，相对高度 %+.1f m",
+                what,
+                response.baselineHpa,
+                response.relAltM,
+            )
+        } else {
+            "$what：固件返回空基准"
+        }
+        addLog(LogLevel.INFO, LogSource.BLE, "BARO", text)
+        return BaroBaselineResult(ok = response.baselineValid, supported = true, message = text)
+    }
+
     private fun calibLinkReady(tag: String): Boolean {
         if (transport.state.value == LinkState.READY) return true
         addLog(LogLevel.WARN, LogSource.BLE, tag, "链路未就绪，校准命令未发送")
@@ -1758,29 +1912,6 @@ class BleDebugRepository(context: Context) : DebugRepository {
     }
 
     /**
-     * Typical single-cell LiPo open-circuit curve, used only to turn the real
-     * `bat_mv` reading into a percentage (v1 sends 0xFF in `soc_pct`).
-     */
-    private fun batteryPercent(mv: Int): Int {
-        if (mv <= 0) return 0
-        if (mv >= LIPO_CURVE_MV.last()) return 100
-        if (mv <= LIPO_CURVE_MV.first()) return 0
-        for (index in 0 until LIPO_CURVE_MV.size - 1) {
-            val lowMv = LIPO_CURVE_MV[index]
-            val highMv = LIPO_CURVE_MV[index + 1]
-            if (mv in lowMv..highMv) {
-                val lowPct = LIPO_CURVE_PCT[index].toFloat()
-                val highPct = LIPO_CURVE_PCT[index + 1].toFloat()
-                val span = (highMv - lowMv).toFloat()
-                if (span <= 0f) return lowPct.toInt()
-                val ratio = (mv - lowMv) / span
-                return (lowPct + ratio * (highPct - lowPct)).toInt().coerceIn(0, 100)
-            }
-        }
-        return 0
-    }
-
-    /**
      * One command response.
      *
      * [payload] is the body **after** the status byte - [handleResponseFrame] strips
@@ -1927,14 +2058,5 @@ class BleDebugRepository(context: Context) : DebugRepository {
 
         val UTC_FORMAT: DateTimeFormatter =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneOffset.UTC)
-
-        val LIPO_CURVE_MV = intArrayOf(
-            3000, 3200, 3300, 3400, 3500, 3600, 3700, 3750,
-            3800, 3850, 3900, 3950, 4000, 4050, 4100, 4200,
-        )
-        val LIPO_CURVE_PCT = intArrayOf(
-            0, 5, 8, 12, 18, 25, 35, 45,
-            55, 65, 75, 82, 88, 93, 97, 100,
-        )
     }
 }

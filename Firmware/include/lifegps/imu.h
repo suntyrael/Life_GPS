@@ -100,9 +100,22 @@ struct lgps_imu_mag {
 	bool valid;
 };
 
+/*
+ * BMP388 burst, raw plus the compensated physical values.
+ *
+ * The raw pair has no unit on its own: temperature_c and pressure_pa only exist
+ * once the part's trimming coefficients have been applied (datasheet
+ * BST-BMP388-DS001-07 sections 9.2 and 9.3, implemented in bmp388.c). The
+ * coefficients are read once by lgps_imu_hub_configure(); when that read fails
+ * the driver still streams the raw values but leaves "compensated" false, so
+ * nobody publishes a number that was never converted.
+ */
 struct lgps_imu_baro {
-	uint32_t raw_pressure;    /* BMP388 press_xlsb..press_msb, 24 bit */
-	uint32_t raw_temperature; /* BMP388 temp_xlsb..temp_msb, 24 bit */
+	uint32_t raw_pressure;    /* BMP388 DATA_0..2 (0x04..0x06), 24 bit */
+	uint32_t raw_temperature; /* BMP388 DATA_3..5 (0x07..0x09), 24 bit */
+	float pressure_pa;        /* TPG compensated, Pa; valid when compensated */
+	float temperature_c;      /* TPG compensated, degC; valid when compensated */
+	bool compensated;
 	bool valid;
 };
 
@@ -139,6 +152,11 @@ int lgps_imu_hub_diag(void);
  * (normal mode, pressure + temperature enabled) through one-shot hub writes, then
  * switch the hub into 2-slave read mode. The transfer rate is capped by the
  * accelerometer/gyro data-ready that triggers each cycle, i.e. 26 Hz here.
+ *
+ * This also reads the BMP388 trimming coefficients (0x31..0x45, three 7-byte hub
+ * reads) before the part leaves sleep mode, which is what makes the compensated
+ * pressure/temperature possible. A part that does not answer keeps
+ * baro->compensated = false and only the raw values are reported.
  */
 int lgps_imu_hub_configure(void);
 
@@ -159,11 +177,13 @@ int lgps_imu_read_sample_if_ready(struct lgps_imu_sample *out);
 /*
  * Read the 14 bytes produced by the hub's three slaves: LIS2MDL magnetometer
  * (0x68, 6 bytes), LIS2MDL TEMP_OUT (0x6e, 2 bytes) and BMP388 pressure +
- * temperature (0x04..0x09, 6 bytes). numop is a 3-bit field, so one slave can
+ * temperature (0x04..0x09, 6 bytes), and compensate the BMP388 pair with the
+ * coefficients read at configure time. numop is a 3-bit field, so one slave can
  * transfer at most seven bytes - that is why the magnetometer temperature gets
- * its own slave instead of extending the first one. The BMP388 goes last on
- * purpose: it currently does not acknowledge, and the sensor hub does not
- * reliably fill the slots of slaves queued behind a device that NACKs. A sensor that did not answer
+ * its own slave instead of extending the first one. The BMP388 stays last because
+ * it did not acknowledge at all until the 2026-11 rework, and the sensor hub does
+ * not reliably fill the slots of slaves queued behind a device that NACKs. A
+ * sensor that did not answer
  * its identification read at boot keeps "valid = false", so its zeros are never
  * mistaken for a measurement.
  */

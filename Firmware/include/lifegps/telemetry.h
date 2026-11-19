@@ -14,9 +14,11 @@
  *        rx=<n> ubx=<n> ckerr=<n> nmea=<n>
  *   IMU  id=0x?? sensor: acc_lsb=a,b,c gyro_lsb=a,b,c acc_g=a,b,c gyro_dps=a,b,c
  *   BODY gravity_g=a,b,c linear_g=a,b,c |gravity|=a |linear|=a (1.000 = 1 g)
- *   TEMP imu_C=a mag_C=a baro=--- (die temperatures)
+ *   TEMP imu_C=a mag_C=a baro_C=a (die temperatures)
  *   MAG  sensor: lsb=a,b,c ut=a,b,c |B|=a
- *   BARO raw: press=<n|---> temp=<n|---> (uncompensated, needs TPG)
+ *   BARO press_pa=<n|---> temp_C=<a|---> rel_alt_mm=<n|---> press_raw=<n|--->
+ *        temp_raw=<n|---> (BMP388, TPG compensated per datasheet 9.2/9.3;
+ *        rel_alt_mm is metres above the stored baseline, see lifegps/baro.h)
  *   SYS  bat_mv=<n|---> chg=<0|1> keys=<k1>,<k2> zupt=<locked|move> var_mg2=<n>
  *        steps=<n> ring_seq=<n> ring_rec=<n>
  *
@@ -60,19 +62,32 @@ struct lgps_telemetry_snapshot {
 	int16_t linear_mg[3];
 	bool gravity_valid;
 
-	/* Die temperatures in 0.01 degC; the barometer reports its raw 24-bit value */
+	/* Die temperatures in 0.01 degC. All three sensors report their own die, not
+	 * the ambient air; the BMP388 value only exists after TPG compensation.
+	 */
 	int16_t imu_temp_cc;
 	int16_t mag_temp_cc;
+	int16_t baro_temp_cc;
 	bool imu_temp_valid;
 	bool mag_temp_valid;
+	bool baro_temp_valid;
 
 	/* Sensor hub: LIS2MDL + BMP388 (uT are derived in the formatter) */
 	bool hub_valid;
 	bool mag_valid;
 	bool baro_valid;
 	int16_t mag_lsb[3];
+	/* BMP388 raw counts, always available once the part answers, plus the
+	 * compensated physical values (baro_comp_valid = false when the trimming
+	 * coefficients could not be read, so the formatter prints "---" instead of a
+	 * number that was never converted).
+	 */
 	uint32_t baro_press_raw;
 	uint32_t baro_temp_raw;
+	int32_t baro_press_pa;
+	int32_t baro_rel_alt_mm;
+	bool baro_comp_valid;
+	bool baro_alt_valid; /* a baseline exists, so rel_alt_mm means something */
 
 	/* System */
 	bool bat_valid;

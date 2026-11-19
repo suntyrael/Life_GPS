@@ -40,6 +40,7 @@ fun SensorStatusScreen(
 ) {
     val imu by repo.imu.collectAsStateWithLifecycle()
     val mag by repo.mag.collectAsStateWithLifecycle()
+    val baro by repo.baro.collectAsStateWithLifecycle()
     val attitude by repo.attitude.collectAsStateWithLifecycle()
     val calib by repo.calib.collectAsStateWithLifecycle()
 
@@ -120,13 +121,48 @@ fun SensorStatusScreen(
 
             item {
                 CardBlock("气压计 · BMP388") {
-                    MetricRow("气压", "—")
-                    MetricRow("温度", "—")
-                    MetricRow("相对高度", "—")
-                    MetricRow("楼层", "—")
+                    MetricRow(
+                        "气压（已补偿）",
+                        if (baro.valid) String.format(Locale.US, "%.1f hPa", baro.pressureHpa) else "—",
+                        if (baro.valid) Cyan else TextDim,
+                    )
+                    if (baro.tempValid) {
+                        MetricRow("温度", String.format(Locale.US, "%.1f °C", baro.temperatureC))
+                    } else {
+                        MetricRow("温度", "—", TextDim)
+                    }
+                    MetricRow(
+                        "相对高度（相对基准）",
+                        if (baro.baselineValid) {
+                            String.format(Locale.US, "%+.1f m", baro.relAltM)
+                        } else {
+                            "—"
+                        },
+                        if (baro.baselineValid) Cyan else TextDim,
+                    )
+                    MetricRow(
+                        "基准气压",
+                        if (baro.baselineValid) {
+                            String.format(Locale.US, "%.1f hPa", baro.baselineHpa)
+                        } else {
+                            "—"
+                        },
+                        if (baro.baselineValid) Cyan else TextDim,
+                    )
+                    MetricRow(
+                        "基准来源",
+                        when {
+                            !baro.baselineValid -> "—"
+                            baro.baselineAuto -> "固件自动（GNSS 静止）"
+                            else -> "取当前值 / 手动输入"
+                        },
+                        if (baro.baselineValid) Cyan else TextDim,
+                    )
+                    MetricRow("楼层", "—", TextDim)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Status 帧只带 BMP388 未补偿原始值，固件 v1 不下发 hPa / °C / 高度，App 不做换算。",
+                        "数值来自 Telemetry 0x04（BMP388，1 Hz，固件已做 TPG 温度/压力补偿）；" +
+                            "Status 帧里的未补偿原始值不参与换算。楼层没有固件来源，不提供。",
                         color = TextDim,
                         fontSize = 11.sp,
                     )
@@ -183,7 +219,8 @@ fun SensorStatusScreen(
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "气压基准（0x42）待 BMP388 复活并完成 TPG 补偿后才启用，向导中暂为只读说明。",
+                        "气压基准（0x42）在向导里可设置：取当前气压或手动输入 hPa；" +
+                            "固件返回 03 NOT_SUPPORTED 时按钮保持禁用。",
                         color = TextDim,
                         fontSize = 11.sp,
                     )
@@ -192,7 +229,7 @@ fun SensorStatusScreen(
 
             item {
                 Text(
-                    "Status 帧在有订阅时以 10 Hz 推送（无订阅 1 Hz）；加速度按 ±4 g（0.122 mg/LSB）、角速度按 ±1000 dps（35 mdps/LSB）、磁力计按 1.5 mG/LSB 换算。姿态四元数由 Telemetry 特征以 26 Hz 下发（界面限流到 15 Hz 渲染）；hPa 仍未标定，不在帧内。",
+                    "Status 帧在有订阅时以 10 Hz 推送（无订阅 1 Hz）；加速度按 ±4 g（0.122 mg/LSB）、角速度按 ±1000 dps（35 mdps/LSB）、磁力计按 1.5 mG/LSB 换算。姿态四元数由 Telemetry 特征以 26 Hz 下发（界面限流到 15 Hz 渲染）；气压/温度由 Telemetry 0x04 以 1 Hz 下发（已补偿），不在 Status 帧内。",
                     color = TextDim,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(bottom = 20.dp),

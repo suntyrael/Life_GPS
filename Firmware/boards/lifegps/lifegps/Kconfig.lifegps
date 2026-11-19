@@ -30,3 +30,12 @@ config LGPS_CALIB_SECTOR_INDEX
 	depends on LGPS_CALIB
 	default 16
 	range 16 4095
+
+# Barometric baseline: one 20-byte record, append-only in its own 4 KB sector.
+# Sector 17 sits right after the calibration sector so "clear calibration" (which
+# erases sector 16 as a whole) cannot drop the height reference, and a full
+# calibration log cannot erase the baseline. See Firmware/docs/PARTITIONS.md.
+config LGPS_BARO_SECTOR_INDEX
+	int "External NOR sector holding the barometric baseline record"
+	default 17
+	range 16 4095

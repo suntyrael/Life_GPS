@@ -128,6 +128,21 @@ interface DebugRepository {
 
     fun clearAccelCal()
 
+    // --- barometric baseline (BARO_BASELINE 0x42) ----------------------------
+
+    /**
+     * Re-renders [baro] from the last `0x04` packet. No BLE traffic: the telemetry
+     * stream is the source of truth and `0x42` action 0 has a side effect (it
+     * freezes the current pressure), so it must never be used as a query.
+     */
+    suspend fun refreshBaroBaseline(): BaroBaselineResult
+
+    /** Freezes the pressure the device measures right now as the baseline. */
+    suspend fun takeBaroBaseline(): BaroBaselineResult
+
+    /** Sets the baseline to [paQ4] (Pa × 16), validated against 30000..125000 Pa. */
+    suspend fun setBaroBaselineManual(paQ4: Long): BaroBaselineResult
+
     fun clearLogs()
     fun clearConsole()
     fun exportLogs()

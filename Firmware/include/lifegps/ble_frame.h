@@ -150,6 +150,19 @@ enum lgps_ble_status_code {
 /* One NMEA sentence per packet: u8 length, then that many ASCII bytes. */
 #define LGPS_BLE_TELEM_NMEA_MAX 128U
 
+/*
+ * Barometer packet (Doc/Software/BLE_Wire_v1.md section 5.1, telemetry 0x04):
+ * 16-byte payload so the compensated values reach the App without widening the
+ * 10 Hz Status frame. press_pa / rel_alt_mm / temp_cc are 0 when the matching
+ * valid flag is clear.
+ */
+#define LGPS_BLE_TELEM_BARO_PAYLOAD 16U
+#define LGPS_BLE_TELEM_BARO_SIZE (LGPS_BLE_TELEM_HEADER_SIZE + LGPS_BLE_TELEM_BARO_PAYLOAD)
+#define LGPS_BLE_BARO_FLAG_PRESS_VALID 0x01U
+#define LGPS_BLE_BARO_FLAG_TEMP_VALID 0x02U
+#define LGPS_BLE_BARO_FLAG_BASELINE_VALID 0x04U
+#define LGPS_BLE_BARO_FLAG_BASELINE_AUTO 0x08U
+
 /* Telemetry ids, mirroring protocol/lifegps_protocol.yaml `telemetry:`. */
 enum lgps_ble_telem_id {
 	LGPS_BLE_TELEM_GNSS = 0x01,
@@ -207,6 +220,17 @@ struct lgps_ble_telem_gnss {
 	uint32_t nmea_starts;
 	uint32_t rx_dropped;
 	uint32_t baud;
+};
+
+/* Barometer snapshot: compensated pressure, height relative to the baseline, the
+ * die temperature and the baseline itself (Pa x 16, 0 = none yet).
+ */
+struct lgps_ble_telem_baro {
+	uint32_t press_pa;
+	int32_t rel_alt_mm;
+	int16_t temp_cc;
+	uint8_t flags;
+	uint32_t baseline_pa_q4;
 };
 
 /* Status snapshot, field semantics in Doc/Software/BLE_Wire_v1.md section 4. */
@@ -306,6 +330,12 @@ struct lgps_ble_accel_cal_req {
 	uint8_t position;
 };
 
+/* BARO_BASELINE (0x42) action field, Doc/Software/BLE_Wire_v1.md section 6.5. */
+enum lgps_ble_baro_action {
+	LGPS_BLE_BARO_ACTION_CURRENT = 0, /* take the current pressure as baseline */
+	LGPS_BLE_BARO_ACTION_MANUAL = 1,  /* use baseline_pa_q4 from the request */
+};
+
 struct lgps_ble_baro_baseline_req {
 	uint8_t action;
 	uint32_t baseline_pa_q4;
@@ -401,6 +431,12 @@ int lgps_ble_telem_pdr_encode(uint16_t seq, const struct lgps_ble_telem_pdr *pdr
  * negative errno.
  */
 int lgps_ble_telem_gnss_encode(uint16_t seq, const struct lgps_ble_telem_gnss *gnss, uint8_t *out,
+			       size_t out_size);
+
+/* Barometer packet: u32 press_pa, i32 rel_alt_mm, i16 temp_cc, u8 flags, u8
+ * reserved, u32 baseline_pa_q4. Offsets frozen in BLE_Wire_v1.md section 5.1.
+ */
+int lgps_ble_telem_baro_encode(uint16_t seq, const struct lgps_ble_telem_baro *baro, uint8_t *out,
 			       size_t out_size);
 
 /*

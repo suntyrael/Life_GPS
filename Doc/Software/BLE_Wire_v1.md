@@ -141,9 +141,25 @@ off type  field
 | :--- | :--- | :--- | :--- |
 | `0x01` GNSS | 34 B（整包 38 B） | 见下方字段表 | 1 Hz |
 | `0x02` IMU | 20 B（整包 24 B） | `i16 acc_lsb[3]`、`i16 gyro_lsb[3]`、`i16 quat_q15[4]`（w,x,y,z，32767 = 1.0） | 26 Hz（仅订阅时） |
+| `0x04` BARO | 16 B（整包 20 B） | 见下方字段表 | 1 Hz（仅订阅时） |
 | `0x05` PDR | 12 B（整包 16 B） | `i32 x_mm`（东）、`i32 y_mm`（北）、`i16 heading_ddeg`、`u16 steps` | 每完成一步 + 1 Hz 心跳 |
 | `0x08` NMEA | 1 B + 文本（整包 ≤ 133 B） | `u8 len`、`char text[len]`（ASCII，`$...*hh`，不含 CR/LF） | 每句一包，仅调试会话开启 NMEA 直通时 |
 | `0x09` SAT | 4 B + 5 B×N（整包 ≤ 168 B） | 见下方字段表 | 1 Hz，仅调试会话开启单星采集时 |
+
+**`0x04` BARO 字段表**（`LGPS_BLE_TELEM_BARO_PAYLOAD` / `BaroTelemetryOffset`，小端）：
+
+| off | type | 字段 | 说明 |
+| :--- | :--- | :--- | :--- |
+| 0 | u32 | `press_pa` | BMP388 TPG 补偿后的气压，Pa；`press_valid` 为 0 时字段为 0 |
+| 4 | i32 | `rel_alt_mm` | 相对基准的高度，mm（ISA：`h = 44330·(1−(p/p0)^0.1902632)`）；无基准时为 0 |
+| 8 | i16 | `temp_cc` | 裸片温度，0.01 °C；`temp_valid` 为 0 时字段为 0 |
+| 10 | u8 | `flags` | bit0 `press_valid`、bit1 `temp_valid`、bit2 `baseline_valid`、bit3 `baseline_auto` |
+| 11 | u8 | 保留 | 0 |
+| 12 | u32 | `baseline_pa_q4` | 基准气压，Pa × 16；无基准时为 0 |
+
+`rel_alt_mm` 是**相对基准**的高度，不是椭球高也不是海拔：没有基准（`baseline_valid` = 0）时
+它是 0，主机不得把它当成“海拔 0 m”。气压基准由 `BARO_BASELINE`（§6.5）设立，或在 GNSS 条件
+满足后自动设立。
 
 **`0x01` GNSS 是接收链路诊断，不是定位结果**：定位结果仍在 Status 帧（§4），这里只回答
 「模块到底有没有在说话」。payload 布局（小端，固件侧 `LGPS_BLE_TELEM_GNSS_PAYLOAD` 与
@@ -182,7 +198,7 @@ App 侧 `GnssTelemetryOffset` 必须一致）：
 
 `GET_CAPS.telemetry_mask`（§6.1 off 16）的 bit n 表示 **id = n 的遥测组已实现**：
 bit1 GNSS、bit2 IMU、bit3 MAG、bit4 BARO、bit5 PDR、bit6 POWER、bit7 SYSTEM、bit8 NMEA、bit9 SAT（bit0 未用）。
-当前固件实现 bit1|bit2|bit5|bit8|bit9（`0x326`），主机必须按位判断，不得按协议版本号推测。
+当前固件实现 bit1|bit2|bit4|bit5|bit8|bit9（`0x336`），主机必须按位判断，不得按协议版本号推测。
 
 **IMU 包是 body 帧**（X 右 / Y 前 / Z 前脸法向），四元数把 body 映射到 world
 （X 东 / Y 北 / Z 上），所以加速度矢量可以直接和姿态一起画。
@@ -203,7 +219,7 @@ yaw（并顺带学习磁力计偏置），否则用磁力计按该偏置维持 y
 | `0x12` | POI_MARK | — | `u8 written`（1 = 已写入轨迹环） |
 | `0x30` | LOG_SUBSCRIBE | `u8 level`（0=off 1=ERR 2=WRN 3=INF 4=DBG） | — |
 | `0x41` | MAG_CAL | `u8 action`（6.3） | 见 6.3 |
-| `0x42` | BARO_BASELINE | `u8 action` + `u32 baseline_pa_q4`（6.5） | 见 6.5（U4 复活前返回 `0x03`） |
+| `0x42` | BARO_BASELINE | `u8 action` + `u32 baseline_pa_q4`（6.5） | 见 6.5（BMP388 不可用/未补偿时返 `0x03`） |
 | `0x43` | ACCEL_CAL | `u8 action` + `u8 position`（6.4） | 见 6.4 |
 | `0x35` | GNSS_CFG | `u8 action` + `u32 key` (+ value)（6.6） | 见 6.6 |
 | `0x36` | GNSS_DEBUG | `u8 flags` + `u16 ttl_s`（6.7） | 见 6.7 |
@@ -315,8 +331,22 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
 
 响应 8 字节：`u32 baseline_pa_q4`、`i32 rel_alt_mm`。
 
-**前置条件**：BMP388 必须应答，且固件已完成 TPG 补偿（系数 `0x30..0x57`）。没有 Pa 就没有
-相对高度 —— 在此之前该 opcode 返回 `0x03`，App 只展示只读说明，不给可点按钮。
+**前置条件**：BMP388 必须应答，且固件已完成 TPG 补偿（系数 `0x31..0x45`）。没有 Pa 就没有
+相对高度 —— 在此之前该 opcode 返回 `0x03`，App 只展示只读说明，不给可点按钮。数据范围之外的
+`baseline_pa_q4`（30000..125000 Pa）返 `0x01`。
+
+**基准的三种来法**（都是同一个 `u32 baseline_pa_q4`）：
+
+1. `action=0`：把**当前**补偿后的气压写成基准（App 上“取当前为基准”按钮）；
+2. `action=1`：手动输入（App 上输入 hPa，发 `Pa × 16`）；
+3. **自动**：GNSS 条件满足时由固件自己设（不需要 App 参与）：`fixType ≥ 3`、`numSV ≥ 8`、
+   已知 pDOP ≤ 2.0、地速 < 0.3 m/s，连续 30 s 且该窗口气压标准差 < 0.3 hPa；已有基准时
+   只有差 > 1 hPa 才重设（防抖）。
+
+基准**掉电不丢**：存在外部 NOR 的独立扇区（`CONFIG_LGPS_BARO_SECTOR_INDEX`，默认 17，
+`Firmware/src/nav/baro_store.c`，20 字节记录 + CRC-16），与标定记录扇区 16 分开，
+所以“清除校准”不会连带丢掉气压基准。`0x04` 遥测的 `baseline_auto` 位告诉 App 这个基准是
+自动还是手设置；没有“清除基准”命令，要清就是重新设一个新基准。
 
 ### 6.6 GNSS_CFG（`0x35`）请求 / 响应
 

@@ -13,6 +13,7 @@
 
 #include <string.h>
 
+#include <lifegps/bmp388.h>
 #include <lifegps/imu.h>
 
 LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
@@ -173,6 +174,17 @@ static uint8_t bmp388_addr = LGPS_BMP388_I2C_ADDR;
  */
 static bool mag_present;
 static bool baro_present;
+
+/*
+ * BMP388 trimming coefficients, read once in lgps_imu_hub_configure() while the
+ * part is still in sleep mode. Without them the 24-bit raw values have no unit
+ * (see lifegps/bmp388.h), so "baro_calib_valid == false" means the telemetry
+ * must print raw counts only.
+ */
+static struct lgps_bmp388_calib baro_calib;
+static bool baro_calib_valid;
+/* One-shot guard: an out-of-range compensated value is a finding, not a sample. */
+static bool baro_range_warned;
 
 /*
  * Last sensor hub transaction status. It has to be sampled while the master is
@@ -849,6 +861,70 @@ int lgps_imu_probe_hub(struct lgps_imu_hub_ids *ids)
 	return ret;
 }
 
+/*
+ * Read the BMP388 trimming coefficients (0x31..0x45, table 23) through the hub
+ * and turn them into the scaled floats of datasheet section 9.1.
+ *
+ * The block is 21 bytes and the hub's numop field carries at most seven bytes
+ * per slave (HUB_MAX_NUMOP), so it is fetched as three consecutive 7-byte reads.
+ * This has to run while the part is still in sleep mode: there is nothing in the
+ * datasheet that forbids reading NVM in normal mode, but the conversion engine
+ * has no reason to be running during a configuration read, and the M1 sequence
+ * reads the coefficients before PWR_CTRL starts it.
+ */
+static int bmp388_read_calib(uint8_t addr)
+{
+	uint8_t nvm[LGPS_BMP388_NVM_LEN];
+	int ret;
+
+	/* IF_CONF (table 39): the NVM copy is the longest hub transaction in this
+	 * firmware, and the NVM default is the I2C watchdog with the 1.25 ms short
+	 * timeout. Raise it to the 40 ms setting first, which is the same write the
+	 * hub diagnostics use to separate a watchdog abort from a dead part.
+	 */
+	ret = shub_write_byte(addr, BMP388_IF_CONF, BMP388_IF_CONF_WDT_LONG);
+	if (ret < 0) {
+		LOG_ERR("BMP388 IF_CONF write failed (%d)", ret);
+		return ret;
+	}
+
+	for (uint8_t chunk = 0U; chunk < 3U; chunk++) {
+		const uint8_t offset = (uint8_t)(chunk * HUB_MAX_NUMOP);
+		const uint8_t base = (uint8_t)(LGPS_BMP388_NVM_ADDR + offset);
+
+		ret = hub_single_read(addr, base, &nvm[offset], HUB_MAX_NUMOP);
+		if (ret < 0) {
+			LOG_ERR("BMP388 NVM read at 0x%02x failed (%d)", base, ret);
+			return ret;
+		}
+
+		/* Keep the raw block in the log: the coefficients can be recomputed from it
+		 * offline with section 9.1, which is what a support case needs. Logged per
+		 * chunk to stay inside the logger's argument budget.
+		 */
+		LOG_INF("BMP388 TPG NVM 0x%02x..0x%02x: %02x %02x %02x %02x %02x %02x %02x",
+			base, (unsigned int)(base + HUB_MAX_NUMOP - 1U), nvm[offset],
+			nvm[offset + 1U], nvm[offset + 2U], nvm[offset + 3U],
+			nvm[offset + 4U], nvm[offset + 5U], nvm[offset + 6U]);
+	}
+
+	ret = lgps_bmp388_calib_decode(nvm, &baro_calib);
+	if (ret < 0) {
+		LOG_WRN("BMP388 TPG coefficients unusable (%d): the block reads back all "
+			"0x00/0xFF, so pressure and temperature stay raw counts", ret);
+		return ret;
+	}
+
+	LOG_INF("BMP388 TPG decoded: T1=%.0f T2=%.3e T3=%.3e P1=%.6f (pressure is "
+		"compensated from here on)", (double)baro_calib.par_t1,
+		(double)baro_calib.par_t2, (double)baro_calib.par_t3,
+		(double)baro_calib.par_p1);
+
+	baro_calib_valid = true;
+
+	return 0;
+}
+
 int lgps_imu_hub_configure(void)
 {
 	int ret;
@@ -865,6 +941,24 @@ int lgps_imu_hub_configure(void)
 	ret = shub_write_byte(LGPS_LIS2MDL_I2C_ADDR, LIS2MDL_CFG_REG_C, LIS2MDL_CFG_C_BDU);
 	if (ret < 0) {
 		goto out;
+	}
+
+	/* BMP388 TPG coefficients first: they are the only way the raw 24-bit values
+	 * ever become Pa and degC, and reading them does not disturb the part.
+	 */
+	if (baro_present) {
+		const int calib_ret = bmp388_read_calib(bmp388_addr);
+
+		/* Not fatal: streaming continues and the telemetry keeps reporting raw
+		 * counts instead of physical values.
+		 */
+		if (calib_ret < 0) {
+			LOG_WRN("BMP388 TPG compensation disabled (%d): pressure and "
+				"temperature stay raw counts", calib_ret);
+		}
+	} else {
+		LOG_WRN("BMP388 never answered, no TPG coefficients: pressure and "
+			"temperature stay raw counts");
 	}
 
 	/* BMP388: oversampling, 25 Hz, normal mode with pressure + temperature. */
@@ -1127,10 +1221,40 @@ int lgps_imu_read_hub(struct lgps_imu_mag *mag, struct lgps_imu_baro *baro)
 	/* Second hub slave: LIS2MDL TEMP_OUT (0x6e/0x6f). */
 	mag->raw_temp = (int16_t)((uint16_t)raw[6] | ((uint16_t)raw[7] << 8));
 
-	/* Third hub slave: BMP388 pressure and temperature, unsigned 24-bit each. */
+	/* Third hub slave: BMP388 DATA_0..5, unsigned 24-bit little endian each
+	 * (datasheet tables 28 and 29).
+	 */
 	baro->raw_pressure = (uint32_t)raw[8] | ((uint32_t)raw[9] << 8) | ((uint32_t)raw[10] << 16);
 	baro->raw_temperature = (uint32_t)raw[11] | ((uint32_t)raw[12] << 8) |
 				((uint32_t)raw[13] << 16);
+
+	baro->pressure_pa = 0.0F;
+	baro->temperature_c = 0.0F;
+	baro->compensated = false;
+
+	if (baro_calib_valid) {
+		if (lgps_bmp388_compensate(&baro_calib, baro->raw_pressure, baro->raw_temperature,
+					   &baro->pressure_pa, &baro->temperature_c) == 0) {
+			baro->compensated = true;
+
+			/* Outside -40..+85 degC / 300..1250 hPa the polynomial result is a
+			 * fault signature, so say so once instead of publishing weather that
+			 * cannot exist.
+			 */
+			if (!baro_range_warned &&
+			    ((baro->temperature_c < LGPS_BMP388_TEMP_MIN_C) ||
+			     (baro->temperature_c > LGPS_BMP388_TEMP_MAX_C) ||
+			     (baro->pressure_pa < LGPS_BMP388_PRESS_MIN_PA) ||
+			     (baro->pressure_pa > LGPS_BMP388_PRESS_MAX_PA))) {
+				baro_range_warned = true;
+				LOG_WRN("BMP388 compensated value out of range (%.2f degC, "
+					"%.1f Pa from raw %u/%u): check the TPG block above",
+					(double)baro->temperature_c,
+					(double)baro->pressure_pa, baro->raw_temperature,
+					baro->raw_pressure);
+			}
+		}
+	}
 
 	mag->valid = mag_present;
 	baro->valid = baro_present;
