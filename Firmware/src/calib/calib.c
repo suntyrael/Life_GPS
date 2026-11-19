@@ -559,26 +559,35 @@ static void accel_store_face(uint8_t face)
 /* --- lifecycle ------------------------------------------------------------- */
 
 /*
- * Writes the coefficients back, or erases the record when everything is back at
- * the defaults. Clearing one sensor must not throw away the other's
- * coefficients, so the decision is made once for the whole record.
+ * Writes the coefficients back.
+ *
+ * @p allow_erase is for the CLEAR path only: once the cleared sensor is zeroed,
+ * an all-default record means "nothing to remember" and the sector is erased.
+ * A *save* must never take that shortcut - a calibration whose honest result is
+ * bias 0 / scale 0 (a device that needed no correction) is still a calibration,
+ * and inferring "nothing to store" from zero coefficients silently dropped it.
  */
-static int persist_current(void)
+static int persist_current(bool allow_erase)
 {
-	bool any = false;
 	uint8_t axis;
 
-	for (axis = 0U; axis < 3U; axis++) {
-		if ((coeffs.accel_bias_ug[axis] != 0) || (coeffs.accel_scale_ppm[axis] != 0) ||
-		    (coeffs.gyro_bias_mdps[axis] != 0) || (coeffs.mag_bias_lsb[axis] != 0) ||
-		    (coeffs.mag_scale_ppm[axis] != 0)) {
-			any = true;
-		}
-	}
+	if (allow_erase) {
+		bool any = false;
 
-	if (!any) {
-		flags = LGPS_CALIB_FLAG_DEFAULTS;
-		return lgps_calib_store_erase();
+		for (axis = 0U; axis < 3U; axis++) {
+			if ((coeffs.accel_bias_ug[axis] != 0) ||
+			    (coeffs.accel_scale_ppm[axis] != 0) ||
+			    (coeffs.gyro_bias_mdps[axis] != 0) ||
+			    (coeffs.mag_bias_lsb[axis] != 0) || (coeffs.mag_scale_ppm[axis] != 0)) {
+				any = true;
+			}
+		}
+
+		if (!any) {
+			flags = LGPS_CALIB_FLAG_DEFAULTS;
+			last_calib_unix_s = 0U;
+			return lgps_calib_store_erase();
+		}
 	}
 
 	flags |= LGPS_CALIB_FLAG_FROM_STORE;
@@ -805,7 +814,7 @@ int lgps_calib_accel_finish(void)
 	accel.quick_valid = false;
 	accel.detected_face = LGPS_CALIB_FACE_NONE;
 
-	return persist_current();
+	return persist_current(false);
 }
 
 int lgps_calib_accel_clear(void)
@@ -820,7 +829,7 @@ int lgps_calib_accel_clear(void)
 	accel.quick_valid = false;
 	accel.detected_face = LGPS_CALIB_FACE_NONE;
 
-	return persist_current();
+	return persist_current(true);
 }
 
 /* --- magnetometer session -------------------------------------------------- */
@@ -880,7 +889,7 @@ int lgps_calib_mag_finish(void)
 	mag.state = LGPS_CALIB_STATE_IDLE;
 	mag.have_sample = false;
 
-	return persist_current();
+	return persist_current(false);
 }
 
 int lgps_calib_mag_clear(void)
@@ -889,7 +898,7 @@ int lgps_calib_mag_clear(void)
 	memset(coeffs.mag_scale_ppm, 0, sizeof(coeffs.mag_scale_ppm));
 	memset(coeffs.mag_coverage_pct, 0, sizeof(coeffs.mag_coverage_pct));
 
-	return persist_current();
+	return persist_current(true);
 }
 
 /* --- feeding --------------------------------------------------------------- */

@@ -378,8 +378,13 @@ ZTEST(lifegps_calib, test_apply_imu_corrects_the_bench_case)
 
 	zassert_equal(0, lgps_calib_accel_finish(), "finish failed");
 
-	/* Resting with the X axis up: raw = bias + 1 g of an over-reading sensor. */
+	/* Resting with the X axis up: raw = bias + 1 g of an over-reading sensor.
+	 * The other two axes carry the same 200 LSB bias the faces were captured
+	 * with, so a correct correction must leave them at zero.
+	 */
 	sample.raw_accel[0] = (int16_t)(200.0F + OVERREAD_LSB_PER_G);
+	sample.raw_accel[1] = 200;
+	sample.raw_accel[2] = 200;
 	lgps_calib_apply_imu(&sample);
 
 	zassert_true(near_f(sample.accel_g[0], 1.0F, 0.01F),
