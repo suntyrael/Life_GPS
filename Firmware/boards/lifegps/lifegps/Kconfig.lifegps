@@ -5,3 +5,12 @@
 # (Cortex-M33). The FLPR RISC-V coprocessor is not used by this board revision.
 config BOARD_LIFEGPS
 	select SOC_NRF54L15_CPUAPP if BOARD_LIFEGPS_NRF54L15_CPUAPP
+
+# Bring-up only: the one-shot sensor-hub diagnostic in src/imu/lsm6dsr.c. It
+# proves the auxiliary I2C read/write paths and decodes the per-slave NACK bits
+# before the streaming configuration is written, which is what localised the dead
+# BMP388 on the 2026-11-19 bench unit. It costs about 4 s of boot time and a few
+# hundred bytes of log strings, so it stays off in normal builds.
+config LGPS_IMU_HUB_DIAG
+	bool "Run the sensor hub bring-up diagnostic once at boot"
+	default n

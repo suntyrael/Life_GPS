@@ -51,7 +51,7 @@
 
 LOG_MODULE_REGISTER(lgps_ble, LOG_LEVEL_INF);
 
-/* Eight bytes of headroom below the 247-byte ATT MTU: the 82-byte Status frame
+/* Eight bytes of headroom below the 247-byte ATT MTU: the 100-byte Status frame
  * plus the 6-byte command response header must always fit without a long write.
  */
 BUILD_ASSERT(LGPS_BLE_STATUS_SIZE <= LGPS_PROTO_MTU - 8,
@@ -165,7 +165,7 @@ static void reboot_work_handler(struct k_work *work)
 
 /* Latest encoded Status frame. Written by the main thread, read by the GATT
  * read callback (BT host thread) and by the command thread (GET_STATUS), so the
- * 82-byte copy is short enough to sit behind a spinlock.
+ * 100-byte copy is short enough to sit behind a spinlock.
  */
 static uint8_t status_frame[LGPS_BLE_STATUS_SIZE];
 
@@ -422,11 +422,16 @@ static void status_from_fix(struct lgps_ble_status *status,
 		status->flags |= LGPS_BLE_STAT_IMU_VALID;
 	}
 
-	/* The sensor hub clocks both external devices out in one transaction, so a
-	 * successful read means magnetometer and barometer are both fresh.
+	/* The sensor hub clocks both external devices out in one transaction, but
+	 * each device still reports on its own: a barometer that never answered its
+	 * identification read must not be advertised as valid (bench 2026-11-19).
 	 */
-	if (snap->hub_valid) {
-		status->flags |= LGPS_BLE_STAT_MAG_VALID | LGPS_BLE_STAT_BARO_VALID;
+	if (snap->mag_valid) {
+		status->flags |= LGPS_BLE_STAT_MAG_VALID;
+	}
+
+	if (snap->baro_valid) {
+		status->flags |= LGPS_BLE_STAT_BARO_VALID;
 	}
 
 	if (snap->fix.utc_valid) {
@@ -463,6 +468,32 @@ static void status_from_fix(struct lgps_ble_status *status,
 	status->baro_temp_raw = snap->baro_temp_raw;
 	status->ring_sector_seq = snap->ring_sector_seq;
 	status->ring_records = snap->ring_records;
+
+	/* Appended motion/temperature block (offsets 82..99). */
+	status->sensor_flags = 0U;
+	if (snap->gravity_valid) {
+		status->sensor_flags |= LGPS_BLE_SENSOR_GRAV_VALID;
+	}
+
+	if (snap->imu_temp_valid) {
+		status->sensor_flags |= LGPS_BLE_SENSOR_IMU_TEMP_VALID;
+	}
+
+	if (snap->mag_temp_valid) {
+		status->sensor_flags |= LGPS_BLE_SENSOR_MAG_TEMP_VALID;
+	}
+
+	if (snap->baro_valid) {
+		status->sensor_flags |= LGPS_BLE_SENSOR_BARO_TEMP_VALID;
+	}
+
+	for (uint8_t axis = 0U; axis < 3U; axis++) {
+		status->gravity_mg[axis] = snap->gravity_valid ? snap->gravity_mg[axis] : 0;
+		status->linear_mg[axis] = snap->gravity_valid ? snap->linear_mg[axis] : 0;
+	}
+
+	status->imu_temp_cc = snap->imu_temp_valid ? snap->imu_temp_cc : 0;
+	status->mag_temp_cc = snap->mag_temp_valid ? snap->mag_temp_cc : 0;
 }
 
 static uint8_t reply_not_supported(uint8_t opcode)

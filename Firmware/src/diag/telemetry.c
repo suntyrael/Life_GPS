@@ -9,6 +9,8 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/printk.h>
 
+#include <stdint.h>
+
 #include <lifegps/telemetry.h>
 
 LOG_MODULE_REGISTER(lgps_tele, LOG_LEVEL_INF);
@@ -104,16 +106,26 @@ void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 			"(no sample yet)", snap->imu_who_am_i);
 	}
 
+	LOG_INF("MOTION g_mg=%d,%d,%d lin_mg=%d,%d,%d t_cc=%d (body frame, 1 g = 1000 mg)",
+		snap->gravity_valid ? snap->gravity_mg[0] : INT16_MIN,
+		snap->gravity_valid ? snap->gravity_mg[1] : INT16_MIN,
+		snap->gravity_valid ? snap->gravity_mg[2] : INT16_MIN,
+		snap->gravity_valid ? snap->linear_mg[0] : INT16_MIN,
+		snap->gravity_valid ? snap->linear_mg[1] : INT16_MIN,
+		snap->gravity_valid ? snap->linear_mg[2] : INT16_MIN,
+		snap->imu_temp_valid ? snap->imu_temp_cc : INT16_MIN);
+
 	if (snap->hub_valid) {
-		LOG_INF("MAG lsb=%d,%d,%d ut=%.1f,%.1f,%.1f", snap->mag_lsb[0], snap->mag_lsb[1],
-			snap->mag_lsb[2],
+		LOG_INF("MAG lsb=%d,%d,%d ut=%.1f,%.1f,%.1f t_cc=%d", snap->mag_lsb[0],
+			snap->mag_lsb[1], snap->mag_lsb[2],
 			(double)((float)snap->mag_lsb[0] * MAG_UT_PER_LSB),
 			(double)((float)snap->mag_lsb[1] * MAG_UT_PER_LSB),
-			(double)((float)snap->mag_lsb[2] * MAG_UT_PER_LSB));
+			(double)((float)snap->mag_lsb[2] * MAG_UT_PER_LSB),
+			snap->mag_temp_valid ? snap->mag_temp_cc : INT16_MIN);
 		LOG_INF("BARO press_raw=%u temp_raw=%u (uncompensated)", snap->baro_press_raw,
 			snap->baro_temp_raw);
 	} else {
-		LOG_INF("MAG lsb=--- ut=--- (sensor hub not streaming)");
+		LOG_INF("MAG lsb=--- ut=--- t_cc=--- (sensor hub not streaming)");
 		LOG_INF("BARO press_raw=--- temp_raw=--- (sensor hub not streaming)");
 	}
 

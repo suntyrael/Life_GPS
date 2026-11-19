@@ -70,6 +70,12 @@ enum lgps_ble_status_code {
 #define LGPS_BLE_STAT_RING_READY 0x40U
 #define LGPS_BLE_STAT_UTC_VALID 0x80U
 
+/* Status frame `sensor_flags` bits, appended fields only (offsets 82..99). */
+#define LGPS_BLE_SENSOR_GRAV_VALID 0x01U
+#define LGPS_BLE_SENSOR_IMU_TEMP_VALID 0x02U
+#define LGPS_BLE_SENSOR_MAG_TEMP_VALID 0x04U
+#define LGPS_BLE_SENSOR_BARO_TEMP_VALID 0x08U
+
 /* GET_CAPS.caps bits. A bit means "this opcode/feature really works in v1". */
 #define LGPS_BLE_CAP_STATUS_NOTIFY 0x00000001U
 #define LGPS_BLE_CAP_LOG_NOTIFY 0x00000002U
@@ -84,7 +90,11 @@ enum lgps_ble_status_code {
  */
 #define LGPS_BLE_SOC_UNKNOWN 0xFFU
 
-#define LGPS_BLE_STATUS_SIZE 82U
+/* Status body: 0..81 as v1, then the appended motion/temperature block. The size
+ * grew from 82 to 100; older hosts must treat a short body as "fields absent".
+ */
+#define LGPS_BLE_STATUS_BASE_SIZE 82U
+#define LGPS_BLE_STATUS_SIZE 100U
 #define LGPS_BLE_CAPS_SIZE 24U
 #define LGPS_BLE_FLASH_INFO_SIZE 24U
 #define LGPS_BLE_LOG_MAX_PACKET 240U
@@ -154,6 +164,15 @@ struct lgps_ble_status {
 	uint32_t baro_temp_raw;
 	uint32_t ring_sector_seq;
 	uint32_t ring_records;
+	/* Appended block: gravity and linear acceleration in the body frame (milli-g,
+	 * 1000 = 1 g) so the host does not have to guess which frame an accelerometer
+	 * sample is in, plus the die temperatures in 0.01 degC.
+	 */
+	int16_t gravity_mg[3];
+	int16_t linear_mg[3];
+	int16_t imu_temp_cc;
+	int16_t mag_temp_cc;
+	uint8_t sensor_flags;
 };
 
 /* Parsed view of an incoming command frame; payload points into the caller's

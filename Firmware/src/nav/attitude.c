@@ -354,6 +354,24 @@ void lgps_attitude_quat_q15(const struct lgps_attitude *att, int16_t q_q15[4])
 	}
 }
 
+void lgps_attitude_gravity_body(const struct lgps_attitude *att, float gravity_g[3])
+{
+	float matrix[3][3];
+
+	if ((att == NULL) || (gravity_g == NULL)) {
+		return;
+	}
+
+	quat_to_matrix(att->q, matrix);
+
+	/* gravity_body = R^T * (0, 0, 1) with R = world_from_body, i.e. the third row
+	 * of R read across. At rest the accelerometer measures this same vector.
+	 */
+	for (uint8_t axis = 0U; axis < 3U; axis++) {
+		gravity_g[axis] = matrix[2][axis];
+	}
+}
+
 void lgps_attitude_correct_from_mag(struct lgps_attitude *att, const float mag_body_ut[3],
 				    float gain)
 {

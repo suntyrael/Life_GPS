@@ -188,6 +188,18 @@ int lgps_ble_status_encode(const struct lgps_ble_status *status, uint8_t *out, s
 	put_u32(&out[74], status->ring_sector_seq);
 	put_u32(&out[78], status->ring_records);
 
+	/* Appended in v1.1: body-frame gravity and linear acceleration, then the die
+	 * temperatures. Offsets 82..99, see BLE_Wire_v1.md section 4.
+	 */
+	for (uint8_t axis = 0U; axis < 3U; axis++) {
+		put_i16(&out[82U + (axis * 2U)], status->gravity_mg[axis]);
+		put_i16(&out[88U + (axis * 2U)], status->linear_mg[axis]);
+	}
+	put_i16(&out[94], status->imu_temp_cc);
+	put_i16(&out[96], status->mag_temp_cc);
+	out[98] = status->sensor_flags;
+	out[99] = 0U;
+
 	return (int)LGPS_BLE_STATUS_SIZE;
 }
 

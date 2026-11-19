@@ -55,6 +55,15 @@
  */
 #define LGPS_LIS2MDL_UT_PER_LSB 0.15F
 
+/* Die temperatures, both sensors. LSM6DSR OUT_TEMP (0x20/0x21) is 16-bit two's
+ * complement at 256 LSB/degC with a +25 degC offset (DS11976 section 9.30);
+ * LIS2MDL TEMP_OUT (0x6e/0x6f) is 16-bit two's complement at 8 LSB/degC with no
+ * offset (DS12144 Rev 6 section 8.16). Both are die temperatures, not ambient.
+ */
+#define LGPS_IMU_TEMP_LSB_PER_C 256.0F
+#define LGPS_IMU_TEMP_OFFSET_C 25.0F
+#define LGPS_LIS2MDL_TEMP_LSB_PER_C 8.0F
+
 /*
  * ODR programmed for both chains: 26 Hz high-performance. It is the native rate
  * closest to the 20 Hz the PDR design assumes, and 26 samples of it make the ZUPT
@@ -65,6 +74,7 @@
 struct lgps_imu_sample {
 	int16_t raw_accel[3];
 	int16_t raw_gyro[3];
+	int16_t raw_temp; /* OUT_TEMP, 256 LSB/degC, +25 degC offset */
 	float accel_g[3];
 	float gyro_dps[3];
 };
@@ -78,6 +88,7 @@ struct lgps_imu_hub_ids {
 
 struct lgps_imu_mag {
 	int16_t raw[3];      /* LIS2MDL OUTX..OUTZ, LSB */
+	int16_t raw_temp;    /* LIS2MDL TEMP_OUT, 8 LSB/degC, no offset */
 	bool valid;
 };
 
@@ -118,7 +129,8 @@ int lgps_imu_hub_diag(void);
 /*
  * Program LIS2MDL (50 Hz continuous, temperature compensation, BDU) and BMP388
  * (normal mode, pressure + temperature enabled) through one-shot hub writes, then
- * switch the hub into 2-slave read mode at 52 Hz.
+ * switch the hub into 2-slave read mode. The transfer rate is capped by the
+ * accelerometer/gyro data-ready that triggers each cycle, i.e. 26 Hz here.
  */
 int lgps_imu_hub_configure(void);
 
@@ -137,8 +149,11 @@ int lgps_imu_read_sample(struct lgps_imu_sample *out);
 int lgps_imu_read_sample_if_ready(struct lgps_imu_sample *out);
 
 /*
- * Read the 12 bytes produced by the hub (6 magnetometer + 6 barometer).
- * Both values stay "valid = false" until lgps_imu_hub_configure() succeeded.
+ * Read the 14 bytes produced by the hub: 8 from the LIS2MDL (6 magnetometer
+ * bytes from 0x68 plus TEMP_OUT at 0x6e/0x6f, which is contiguous) and 6 from
+ * the BMP388 (PRESSURE_XLSB..TEMP_MSB, 0x04..0x09). A sensor that did not answer
+ * its identification read at boot keeps "valid = false", so its zeros are never
+ * mistaken for a measurement.
  */
 int lgps_imu_read_hub(struct lgps_imu_mag *mag, struct lgps_imu_baro *baro);
 

@@ -26,6 +26,7 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 #define REG_CTRL2_G 0x11U
 #define REG_CTRL3_C 0x12U
 #define REG_CTRL9_XL 0x18U
+#define REG_OUT_TEMP_L 0x20U
 #define REG_OUTX_L_G 0x22U
 #define REG_OUTX_L_A 0x28U
 
@@ -67,6 +68,7 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 #define LIS2MDL_CFG_REG_A 0x60U
 #define LIS2MDL_CFG_REG_C 0x62U
 #define LIS2MDL_OUTX_L_REG 0x68U
+#define LIS2MDL_TEMP_OUT_L_REG 0x6EU
 #define LIS2MDL_CFG_A_TEMP_COMP_50HZ 0x88U /* COMP_TEMP_EN | ODR=10b | MD=00b */
 #define LIS2MDL_CFG_C_BDU 0x10U
 
@@ -80,6 +82,17 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 #define LIS2MDL_INT_THS_L_PATTERN 0xA5U
 #define LIS2MDL_INT_THS_H_PATTERN 0x5AU
 #define LIS2MDL_WHO_AM_I_REG 0x4FU
+
+/* Hub block layout: LIS2MDL 0x68..0x6f is one contiguous run (six magnetometer
+ * bytes followed by the two temperature bytes), then the BMP388 register run.
+ */
+#define HUB_MAG_BYTES 8U
+#define HUB_BARO_BYTES 6U
+#define HUB_BLOCK_BYTES (HUB_MAG_BYTES + HUB_BARO_BYTES)
+/* LSM6DSR sample burst: OUT_TEMP (0x20/0x21) is immediately followed by the gyro
+ * and accelerometer outputs, so one burst covers all three quantities.
+ */
+#define IMU_BURST_BYTES 14U
 
 #define BMP388_CHIP_ID_REG 0x00U
 #define BMP388_PRESS_XLSB 0x04U
@@ -138,6 +151,11 @@ static K_MUTEX_DEFINE(imu_lock);
 static bool hub_streaming_configured;
 static uint8_t detected_who_am_i;
 static uint8_t bmp388_addr = LGPS_BMP388_I2C_ADDR;
+/* Set by lgps_imu_probe_hub(). A device that never answered its identification
+ * read must not have its zeros reported as measurements.
+ */
+static bool mag_present;
+static bool baro_present;
 
 /*
  * Last sensor hub transaction status. It has to be sampled while the master is
@@ -788,10 +806,25 @@ int lgps_imu_probe_hub(struct lgps_imu_hub_ids *ids)
 		}
 	}
 
+	mag_present = ids->lis2mdl_ok;
+	baro_present = ids->bmp388_ok;
+
+	/* The toggle above is a probe tactic, not a finding: when nothing answered,
+	 * go back to the netlist strapping so the streaming log and the status frame
+	 * do not claim 0x77. */
+	if (!baro_present) {
+		bmp388_addr = LGPS_BMP388_I2C_ADDR;
+	}
+
 	if (ret == 0) {
 		LOG_INF("sensor hub probe: LIS2MDL WHO_AM_I=0x%02x (%s) BMP388 CHIP_ID=0x%02x "
 			"@0x%02x (%s)", mag_id, ids->lis2mdl_ok ? "ok" : "MISMATCH", baro_id,
 			bmp388_addr, ids->bmp388_ok ? "ok" : "MISMATCH");
+
+		if (!baro_present) {
+			LOG_WRN("BMP388 (U4) did not acknowledge at either strapping address; "
+				"pressure and its temperature stay invalid until it does");
+		}
 	}
 
 	k_mutex_unlock(&imu_lock);
@@ -859,8 +892,11 @@ int lgps_imu_hub_configure(void)
 		goto out;
 	}
 
-	/* SHUB_ODR = 01b (52 Hz) | numop = 6 (six bytes, see hub_single_read). */
-	ret = imu_write(REG_SLV0_CONFIG, (uint8_t)(BIT(6) | 0x06U));
+	/* SHUB_ODR = 01b | numop = 8: six magnetometer bytes plus TEMP_OUT.
+	 * The cycle itself is triggered by the accelerometer/gyro data-ready, so the
+	 * effective rate is 26 Hz whatever this field asks for (DS11976 table 373).
+	 */
+	ret = imu_write(REG_SLV0_CONFIG, (uint8_t)(BIT(6) | 0x08U));
 	if (ret < 0) {
 		goto out;
 	}
@@ -875,7 +911,7 @@ int lgps_imu_hub_configure(void)
 		goto out;
 	}
 
-	ret = imu_write(REG_SLV1_CONFIG, 0x06U); /* numop = 6 (six bytes) */
+	ret = imu_write(REG_SLV1_CONFIG, 0x06U); /* numop = 6: pressure + temperature */
 	if (ret < 0) {
 		goto out;
 	}
@@ -889,17 +925,18 @@ int lgps_imu_hub_configure(void)
 
 	k_msleep(SHUB_SETTLE_MS);
 
-	uint8_t check[12] = { 0 };
+	uint8_t check[HUB_BLOCK_BYTES] = { 0U };
 
 	if (imu_read_buf(REG_SENSOR_HUB_1, check, sizeof(check)) == 0) {
-		LOG_INF("sensor hub streaming: LIS2MDL 6B @50Hz, BMP388 6B @25Hz @0x%02x, "
-			"hub ODR 52Hz, 12 of 18 bytes used", bmp388_addr);
-		LOG_INF("sensor hub first burst: %02x %02x %02x %02x %02x %02x | "
+		LOG_INF("sensor hub streaming: LIS2MDL 8B (mag + temp), BMP388 6B, hub cycle "
+			"26 Hz (gated by the IMU data-ready), %u of 18 bytes used @0x%02x",
+			(unsigned int)HUB_BLOCK_BYTES, bmp388_addr);
+		LOG_INF("sensor hub first burst: %02x %02x %02x %02x %02x %02x %02x %02x | "
 			"%02x %02x %02x %02x %02x %02x", check[0], check[1], check[2], check[3],
 			check[4], check[5], check[6], check[7], check[8], check[9], check[10],
-			check[11]);
+			check[11], check[12], check[13]);
 
-		if ((check[6] == 0U) && (check[7] == 0U) && (check[8] == 0U)) {
+		if ((check[8] == 0U) && (check[9] == 0U) && (check[10] == 0U)) {
 			LOG_WRN("BMP388 pressure reads 0: check PWR_CTRL write path, SDO strapping "
 				"(0x76/0x77) and that U4 is populated");
 		}
@@ -918,14 +955,19 @@ out:
 	return ret;
 }
 
-static void decode_sample(const uint8_t raw[12], struct lgps_imu_sample *out)
+static void decode_sample(const uint8_t raw[IMU_BURST_BYTES],
+			  struct lgps_imu_sample *out)
 {
-	/* Gyro first (0x22..0x27), then accelerometer (0x28..0x2D), little endian. */
+	/* One burst from OUT_TEMP_L (0x20): temperature 0x20..0x21, gyro
+	 * 0x22..0x27, accelerometer 0x28..0x2D, all little endian.
+	 */
+	out->raw_temp = (int16_t)((uint16_t)raw[0] | ((uint16_t)raw[1] << 8));
+
 	for (uint8_t axis = 0U; axis < 3U; axis++) {
-		out->raw_gyro[axis] = (int16_t)((uint16_t)raw[2U * axis] |
-						((uint16_t)raw[2U * axis + 1U] << 8));
-		out->raw_accel[axis] = (int16_t)((uint16_t)raw[6U + 2U * axis] |
-						 ((uint16_t)raw[6U + 2U * axis + 1U] << 8));
+		out->raw_gyro[axis] = (int16_t)((uint16_t)raw[2U + 2U * axis] |
+						((uint16_t)raw[3U + 2U * axis] << 8));
+		out->raw_accel[axis] = (int16_t)((uint16_t)raw[8U + 2U * axis] |
+						 ((uint16_t)raw[9U + 2U * axis] << 8));
 		out->gyro_dps[axis] = (float)out->raw_gyro[axis] * LGPS_IMU_GYRO_MDPS_LSB / 1000.0F;
 		out->accel_g[axis] = (float)out->raw_accel[axis] * LGPS_IMU_ACCEL_MG_LSB / 1000.0F;
 	}
@@ -938,7 +980,7 @@ uint8_t lgps_imu_who_am_i(void)
 
 int lgps_imu_read_sample(struct lgps_imu_sample *out)
 {
-	uint8_t raw[12];
+	uint8_t raw[IMU_BURST_BYTES];
 	int ret;
 
 	if (out == NULL) {
@@ -946,7 +988,7 @@ int lgps_imu_read_sample(struct lgps_imu_sample *out)
 	}
 
 	k_mutex_lock(&imu_lock, K_FOREVER);
-	ret = imu_read_buf(REG_OUTX_L_G, raw, sizeof(raw));
+	ret = imu_read_buf(REG_OUT_TEMP_L, raw, sizeof(raw));
 	k_mutex_unlock(&imu_lock);
 
 	if (ret < 0) {
@@ -961,7 +1003,7 @@ int lgps_imu_read_sample(struct lgps_imu_sample *out)
 int lgps_imu_read_sample_if_ready(struct lgps_imu_sample *out)
 {
 	uint8_t status = 0U;
-	uint8_t raw[12];
+	uint8_t raw[IMU_BURST_BYTES];
 	int ret;
 
 	if (out == NULL) {
@@ -982,7 +1024,7 @@ int lgps_imu_read_sample_if_ready(struct lgps_imu_sample *out)
 		return -EAGAIN;
 	}
 
-	ret = imu_read_buf(REG_OUTX_L_G, raw, sizeof(raw));
+	ret = imu_read_buf(REG_OUT_TEMP_L, raw, sizeof(raw));
 	k_mutex_unlock(&imu_lock);
 
 	if (ret < 0) {
@@ -996,7 +1038,7 @@ int lgps_imu_read_sample_if_ready(struct lgps_imu_sample *out)
 
 int lgps_imu_read_hub(struct lgps_imu_mag *mag, struct lgps_imu_baro *baro)
 {
-	uint8_t raw[12];
+	uint8_t raw[HUB_BLOCK_BYTES] = { 0U };
 	int ret;
 
 	if (mag == NULL || baro == NULL) {
@@ -1033,13 +1075,16 @@ int lgps_imu_read_hub(struct lgps_imu_mag *mag, struct lgps_imu_baro *baro)
 					   ((uint16_t)raw[2U * axis + 1U] << 8));
 	}
 
-	/* BMP388 pressure and temperature are unsigned 24-bit values. */
-	baro->raw_pressure = (uint32_t)raw[6] | ((uint32_t)raw[7] << 8) | ((uint32_t)raw[8] << 16);
-	baro->raw_temperature = (uint32_t)raw[9] | ((uint32_t)raw[10] << 8) |
-				((uint32_t)raw[11] << 16);
+	/* LIS2MDL TEMP_OUT follows the magnetometer outputs (0x6e/0x6f). */
+	mag->raw_temp = (int16_t)((uint16_t)raw[6] | ((uint16_t)raw[7] << 8));
 
-	mag->valid = true;
-	baro->valid = true;
+	/* BMP388 pressure and temperature are unsigned 24-bit values. */
+	baro->raw_pressure = (uint32_t)raw[8] | ((uint32_t)raw[9] << 8) | ((uint32_t)raw[10] << 16);
+	baro->raw_temperature = (uint32_t)raw[11] | ((uint32_t)raw[12] << 8) |
+				((uint32_t)raw[13] << 16);
+
+	mag->valid = mag_present;
+	baro->valid = baro_present;
 
 	return 0;
 }

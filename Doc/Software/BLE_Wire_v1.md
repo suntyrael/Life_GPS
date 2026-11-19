@@ -22,7 +22,7 @@
 | 特征 | UUID | 属性 | 说明 |
 | :--- | :--- | :--- | :--- |
 | Service | `4C475053-0001-4C47-5053-000000000001` | — | 主服务 |
-| Status | `4C475053-0002-4C47-5053-000000000001` | Read + Notify + CCC | 82 字节固定状态快照；有 central 订阅时 10 Hz 推送，无订阅时 1 Hz 仅维持缓存 |
+| Status | `4C475053-0002-4C47-5053-000000000001` | Read + Notify + CCC | 100 字节固定状态快照（前 82 字节与 v1 完全一致）；有 central 订阅时 10 Hz 推送，无订阅时 1 Hz 仅维持缓存 |
 | Control | `4C475053-0003-4C47-5053-000000000001` | Write + WriteWithoutResponse + Notify + CCC | 命令帧请求，响应走 Notify |
 | Log | `4C475053-0006-4C47-5053-000000000001` | Notify + CCC | 固件日志转发（UTF-8） |
 | Telemetry | `4C475053-0005-4C47-5053-000000000001` | Notify + CCC | 按传感器分组的二进制包：IMU（含姿态四元数）26 Hz、PDR 每步 |
@@ -62,7 +62,7 @@ off  size  field
 | `0x05` | INTERNAL_ERROR | 内部失败（流程/CRC/存储错误） |
 | `0x06` | UNAUTHORIZED | 需要先 `DEBUG_UNLOCK` |
 
-## 4. Status 帧（82 字节，小端，固定偏移）
+## 4. Status 帧（100 字节，小端，固定偏移）
 
 | off | type | 字段 | 说明 |
 | :--- | :--- | :--- | :--- |
@@ -93,8 +93,23 @@ off  size  field
 | 70 | u32 | `baro_temp_raw` | BMP388 未补偿原始温度 |
 | 74 | u32 | `ring_sector_seq` | 轨迹环当前扇区序号 |
 | 78 | u32 | `ring_records` | 轨迹环累计记录数 |
+| 82 | i16×3 | `gravity_mg[3]` | **体坐标系**重力方向 ×1000（1 g = 1000 mg），由姿态四元数算出，静止时与 `acc` 同向 |
+| 88 | i16×3 | `linear_mg[3]` | **体坐标系**线性加速度 = `acc(body) − gravity`，单位 mg |
+| 94 | i16 | `imu_temp_cc` | LSM6DSR 裸片温度，0.01 °C（256 LSB/°C，+25 °C 偏置） |
+| 96 | i16 | `mag_temp_cc` | LIS2MDL 裸片温度，0.01 °C（8 LSB/°C，无偏置） |
+| 98 | u8 | `sensor_flags` | bit0 重力/线性有效，bit1 IMU 温度有效，bit2 磁力计温度有效，bit3 气压计温度有效 |
+| 99 | u8 | `reserved2` | 0 |
 
-没有的物理量（四元数、高度 hPa、单星 C/N0、TTFF）**不在帧里**，App 不得编造。
+**坐标系约定（这是 2026-11-19 修掉的一个真实缺陷）**：
+`acc_lsb`/`gyro_lsb` 是**传感器坐标系**的原始计数，供诊断用；
+`82..93` 的 `gravity_mg`/`linear_mg` 是**体坐标系**（X 右、Y 前、Z 上），
+它与 Telemetry 包 `0x02` 的 `acc_lsb`（也是体坐标系）同框。
+2026-11-19 之前的 App 把 1 Hz 的 Status `acc_lsb`（传感器系，静止时 Z=+1 g）
+和 26 Hz 的 Telemetry `acc_lsb`（体坐标，静止时 Z=−1 g）写进同一个 UI 字段，
+表现为「上一秒 −1 g、下一秒 +1 g」。**主机不得把两种坐标系的加速度混进同一个量**。
+
+没有的物理量（四元数、高度 hPa、单星 C/N0、TTFF、BMP388 的 °C）**不在帧里**，App 不得编造；
+`baro_temp_raw` 是未补偿的 24 位原值，换算成 °C 需要读 BMP388 的 TPG 系数，固件尚未实现。
 
 ## 5. Log 通知（Log 特征）
 
@@ -110,7 +125,7 @@ char message[...]        UTF-8，超长截断（单包 ≤ 240 字节）
 
 ## 5.1 Telemetry 包（Telemetry 特征）
 
-一个包只装一组传感器，避免把 82 字节的 Status 撑成高频宽帧：
+一个包只装一组传感器，避免把 Status 撑成高频宽帧：
 
 ```
 off type  field
@@ -140,7 +155,7 @@ yaw（并顺带学习磁力计偏置），否则用磁力计按该偏置维持 y
 | opcode | 名称 | 请求 payload | 响应 payload（status 之后） |
 | :--- | :--- | :--- | :--- |
 | `0x01` | GET_CAPS | — | 见 6.1 |
-| `0x02` | GET_STATUS | — | 82 字节 Status 帧 |
+| `0x02` | GET_STATUS | — | 100 字节 Status 帧 |
 | `0x12` | POI_MARK | — | `u8 written`（1 = 已写入轨迹环） |
 | `0x30` | LOG_SUBSCRIBE | `u8 level`（0=off 1=ERR 2=WRN 3=INF 4=DBG） | — |
 | `0x52` | REBOOT | — | —（响应发出后 200 ms 冷复位，需先 `DEBUG_UNLOCK`） |
@@ -165,7 +180,7 @@ App 必须把这两种情况显示给用户，不得伪造成功。
 | 10 | u16 | `max_cmd_payload`（235） |
 | 12 | u32 | `caps`：bit0 Status notify，bit1 Log notify，bit2 POI，bit3 FLASH_INFO，bit4 REBOOT，bit5 DEBUG_UNLOCK，bit6 Data 同步（v1 = 0） |
 | 16 | u32 | `telemetry_mask`（v1 = 0，全部走 Status 帧） |
-| 20 | u16 | `status_size` = 82 |
+| 20 | u16 | `status_size` = 100 |
 | 22 | u16 | `reserved` |
 
 ### 6.2 FLASH_INFO 响应（20 字节）

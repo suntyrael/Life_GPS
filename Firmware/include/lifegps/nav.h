@@ -180,6 +180,18 @@ void lgps_attitude_euler_deg(const struct lgps_attitude *att, float euler_deg[3]
 void lgps_attitude_quat_q15(const struct lgps_attitude *att, int16_t q_q15[4]);
 
 /*
+ * World "up" expressed in the body frame, in g (the three components form a 1 g
+ * vector). This is what a stationary accelerometer reads, so subtracting it from
+ * the measured acceleration leaves the linear acceleration:
+ *
+ *     linear_body = accel_body - gravity_body
+ *
+ * The two vectors together are what the App shows instead of a raw accelerometer
+ * reading, which cannot distinguish "tilted" from "being pushed".
+ */
+void lgps_attitude_gravity_body(const struct lgps_attitude *att, float gravity_g[3]);
+
+/*
  * Nudge yaw towards magnetic north. @p gain in (0, 1] is the fraction of the
  * measured error applied per call, so a noisy field can be smoothed by calling it
  * repeatedly with a small gain.

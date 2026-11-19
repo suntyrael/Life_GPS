@@ -74,6 +74,14 @@ static struct lgps_step step_detector;
 static float hub_mag_body_ut[3];
 static bool hub_mag_valid;
 
+/* Body-frame gravity and linear acceleration of the newest IMU sample. The
+ * accelerometer alone cannot tell "tilted" from "being pushed", so the split is
+ * computed here from the attitude estimate and published with the snapshot.
+ */
+static float gravity_body_g[3];
+static float linear_body_g[3];
+static bool gravity_valid;
+
 /* Body-frame raw counts for the telemetry packet. The body matrix is a signed
  * permutation of the sensor axes (see lifegps/nav.h), so this is the same
  * mapping lgps_nav_body_from_imu() applies to the scaled values.
@@ -148,12 +156,16 @@ static int init_subsystems(void)
 		LOG_ERR("sensor hub probe failed (%d)", ret);
 	}
 
-	/* One-shot bring-up diagnostics: proves the hub read/write paths before
-	 * the streaming configuration overwrites them. About 1.5 s of boot time.
+	/* One-shot bring-up diagnostics: proves the hub read/write paths before the
+	 * streaming configuration overwrites them. Bring-up only - about 4 s of boot
+	 * time and a few hundred bytes of strings - so it is compiled out unless
+	 * CONFIG_LGPS_IMU_HUB_DIAG is set (see boards/lifegps/lifegps/Kconfig.lifegps).
 	 */
-	ret = lgps_imu_hub_diag();
-	if (ret < 0) {
-		LOG_WRN("sensor hub diagnostics failed (%d)", ret);
+	if (IS_ENABLED(CONFIG_LGPS_IMU_HUB_DIAG)) {
+		ret = lgps_imu_hub_diag();
+		if (ret < 0) {
+			LOG_WRN("sensor hub diagnostics failed (%d)", ret);
+		}
 	}
 
 	ret = lgps_imu_hub_configure();
@@ -212,14 +224,33 @@ static struct lgps_telemetry_snapshot *build_snapshot(uint32_t now_ms,
 			snap.acc_g[axis] = sample->accel_g[axis];
 			snap.gyro_dps[axis] = sample->gyro_dps[axis];
 		}
+
+		/* OUT_TEMP: 256 LSB/degC with a +25 degC offset (DS11976 9.30). */
+		snap.imu_temp_cc = (int16_t)(((float)sample->raw_temp / LGPS_IMU_TEMP_LSB_PER_C +
+					      LGPS_IMU_TEMP_OFFSET_C) * 100.0F);
+		snap.imu_temp_valid = true;
+	}
+
+	snap.gravity_valid = gravity_valid;
+	if (gravity_valid) {
+		for (uint8_t axis = 0U; axis < 3U; axis++) {
+			snap.gravity_mg[axis] = (int16_t)(gravity_body_g[axis] * 1000.0F);
+			snap.linear_mg[axis] = (int16_t)(linear_body_g[axis] * 1000.0F);
+		}
 	}
 
 	ret = lgps_imu_read_hub(&mag, &baro);
 	if (ret == 0) {
 		snap.hub_valid = true;
+		snap.mag_valid = mag.valid;
+		snap.baro_valid = baro.valid;
 		for (uint8_t axis = 0U; axis < 3U; axis++) {
 			snap.mag_lsb[axis] = mag.raw[axis];
 		}
+		/* LIS2MDL TEMP_OUT: 8 LSB/degC, no offset (DS12144 Rev 6 8.16). */
+		snap.mag_temp_cc =
+			(int16_t)(((float)mag.raw_temp / LGPS_LIS2MDL_TEMP_LSB_PER_C) * 100.0F);
+		snap.mag_temp_valid = mag.valid;
 		snap.baro_press_raw = baro.raw_pressure;
 		snap.baro_temp_raw = baro.raw_temperature;
 
@@ -382,6 +413,18 @@ int main(void)
 
 			last_sample_ms = now_ms;
 			lgps_attitude_update(&attitude, accel_body, gyro_rps, dt_s);
+
+			/* Split the measurement into gravity and what is left over. The
+			 * estimate is only trusted once the filter is live.
+			 */
+			if (attitude.valid) {
+				lgps_attitude_gravity_body(&attitude, gravity_body_g);
+				for (uint8_t axis = 0U; axis < 3U; axis++) {
+					linear_body_g[axis] =
+						accel_body[axis] - gravity_body_g[axis];
+				}
+				gravity_valid = true;
+			}
 
 			if (lgps_zupt_locked(&zupt)) {
 				lgps_attitude_accumulate_bias(&attitude, gyro_rps);
