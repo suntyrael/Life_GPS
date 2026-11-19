@@ -18,6 +18,7 @@
 #include <lifegps/baro_store.h>
 #include <lifegps/gnss.h>
 
+#include <errno.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -283,4 +284,5 @@ ZTEST(lifegps_baro, test_invalid_pressure_clears_height)
 	zassert_equal(lgps_baro_rel_alt_mm(), 0, "no pressure means no height");
 }
 
-ZTEST_SUITE(lifegps_baro, NULL, before_each, NULL, NULL, NULL);
+/* before_each is the per-test hook (4th argument), not the suite setup. */
+ZTEST_SUITE(lifegps_baro, NULL, NULL, before_each, NULL, NULL);
