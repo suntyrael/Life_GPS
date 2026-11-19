@@ -413,6 +413,31 @@ ZTEST(lifegps_nav, test_attitude_reset_reproduces_gravity)
 	zassert_within(up[2], 0.8660254F, 0.01F, "up.z must match the measured direction");
 }
 
+/*
+ * lgps_attitude_gravity_body() must return the same direction the filter was
+ * seeded with, and it is what the Status frame publishes as gravity_mg: a sign
+ * error here would make the App show linear acceleration of 2 g at rest.
+ */
+ZTEST(lifegps_nav, test_attitude_gravity_body_matches_rest_reading)
+{
+	const float accel[3] = { 0.3F, -0.2F, 0.9327379F };
+	struct lgps_attitude att;
+	float gravity[3];
+
+	lgps_attitude_reset(&att, accel);
+	lgps_attitude_gravity_body(&att, gravity);
+
+	zassert_within(gravity[0], accel[0], 0.01F, "gravity.x");
+	zassert_within(gravity[1], accel[1], 0.01F, "gravity.y");
+	zassert_within(gravity[2], accel[2], 0.01F, "gravity.z");
+
+	/* Resting: acc - gravity must be (near) zero on every axis. */
+	for (uint8_t axis = 0U; axis < 3U; axis++) {
+		zassert_within(accel[axis] - gravity[axis], 0.0F, 0.01F,
+			       "linear acceleration at rest must be zero");
+	}
+}
+
 ZTEST(lifegps_nav, test_attitude_level_stays_level)
 {
 	const float accel[3] = { 0.0F, 0.0F, 1.0F };

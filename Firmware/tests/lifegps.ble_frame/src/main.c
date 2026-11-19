@@ -230,13 +230,19 @@ ZTEST(lifegps_ble, test_status_offsets_match_wire_doc)
 		.baro_temp_raw = 0x000FFFFFU,
 		.ring_sector_seq = 0x00000007U,
 		.ring_records = 0x00001234U,
+		.gravity_mg = { 0x0064, -0x0064, 0x03E8 },
+		.linear_mg = { 0x0001, -0x0001, 0x0002 },
+		.imu_temp_cc = 2345,
+		.mag_temp_cc = -125,
+		.sensor_flags = 0x0FU,
 	};
 	uint8_t out[LGPS_BLE_STATUS_SIZE];
 	int len;
 
 	len = lgps_ble_status_encode(&status, out, sizeof(out));
 	zassert_equal(len, LGPS_BLE_STATUS_SIZE, "status frame size");
-	zassert_equal(LGPS_BLE_STATUS_SIZE, 82, "wire contract freezes 82 bytes");
+	zassert_equal(LGPS_BLE_STATUS_BASE_SIZE, 82, "the v1 fields stay at 0..81");
+	zassert_equal(LGPS_BLE_STATUS_SIZE, 100, "appended motion/temperature block");
 
 	/* Offsets are the ones printed in Doc/Software/BLE_Wire_v1.md section 4. */
 	zassert_equal(out[0], 0x01U, "off 0 ver");
@@ -276,6 +282,22 @@ ZTEST(lifegps_ble, test_status_offsets_match_wire_doc)
 	zassert_equal(out[70], 0xFFU, "off 70 baro_temp_raw byte 0");
 	zassert_equal(out[74], 0x07U, "off 74 ring_sector_seq");
 	zassert_equal(out[78], 0x34U, "off 78 ring_records byte 0");
+
+	/* Appended block, offsets 82..99. */
+	zassert_equal(out[82], 0x64U, "off 82 gravity_mg[0] low");
+	zassert_equal(out[83], 0x00U, "off 82 gravity_mg[0] high");
+	zassert_equal(out[84], 0x9CU, "off 84 gravity_mg[1] negative");
+	zassert_equal(out[85], 0xFFU, "off 84 gravity_mg[1] high byte");
+	zassert_equal(out[86], 0xE8U, "off 86 gravity_mg[2] low");
+	zassert_equal(out[87], 0x03U, "off 86 gravity_mg[2] high");
+	zassert_equal(out[88], 0x01U, "off 88 linear_mg[0] low");
+	zassert_equal(out[89], 0x00U, "off 88 linear_mg[0] high");
+	zassert_equal(out[94], 0x29U, "off 94 imu_temp_cc low");
+	zassert_equal(out[95], 0x09U, "off 94 imu_temp_cc high");
+	zassert_equal(out[96], 0x83U, "off 96 mag_temp_cc low (negative)");
+	zassert_equal(out[97], 0xFFU, "off 96 mag_temp_cc high");
+	zassert_equal(out[98], 0x0FU, "off 98 sensor_flags");
+	zassert_equal(out[99], 0x00U, "off 99 reserved");
 
 	/* A 240-byte ATT payload cannot be written into an 81-byte buffer. */
 	zassert_equal(lgps_ble_status_encode(&status, out, LGPS_BLE_STATUS_SIZE - 1U), -ENOMEM,
