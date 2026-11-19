@@ -1424,16 +1424,18 @@ class BleDebugRepository(context: Context) : DebugRepository {
 
     private fun accelMessageFor(response: AccelCalResponse, phase: CalibPhase): String = when {
         response.saveFailed -> "系数已生效，但写入 flash 失败（重启后会回到上一次的值）"
+        // A finished face is reported before the phase, because after a capture the
+        // device sits in IDLE (or SAVED when an older record exists) and the phase
+        // alone cannot tell the user what just happened.
+        response.faceState == AccelFaceStateCode.FACE_DONE && response.hasDetectedFace ->
+            "已识别并采集：${CalibFaces.label(response.detectedFace)}"
+        response.faceState == AccelFaceStateCode.JITTER_TIMEOUT ->
+            "本次没采到：设备没有静止，或姿态不够平（无法识别是哪一面）"
         phase == CalibPhase.COLLECTING -> when (response.faceState) {
             AccelFaceStateCode.WAIT_REST -> "等待设备静止…（静止余量 ${response.restPct} %）"
             AccelFaceStateCode.COLLECTING -> "正在采集本面（${response.progressPermille / 10} %）"
-            AccelFaceStateCode.JITTER_TIMEOUT -> "本面抖动过大，请放稳后重采"
             else -> "采集中"
         }
-        phase == CalibPhase.IDLE && response.hasDetectedFace ->
-            "已识别并采集：${CalibFaces.label(response.detectedFace)}"
-        phase == CalibPhase.IDLE && response.faceState == AccelFaceStateCode.JITTER_TIMEOUT ->
-            "姿态抖动过大，本次未采集成功"
         phase == CalibPhase.REVIEW -> "已计算，尚未保存到设备"
         phase == CalibPhase.SAVED -> CalibFormat.lastCalib(response.lastCalibUnixS, true)
         response.usingDefaults -> "未校准：设备当前使用编译期默认值"
