@@ -49,8 +49,10 @@ class CalibCodecTest {
         val request = CalibCodec.encodeAccelCal(CalibAction.START, 3)
         assertEquals(CalibCodec.ACCEL_REQ_SIZE, request.size)
         assertEquals(listOf<Byte>(0x00, 0x03), request.toList())
+        // The position byte is only read for START; the other actions carry the
+        // default (POSITION_AUTO) because the device already knows the pose.
         assertEquals(
-            listOf<Byte>(0x01, 0x00),
+            listOf<Byte>(0x01, 0xFF.toByte()),
             CalibCodec.encodeAccelCal(CalibAction.FINISH_SAVE).toList(),
         )
         assertEquals(
