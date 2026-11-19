@@ -4,19 +4,28 @@
  *
  * The device has no screen, so the DEBUG_UART stream doubles as the instrument.
  * Free-form log lines are fine for events, but periodic state must be parseable:
- * this module owns one fixed-format frame per second, six lines, fixed field
+ * this module owns one fixed-format frame per second, seven lines, fixed field
  * order, fixed key names, units inside the key name, "---" for "not available".
  *
- * Frame layout (one call = five consecutive log lines, tag "lgps_tele"):
+ * Frame layout (one call = seven consecutive log lines, tag "lgps_tele"):
  *
  *   GNSS st=<state> fix=<0..5> sats=<n> pdop_e2=<n|---> lat_e7=<n|---> lon_e7=<n|--->
  *        hmsl_mm=<n|---> spd_cms=<n|---> hdg_ddeg=<n|---> utc_s=<n|---> age_ms=<n|--->
- *   IMU  id=0x?? acc_lsb=a,b,c gyro_lsb=a,b,c acc_g=a,b,c gyro_dps=a,b,c
- *   MO   g_mg=a,b,c lin_mg=a,b,c t_cc=<n|---> (body frame, 1 g = 1000 mg)
- *   MAG  lsb=a,b,c ut=a,b,c t_cc=<n|--->
- *   BARO press_raw=<u32> temp_raw=<u32> (uncompensated)
+ *        rx=<n> ubx=<n> ckerr=<n> nmea=<n>
+ *   IMU  id=0x?? sensor: acc_lsb=a,b,c gyro_lsb=a,b,c acc_g=a,b,c gyro_dps=a,b,c
+ *   BODY gravity_g=a,b,c linear_g=a,b,c |gravity|=a |linear|=a (1.000 = 1 g)
+ *   TEMP imu_C=a mag_C=a baro=--- (die temperatures)
+ *   MAG  sensor: lsb=a,b,c ut=a,b,c |B|=a
+ *   BARO raw: press=<n|---> temp=<n|---> (uncompensated, needs TPG)
  *   SYS  bat_mv=<n|---> chg=<0|1> keys=<k1>,<k2> zupt=<locked|move> var_mg2=<n>
  *        steps=<n> ring_seq=<n> ring_rec=<n>
+ *
+ * Two conventions keep the frame readable when hardware is missing:
+ * - a value that is not available is printed as "---" and the field count never
+ *   changes, so a diff between two captures lines up;
+ * - every line names its frame of reference or its unit, because the same three
+ *   numbers mean different things in the sensor frame, the body frame and in
+ *   milli-g. The App shows the same split (BLE_Wire_v1.md section 4).
  *
  * Integers are used wherever the underlying value is an integer (record fields,
  * LSB counts, millivolts) so nothing is lost to formatting; the few physically
@@ -77,7 +86,7 @@ struct lgps_telemetry_snapshot {
 	uint32_t ring_records;
 };
 
-/* Emit the six-line frame described above. */
+/* Emit the seven-line frame described above. */
 void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap);
 
 #endif /* LIFEGPS_TELEMETRY_H_ */

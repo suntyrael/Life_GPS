@@ -9,6 +9,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/printk.h>
 
+#include <math.h>
 #include <stdint.h>
 
 #include <lifegps/telemetry.h>
@@ -45,6 +46,45 @@ static int32_t var_mg2_int(const struct lgps_telemetry_snapshot *snap)
 	return (int32_t)value_mg2;
 }
 
+/* Magnitude of a milli-g triple, in g. float math keeps libm small: the rest of
+ * the firmware already works in single precision.
+ */
+static float norm_g(const int16_t mg[3])
+{
+	const float x = (float)mg[0] / 1000.0F;
+	const float y = (float)mg[1] / 1000.0F;
+	const float z = (float)mg[2] / 1000.0F;
+
+	return sqrtf((x * x) + (y * y) + (z * z));
+}
+
+/* Field magnitude in uT: the quantity that must stay near 25..65 uT for the
+ * heading to be trustworthy (README 8.4 anomaly window is relative to it).
+ */
+static float mag_norm_ut(const struct lgps_telemetry_snapshot *snap)
+{
+	const float x = (float)snap->mag_lsb[0] * MAG_UT_PER_LSB;
+	const float y = (float)snap->mag_lsb[1] * MAG_UT_PER_LSB;
+	const float z = (float)snap->mag_lsb[2] * MAG_UT_PER_LSB;
+
+	return sqrtf((x * x) + (y * y) + (z * z));
+}
+
+/* 0.01 degC -> "-1.25", or "---" when the sensor did not report. */
+static const char *fmt_cc(char *buf, size_t size, int16_t cc, bool valid)
+{
+	int32_t hundredths = cc;
+
+	if (!valid) {
+		return "---";
+	}
+
+	(void)snprintk(buf, size, "%d.%02d", (int)(hundredths / 100),
+		       (int)((hundredths % 100 < 0) ? -(hundredths % 100) : hundredths % 100));
+
+	return buf;
+}
+
 void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 {
 	char pdop[8];
@@ -54,6 +94,8 @@ void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 	char spd[12];
 	char hdg[12];
 	char utc[16];
+	char imu_txt[10];
+	char mag_txt[10];
 
 	if (snap == NULL) {
 		return;
@@ -93,40 +135,59 @@ void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 		snap->gnss_counters.rx_bytes, snap->gnss_counters.ubx_frames,
 		snap->gnss_counters.ubx_bad_checksum, snap->gnss_counters.nmea_starts);
 
+	/* One line per question a bring-up engineer asks: what did the sensor
+	 * report, what does it mean physically, and is the derived split sane.
+	 */
 	if (snap->imu_valid) {
-		LOG_INF("IMU id=0x%02x acc_lsb=%d,%d,%d gyro_lsb=%d,%d,%d acc_g=%.3f,%.3f,%.3f "
-			"gyro_dps=%.2f,%.2f,%.2f",
+		LOG_INF("IMU  id=0x%02x sensor: acc_lsb=%d,%d,%d gyro_lsb=%d,%d,%d "
+			"acc_g=%.3f,%.3f,%.3f gyro_dps=%.2f,%.2f,%.2f",
 			snap->imu_who_am_i, snap->acc_lsb[0], snap->acc_lsb[1], snap->acc_lsb[2],
 			snap->gyro_lsb[0], snap->gyro_lsb[1], snap->gyro_lsb[2],
 			(double)snap->acc_g[0], (double)snap->acc_g[1], (double)snap->acc_g[2],
 			(double)snap->gyro_dps[0], (double)snap->gyro_dps[1],
 			(double)snap->gyro_dps[2]);
 	} else {
-		LOG_INF("IMU id=0x%02x acc_lsb=--- gyro_lsb=--- acc_g=--- gyro_dps=--- "
-			"(no sample yet)", snap->imu_who_am_i);
+		LOG_INF("IMU  id=0x%02x sensor: acc_lsb=--- gyro_lsb=--- acc_g=--- "
+			"gyro_dps=--- (no sample yet)", snap->imu_who_am_i);
 	}
 
-	LOG_INF("MOTION g_mg=%d,%d,%d lin_mg=%d,%d,%d t_cc=%d (body frame, 1 g = 1000 mg)",
-		snap->gravity_valid ? snap->gravity_mg[0] : INT16_MIN,
-		snap->gravity_valid ? snap->gravity_mg[1] : INT16_MIN,
-		snap->gravity_valid ? snap->gravity_mg[2] : INT16_MIN,
-		snap->gravity_valid ? snap->linear_mg[0] : INT16_MIN,
-		snap->gravity_valid ? snap->linear_mg[1] : INT16_MIN,
-		snap->gravity_valid ? snap->linear_mg[2] : INT16_MIN,
-		snap->imu_temp_valid ? snap->imu_temp_cc : INT16_MIN);
+	if (snap->gravity_valid) {
+		LOG_INF("BODY gravity_g=%.3f,%.3f,%.3f linear_g=%.3f,%.3f,%.3f "
+			"|gravity|=%.3f |linear|=%.3f (1.000 = 1 g)",
+			(double)(snap->gravity_mg[0] / 1000.0F),
+			(double)(snap->gravity_mg[1] / 1000.0F),
+			(double)(snap->gravity_mg[2] / 1000.0F),
+			(double)(snap->linear_mg[0] / 1000.0F),
+			(double)(snap->linear_mg[1] / 1000.0F),
+			(double)(snap->linear_mg[2] / 1000.0F),
+			(double)norm_g(snap->gravity_mg), (double)norm_g(snap->linear_mg));
+	} else {
+		LOG_INF("BODY gravity_g=--- linear_g=--- |gravity|=--- |linear|=--- "
+			"(attitude not running yet)");
+	}
 
-	if (snap->hub_valid) {
-		LOG_INF("MAG lsb=%d,%d,%d ut=%.1f,%.1f,%.1f t_cc=%d", snap->mag_lsb[0],
-			snap->mag_lsb[1], snap->mag_lsb[2],
+	LOG_INF("TEMP imu_C=%s mag_C=%s baro=--- (die temperatures; baro needs TPG "
+		"compensation, see BARO)", fmt_cc(imu_txt, sizeof(imu_txt),
+						  snap->imu_temp_cc, snap->imu_temp_valid),
+		fmt_cc(mag_txt, sizeof(mag_txt), snap->mag_temp_cc, snap->mag_temp_valid));
+
+	if (snap->mag_valid) {
+		LOG_INF("MAG  sensor: lsb=%d,%d,%d ut=%.1f,%.1f,%.1f |B|=%.1f",
+			snap->mag_lsb[0], snap->mag_lsb[1], snap->mag_lsb[2],
 			(double)((float)snap->mag_lsb[0] * MAG_UT_PER_LSB),
 			(double)((float)snap->mag_lsb[1] * MAG_UT_PER_LSB),
 			(double)((float)snap->mag_lsb[2] * MAG_UT_PER_LSB),
-			snap->mag_temp_valid ? snap->mag_temp_cc : INT16_MIN);
-		LOG_INF("BARO press_raw=%u temp_raw=%u (uncompensated)", snap->baro_press_raw,
-			snap->baro_temp_raw);
+			(double)mag_norm_ut(snap));
 	} else {
-		LOG_INF("MAG lsb=--- ut=--- t_cc=--- (sensor hub not streaming)");
-		LOG_INF("BARO press_raw=--- temp_raw=--- (sensor hub not streaming)");
+		LOG_INF("MAG  sensor: lsb=--- ut=--- |B|=--- (LIS2MDL not answering)");
+	}
+
+	if (snap->baro_valid) {
+		LOG_INF("BARO raw: press=%u temp=%u (uncompensated, needs TPG)",
+			snap->baro_press_raw, snap->baro_temp_raw);
+	} else {
+		LOG_INF("BARO raw: press=--- temp=--- (BMP388 never acknowledged its "
+			"identification read)");
 	}
 
 	if (snap->bat_valid) {
