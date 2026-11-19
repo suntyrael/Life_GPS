@@ -150,10 +150,12 @@ int lgps_imu_read_sample_if_ready(struct lgps_imu_sample *out);
 
 /*
  * Read the 14 bytes produced by the hub's three slaves: LIS2MDL magnetometer
- * (0x68, 6 bytes), BMP388 pressure + temperature (0x04..0x09, 6 bytes) and
- * LIS2MDL TEMP_OUT (0x6e, 2 bytes). numop is a 3-bit field, so one slave can
+ * (0x68, 6 bytes), LIS2MDL TEMP_OUT (0x6e, 2 bytes) and BMP388 pressure +
+ * temperature (0x04..0x09, 6 bytes). numop is a 3-bit field, so one slave can
  * transfer at most seven bytes - that is why the magnetometer temperature gets
- * its own slave instead of extending the first one. A sensor that did not answer
+ * its own slave instead of extending the first one. The BMP388 goes last on
+ * purpose: it currently does not acknowledge, and the sensor hub does not
+ * reliably fill the slots of slaves queued behind a device that NACKs. A sensor that did not answer
  * its identification read at boot keeps "valid = false", so its zeros are never
  * mistaken for a measurement.
  */
