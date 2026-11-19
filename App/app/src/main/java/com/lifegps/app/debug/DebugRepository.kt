@@ -1,5 +1,7 @@
 package com.lifegps.app.debug
 
+import com.lifegps.app.ble.GnssCfgValue
+import com.lifegps.app.ble.GnssDebugState
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -46,6 +48,35 @@ interface DebugRepository {
 
     /** Sensor calibration state; the firmware owns it, the App only mirrors it. */
     val calib: StateFlow<CalibState>
+
+    // --- GNSS debugging (0x36 session, 0x35 settings, 0x08/0x09 telemetry) ----
+
+    /** Last known debug session; [GnssDebugState.flags] == 0 means "off". */
+    val gnssDebug: StateFlow<GnssDebugState>
+
+    /** Raw NMEA sentences, newest last, bounded by the implementation. */
+    val nmea: StateFlow<List<String>>
+
+    /** Whitelisted receiver settings, keyed by configuration key. */
+    val gnssCfg: StateFlow<Map<Long, GnssCfgValue>>
+
+    /** Enables/changes the debug session; [ttlSeconds] == 0 keeps the default. */
+    fun setGnssDebug(flags: Int, ttlSeconds: Int)
+
+    /** Re-reads the session state from the device. */
+    fun refreshGnssDebug()
+
+    fun clearNmea()
+
+    /** Re-reads every whitelisted setting (one command each). */
+    fun refreshGnssCfg()
+
+    /**
+     * Writes one setting and stores the value the receiver reports afterwards.
+     * [persistToFlash] writes the receiver's flash layer, which costs an erase
+     * cycle, so the UI asks for it explicitly.
+     */
+    fun setGnssCfg(key: Long, value: Long, persistToFlash: Boolean = false)
 
     fun runSelfTest()
     fun connect(device: ScannedDevice)

@@ -74,7 +74,8 @@
    采样节拍由 `STATUS_REG`（0x1E）的 `XLDA|GDA`（bit0|bit1）驱动，主循环 10 ms 轮询、无睡眠漂移。
 2. README §2「SFLP 硬件 6 轴姿态 60 Hz、增量 14 µA」对本机型**不成立**，需要改写为「固件姿态融合」或改用 LSM6DSR 的 FSM/计步器路径；**这属于既有文档改动，需要你批准后我才动 `README.md` / `Doc/Hardware/Pinmap_Main_V0.2.md` / `AGENTS.md`**。
 3. Sensor hub 现在有 18 字节输出：M1 用 6 字节 LIS2MDL（0x68 起，50 Hz）+ 6 字节 BMP388（0x04 起，25 Hz）。
-4. BMP388 补偿算法（Bosch 官方补偿系数 + 温度补偿）**尚未实现**，M1 只搬运原始 24 位压力/温度，不输出海拔——避免出现编造的高度值。
+4. BMP388 补偿算法（Bosch 官方补偿系数 + 温度补偿）**已实现**（`Firmware/src/imu/bmp388.c`，系数 0x31..0x45 由 `hub_configure()` 在芯片仍处 sleep 时读入；
+   补偿后温度已进 `TEMP` 行的 `baro_C`、压力进 `BARO` 行的 `press_pa`）。仍**不输出海拔**：气压基准/相对高程要等 `BARO_BASELINE`（单独需求）。
 
 ## 3. 串口日志格式（固定契约）
 
@@ -100,7 +101,7 @@
 | | `acc_lsb` `gyro_lsb` | 原始 16 位计数 | 精确值，便于换算/复核 |
 | | `acc_g` `gyro_dps` | `LSB × 0.122 mg` / `× 35 mdps` | 灵敏度取自 DS11976 Table 3 |
 | `MAG` | `lsb` / `ut` | LIS2MDL 0x68..0x6D | `1 LSB = 1.5 mG = 0.15 µT`（LIS2MDL Table 3 `So`） |
-| `BARO` | `press_raw` `temp_raw` | BMP388 0x04..0x09 | 原始 24 位；**未做补偿**，所以不打印 hPa/°C |
+| `BARO` | `press_pa` `temp_C` | BMP388 0x04..0x09 + TPG 系数 0x31..0x45 | 已做补偿（DS BST-BMP388-DS001-07 §9.2/§9.3）：Pa / °C 是物理值；同一行保留 `press_raw` `temp_raw` 便于复核。系数读不到时 `press_pa`/`temp_C` 打 `---` 并注明 `no TPG coefficients` |
 | `SYS` | `bat_mv` | SAADC AIN4 + 分压实测标定 + ADC 标度修正 | 每 10 s 采样一次，期间沿用缓存 |
 | | `chg` | SGM4056 `/CHG` | `1` = 正在充电 |
 | | `keys` | 消抖后的电平 | `K1,K2`，`1` = 按下（用来看按键是否卡死） |
@@ -119,11 +120,12 @@ grep 'lgps_tele: GNSS' log.txt | sed -n 's/.*fix=\([0-9]*\).*/\1/p'
 [00:00:08.210] <inf> lgps_tele: GNSS st=COLD_START fix=0 sats=0 pdop_e2=--- lat_e7=--- lon_e7=--- hmsl_mm=--- spd_cms=--- hdg_ddeg=--- utc_s=--- age_ms=0
 [00:00:08.225] <inf> lgps_tele: IMU id=0x6b acc_lsb=115,-25,9016 gyro_lsb=19,-13,-151 acc_g=0.014,-0.003,1.100 gyro_dps=0.67,-0.46,-5.29
 [00:00:08.240] <inf> lgps_tele: MAG lsb=1234,-567,890 ut=185.1,-85.0,133.5
-[00:00:08.255] <inf> lgps_tele: BARO press_raw=8012345 temp_raw=6412345 (uncompensated)
+[00:00:08.255] <inf> lgps_tele: BARO press_pa=101177 temp_C=23.00 press_raw=7277088 temp_raw=8535808 (TPG compensated, BMP388 9.2/9.3)
 [00:00:08.270] <inf> lgps_tele: SYS bat_mv=4021 chg=1 keys=0,0 zupt=move var_mg2=30 steps=0 ring_seq=1 ring_rec=0
 ```
 
-> 样例中的数值仅示意字段位置；真实值必须由板子产生。
+> 样例中的数值仅示意字段位置；真实值必须由板子产生。`BARO` 一行的 `press_raw`/`temp_raw` 取自
+> 2026-11-21 实测 burst（`60 09 6f 80 3b 82`），`press_pa`/`temp_C` 是用系数算出后的结果。
 
 ### 3.4 M1 首轮实测暴露的三个问题（已修，附根因）
 
@@ -382,3 +384,26 @@ R_IMU = [-1  0  0 ]   Y_body = -X_sensor   (机头/行进方向)
 6. `README.md` §1.3/1.4：旋转矩阵改为 `[[0,−1,0],[−1,0,0],[0,0,−1]]`（det=+1），并把
    “X_IMU 在 PCB 背面垂直向上”改为“垂直**向下**（USB 端）”——只这一条判读反了，它正是 det=−1 的来源。
    依据见 §4.1.1 的四组实测数据。
+
+## 6. GNSS 调试链路（0.2.0 追加）
+
+现场记录：室内无定位时，模块在 60 s 冷启动超时后被断电，退避 120→300→900 s，
+手机上什么也看不到。为此增加三条互相独立的能力，全部按需开启、有寿命上限：
+
+| 能力 | 触发 | 固件行为 | 界面 |
+| :--- | :--- | :--- | :--- |
+| 调试会话 | `0x36 GNSS_DEBUG` bit0 | 会话期间跳过冷启动 60 s 与星历保持 35 s 的断电判断，到期自动恢复 | GPS 页「调试会话」卡片 |
+| 单星 | `0x36` bit1 | `CFG-VALSET` 打开 NAV-SAT（1 Hz，**RAM 层**，断电即失效），解析后走遥测组 `0x09` | GPS 页卫星表：系统 / SVID / C/N0 / 仰角 / 状态 |
+| NMEA 直通 | `0x36` bit2 | GNSS 线程按 `$…\r\n` 切句，落 8 槽环（96 B/槽），主线程 50 ms 节拍出队走遥测组 `0x08` | 「NMEA 原始流」页，可按 talker 过滤 |
+
+参数读写走 `0x35 GNSS_CFG`，键表见 `Doc/Software/BLE_Wire_v1.md` §6.6：默认写
+**RAM + BBR**（跨 `RXM-PMREQ` 断电保留），显式选择才写 Flash；`CFG-UART1-BAUDRATE`
+一类会把链路写死的键**不在白名单**。
+
+同批修掉的两个缺陷：
+
+1. `pDOP = 99.99`（`0x270F`）是接收机的"无解"哨兵值，之前被当成真实 DOP 写进 Status
+   帧，App 显示 `HDOP 99.99`；现在只在定位有效且 `pdop < 9999` 时透传。
+2. 退避序列步进早了一步：`backoff_ms` 初值是 120 s，首次断电时却取"120 s 的下一档"，
+   所以第一次退避实际是 **300 s**，文档里的 120→300→900 从未从 120 开始。现在
+   "等当前档、再升档"，且一次成功定位把序列退回 120 s。

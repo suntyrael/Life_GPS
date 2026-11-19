@@ -11,6 +11,8 @@
 #include <zephyr/sys/ring_buffer.h>
 #include <zephyr/sys/util.h>
 
+#include <errno.h>
+
 #include <lifegps/board_io.h>
 #include <lifegps/diag.h>
 #include <lifegps/gnss.h>
@@ -63,6 +65,89 @@ static bool nav_pvt_rate_verified;
 
 /* One-shot warning per cold-start window; reset together with the verification. */
 static bool nav_pvt_rate_failure_logged;
+
+/*
+ * Debug session (BLE opcode 0x36).
+ *
+ * debug_req_* is written by the BLE command thread and drained by the GNSS
+ * thread, which owns the UART; only the GNSS thread advances debug_flags and
+ * debug_expires_ms, so the two sides never write the same variable.
+ */
+static uint8_t debug_flags;
+static uint32_t debug_expires_ms;
+static bool debug_pending;
+static uint8_t debug_req_flags;
+static uint16_t debug_req_ttl_s;
+/* Guards the five variables above: debug_flags/expires are written by the GNSS
+ * thread and read by the BLE thread (query), the request fields the other way
+ * round. Spinlock because neither side may sleep while holding it.
+ */
+static struct k_spinlock debug_lock;
+/* Outputs the receiver currently has switched on because of the session. */
+static uint8_t debug_applied_flags;
+
+/* Newest UBX-NAV-SAT list, written by the GNSS thread. */
+static struct lgps_gnss_sat sat_list[LGPS_UBX_NAV_SAT_MAX_SV];
+static uint8_t sat_count;
+static uint32_t sat_uptime_ms;
+/* The GNSS thread writes the list, the main loop copies it for the BLE frame. */
+static struct k_spinlock sat_lock;
+#define GNSS_SAT_STALE_MS 5000U
+
+/*
+ * NMEA capture ring: one sentence per slot, produced by the GNSS thread and
+ * consumed by the main loop.
+ *
+ * A sentence is at most 82 characters including "$" and the checksum, so 96 is
+ * one comfortable slot; eight slots cover the burst that follows a navigation
+ * epoch when several talkers emit GSV at once.
+ */
+#define GNSS_NMEA_LINE_MAX 96U
+#define GNSS_NMEA_SLOTS 8U
+
+static char nmea_slots[GNSS_NMEA_SLOTS][GNSS_NMEA_LINE_MAX];
+static uint8_t nmea_slot_len[GNSS_NMEA_SLOTS];
+static uint32_t nmea_head;
+static uint32_t nmea_tail;
+static struct k_spinlock nmea_lock;
+
+/* Sentence being assembled right now (GNSS thread only). */
+static char nmea_line[GNSS_NMEA_LINE_MAX];
+static uint8_t nmea_len;
+static bool nmea_active;
+static uint32_t nmea_dropped;
+
+/*
+ * Configuration request queue (BLE opcode 0x35).
+ *
+ * The BLE command thread fills cfg_req and waits on cfg_done; the GNSS thread
+ * turns it into CFG-VALSET/CFG-VALGET and fills cfg_result from the answer.
+ * A receiver answer takes at most one navigation epoch, so the wait is bounded.
+ */
+enum lgps_gnss_cfg_op {
+	CFG_OP_NONE = 0,
+	CFG_OP_GET,
+	CFG_OP_SET,
+};
+
+static struct {
+	uint8_t op;
+	bool flash;
+	bool sent;
+	uint32_t key;
+	uint32_t value;
+	uint8_t len;
+} cfg_req;
+
+static struct lgps_gnss_cfg_value cfg_result;
+static int cfg_status;
+static int cfg_wait; /* GNSS thread: outstanding CFG answer expected */
+static uint32_t cfg_wait_ms;
+
+static K_MUTEX_DEFINE(cfg_req_lock);
+static K_SEM_DEFINE(cfg_done_sem, 0, 1);
+
+#define GNSS_CFG_TIMEOUT_MS 800
 
 /*
  * Receive-path counters, split by the thread that owns them.
@@ -297,6 +382,509 @@ static int gnss_request_rate_readback(void)
 	return 0;
 }
 
+/* --- configuration items ---------------------------------------------------- */
+
+struct gnss_cfg_key {
+	uint32_t key;
+	uint8_t len;
+	uint32_t min_value;
+	uint32_t max_value;
+	const char *name;
+};
+
+/*
+ * The only keys this firmware will touch.
+ *
+ * Hard-coded on purpose: the BLE message carries a key id, and a key is a write
+ * into the receiver's configuration. An open key/value path would let a bug or a
+ * hostile host rewrite CFG-UART1-BAUDRATE and lose the link for good, which is
+ * exactly what a debug feature must not be able to do. Ranges are the documented
+ * ones (interface description section 4.9 and the enums in the M10 SPG release
+ * notes); a value outside the range is rejected before it reaches the UART.
+ */
+static const struct gnss_cfg_key cfg_keys[] = {
+	{ LGPS_UBX_CFG_KEY_ANA_USE, 1U, 0U, 1U, "CFG-ANA-USE_ANA" },
+	{ LGPS_UBX_CFG_KEY_ANA_ORBMAXERR, 2U, 1U, 65535U, "CFG-ANA-ORBMAXERR" },
+	{ LGPS_UBX_CFG_KEY_DYNMODEL, 1U, 0U, 10U, "CFG-NAVSPG-DYNMODEL" },
+	{ LGPS_UBX_CFG_KEY_SIGNAL_GPS_ENA, 1U, 0U, 1U, "CFG-SIGNAL-GPS_ENA" },
+	{ LGPS_UBX_CFG_KEY_SIGNAL_GAL_ENA, 1U, 0U, 1U, "CFG-SIGNAL-GAL_ENA" },
+	{ LGPS_UBX_CFG_KEY_SIGNAL_BDS_ENA, 1U, 0U, 1U, "CFG-SIGNAL-BDS_ENA" },
+	{ LGPS_UBX_CFG_KEY_SIGNAL_GLO_ENA, 1U, 0U, 1U, "CFG-SIGNAL-GLO_ENA" },
+	{ LGPS_UBX_CFG_KEY_INFIL_MINELEV, 1U, 0U, 90U, "CFG-NAVSPG-INFIL_MINELEV" },
+	{ LGPS_UBX_CFG_KEY_OUTFIL_PDOP, 2U, 1U, 9999U, "CFG-NAVSPG-OUTFIL_PDOP" },
+	{ LGPS_UBX_CFG_KEY_RATE_MEAS, 2U, 25U, 1000U, "CFG-RATE-MEAS" },
+};
+
+static const struct gnss_cfg_key *cfg_key_lookup(uint32_t key)
+{
+	ARRAY_FOR_EACH(cfg_keys, index) {
+		if (cfg_keys[index].key == key) {
+			return &cfg_keys[index];
+		}
+	}
+
+	return NULL;
+}
+
+static uint32_t cfg_value_assemble(const uint8_t *bytes, uint8_t len)
+{
+	uint32_t value = 0U;
+
+	for (uint8_t index = 0U; (index < len) && (index < 4U); index++) {
+		value |= (uint32_t)bytes[index] << (8U * index);
+	}
+
+	return value;
+}
+
+static uint8_t gnss_send_cfg_item(uint32_t key, uint32_t value, uint8_t len, uint8_t layers)
+{
+	uint8_t frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_CFG_HEADER_LEN + 4U +
+		     LGPS_UBX_CFG_VALUE_MAX_LEN + LGPS_UBX_TRAILER_LEN];
+	uint8_t bytes[LGPS_UBX_CFG_VALUE_MAX_LEN];
+	int ret;
+
+	if ((len == 0U) || (len > LGPS_UBX_CFG_VALUE_MAX_LEN)) {
+		return 0U;
+	}
+
+	for (uint8_t index = 0U; index < len; index++) {
+		bytes[index] = (uint8_t)((value >> (8U * index)) & 0xFFU);
+	}
+
+	ret = lgps_ubx_build_valset_item(frame, sizeof(frame), layers, key, bytes, len);
+	if (ret < 0) {
+		LOG_ERR("CFG-VALSET build failed (%d)", ret);
+		return 0U;
+	}
+
+	if (gnss_uart_send(frame, (size_t)ret) < 0) {
+		return 0U;
+	}
+
+	return (uint8_t)ret;
+}
+
+static uint8_t gnss_send_cfg_get(uint32_t key)
+{
+	uint8_t frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_CFG_HEADER_LEN + 4U + LGPS_UBX_TRAILER_LEN];
+	int ret;
+
+	ret = lgps_ubx_build_valget_item(frame, sizeof(frame), LGPS_UBX_VALGET_LAYER_RAM, key);
+	if (ret < 0) {
+		LOG_ERR("CFG-VALGET build failed (%d)", ret);
+		return 0U;
+	}
+
+	if (gnss_uart_send(frame, (size_t)ret) < 0) {
+		return 0U;
+	}
+
+	return (uint8_t)ret;
+}
+
+/*
+ * Message output rate of NAV-SAT, the only output the debug session switches.
+ *
+ * RAM layer only, never BBR or flash: the session is a temporary debugging tool,
+ * and a receiver that keeps emitting a 392-byte message every second after the
+ * session ends would silently cost power on every later cold start.
+ */
+static void gnss_apply_nav_sat_rate(bool enable)
+{
+	if (gnss_send_cfg_item(LGPS_UBX_CFG_KEY_MSGOUT_NAV_SAT_UART1, enable ? 1U : 0U, 1U,
+			       LGPS_UBX_LAYER_RAM) != 0U) {
+		LOG_INF("NAV-SAT output rate -> %u (RAM layer)", enable ? 1U : 0U);
+	}
+}
+
+/* --- debug session --------------------------------------------------------- */
+
+static bool gnss_debug_active(void)
+{
+	k_spinlock_key_t key = k_spin_lock(&debug_lock);
+	uint8_t flags = debug_flags;
+	uint32_t expires_ms = debug_expires_ms;
+
+	k_spin_unlock(&debug_lock, key);
+
+	return (flags != 0U) && (expires_ms != 0U) &&
+	       ((int32_t)(lgps_diag_uptime_ms() - expires_ms) < 0);
+}
+
+static bool gnss_debug_hold_power(void)
+{
+	k_spinlock_key_t key;
+	uint8_t flags;
+
+	if (!gnss_debug_active()) {
+		return false;
+	}
+
+	key = k_spin_lock(&debug_lock);
+	flags = debug_flags;
+	k_spin_unlock(&debug_lock, key);
+
+	return (flags & LGPS_GNSS_DEBUG_HOLD_POWER) != 0U;
+}
+
+static void gnss_debug_apply_outputs(void)
+{
+	uint8_t wanted = gnss_debug_active() ? debug_flags : 0U;
+
+	if ((wanted & LGPS_GNSS_DEBUG_NAV_SAT) != (debug_applied_flags & LGPS_GNSS_DEBUG_NAV_SAT)) {
+		gnss_apply_nav_sat_rate((wanted & LGPS_GNSS_DEBUG_NAV_SAT) != 0U);
+	}
+
+	debug_applied_flags = wanted;
+}
+
+static void gnss_service_debug(void)
+{
+	k_spinlock_key_t key = k_spin_lock(&debug_lock);
+	bool pending = debug_pending;
+	uint8_t req_flags = debug_req_flags;
+	uint16_t req_ttl_s = debug_req_ttl_s;
+	uint8_t active_flags = debug_flags;
+
+	if (pending) {
+		debug_pending = false;
+		debug_req_ttl_s = 0U;
+	}
+	k_spin_unlock(&debug_lock, key);
+
+	if (pending) {
+		uint16_t ttl_s = (req_ttl_s == 0U) ? LGPS_GNSS_DEBUG_DEFAULT_TTL_S : req_ttl_s;
+
+		if (ttl_s > LGPS_GNSS_DEBUG_MAX_TTL_S) {
+			ttl_s = LGPS_GNSS_DEBUG_MAX_TTL_S;
+		}
+
+		key = k_spin_lock(&debug_lock);
+		debug_flags = req_flags;
+		debug_expires_ms = (req_flags == 0U)
+					   ? 0U
+					   : lgps_diag_uptime_ms() + ((uint32_t)ttl_s * 1000U);
+		k_spin_unlock(&debug_lock, key);
+
+		/* Never log while holding the spinlock: CONFIG_LOG_MODE_IMMEDIATE writes
+		 * the console synchronously, which must not happen with interrupts masked.
+		 */
+		LOG_INF("GNSS debug session: flags=0x%02x ttl=%u s", req_flags, ttl_s);
+		/* Force a re-assert: the receiver's RAM layer may have been cleared by a
+		 * power cycle in between.
+		 */
+		debug_applied_flags = 0U;
+	} else if ((active_flags != 0U) && !gnss_debug_active()) {
+		key = k_spin_lock(&debug_lock);
+		debug_flags = 0U;
+		debug_expires_ms = 0U;
+		k_spin_unlock(&debug_lock, key);
+
+		LOG_INF("GNSS debug session expired, back to the power policy");
+	}
+
+	gnss_debug_apply_outputs();
+}
+
+int lgps_gnss_debug_set(uint8_t flags, uint16_t ttl_s)
+{
+	if ((flags & (uint8_t)~LGPS_GNSS_DEBUG_FLAGS_ALL) != 0U) {
+		return -EINVAL;
+	}
+
+	k_spinlock_key_t key = k_spin_lock(&debug_lock);
+
+	debug_req_flags = flags;
+	debug_req_ttl_s = ttl_s;
+	debug_pending = true;
+	k_spin_unlock(&debug_lock, key);
+
+	return 0;
+}
+
+void lgps_gnss_debug_get(uint8_t *flags, uint16_t *remaining_s)
+{
+	uint32_t now_ms = lgps_diag_uptime_ms();
+	uint32_t expires_ms;
+	int32_t left_ms;
+
+	if ((flags == NULL) || (remaining_s == NULL)) {
+		return;
+	}
+
+	if (!gnss_debug_active()) {
+		*flags = 0U;
+		*remaining_s = 0U;
+		return;
+	}
+
+	{
+		k_spinlock_key_t key = k_spin_lock(&debug_lock);
+
+		expires_ms = debug_expires_ms;
+		*flags = debug_flags;
+		k_spin_unlock(&debug_lock, key);
+	}
+
+	left_ms = (int32_t)(expires_ms - now_ms);
+	*remaining_s = (left_ms > 0) ? (uint16_t)((uint32_t)left_ms / 1000U) : 0U;
+}
+
+/* --- NMEA capture ---------------------------------------------------------- */
+
+static void nmea_push(const char *line, uint8_t len)
+{
+	k_spinlock_key_t key;
+	uint32_t slot;
+
+	key = k_spin_lock(&nmea_lock);
+	if ((nmea_head - nmea_tail) >= GNSS_NMEA_SLOTS) {
+		nmea_dropped++;
+		k_spin_unlock(&nmea_lock, key);
+		return;
+	}
+
+	slot = nmea_head % GNSS_NMEA_SLOTS;
+	memcpy(nmea_slots[slot], line, len);
+	nmea_slot_len[slot] = len;
+	nmea_head++;
+	k_spin_unlock(&nmea_lock, key);
+}
+
+size_t lgps_gnss_pop_nmea(char *out, size_t capacity)
+{
+	k_spinlock_key_t key;
+	uint32_t slot;
+	size_t len;
+
+	if ((out == NULL) || (capacity < 2U)) {
+		return 0U;
+	}
+
+	key = k_spin_lock(&nmea_lock);
+	if (nmea_head == nmea_tail) {
+		k_spin_unlock(&nmea_lock, key);
+		return 0U;
+	}
+
+	slot = nmea_tail % GNSS_NMEA_SLOTS;
+	len = nmea_slot_len[slot];
+	if (len > (capacity - 1U)) {
+		len = capacity - 1U;
+	}
+
+	memcpy(out, nmea_slots[slot], len);
+	out[len] = '\0';
+	nmea_tail++;
+	k_spin_unlock(&nmea_lock, key);
+
+	return len;
+}
+
+static void nmea_feed(uint8_t byte)
+{
+	if ((debug_flags & LGPS_GNSS_DEBUG_NMEA) == 0U) {
+		nmea_active = false;
+		nmea_len = 0U;
+		return;
+	}
+
+	if (byte == (uint8_t)'$') {
+		nmea_len = 0U;
+		nmea_active = true;
+	}
+
+	if (!nmea_active) {
+		return;
+	}
+
+	if ((byte == (uint8_t)'\r') || (byte == (uint8_t)'\n')) {
+		/* "$GNGGA,..." without the line terminator is what the App shows. */
+		if (nmea_len > 3U) {
+			nmea_push(nmea_line, nmea_len);
+		}
+
+		nmea_active = false;
+		nmea_len = 0U;
+		return;
+	}
+
+	if (nmea_len < (uint8_t)(GNSS_NMEA_LINE_MAX - 1U)) {
+		nmea_line[nmea_len] = (char)byte;
+		nmea_len++;
+	} else {
+		/* Over-long line: the receiver sent something that is not NMEA 0183. */
+		nmea_active = false;
+		nmea_len = 0U;
+	}
+}
+
+/* --- satellites ------------------------------------------------------------ */
+
+uint8_t lgps_gnss_get_satellites(struct lgps_gnss_sat *out, uint8_t max)
+{
+	uint32_t now_ms = lgps_diag_uptime_ms();
+	k_spinlock_key_t key;
+	uint8_t count;
+
+	if ((out == NULL) || (max == 0U)) {
+		return 0U;
+	}
+
+	key = k_spin_lock(&sat_lock);
+
+	if ((sat_count == 0U) || ((uint32_t)(now_ms - sat_uptime_ms) > GNSS_SAT_STALE_MS)) {
+		k_spin_unlock(&sat_lock, key);
+		return 0U;
+	}
+
+	count = (sat_count < max) ? sat_count : max;
+	memcpy(out, sat_list, (size_t)count * sizeof(sat_list[0]));
+	k_spin_unlock(&sat_lock, key);
+
+	return count;
+}
+
+/* --- configuration request handling (GNSS thread side) ---------------------- */
+
+static void gnss_service_cfg(void)
+{
+	if (cfg_req.op == CFG_OP_NONE) {
+		return;
+	}
+
+	if ((gnss_state == LGPS_GNSS_STATE_OFF) || (gnss_state == LGPS_GNSS_STATE_BACKOFF)) {
+		/* The receiver is unpowered: answer now instead of waiting for a
+		 * timeout that cannot produce a value.
+		 */
+		cfg_status = -ENODEV;
+		cfg_req.op = CFG_OP_NONE;
+		k_sem_give(&cfg_done_sem);
+		return;
+	}
+
+	if (!cfg_req.sent) {
+		cfg_req.sent = true;
+		cfg_wait = 1;
+		cfg_wait_ms = lgps_diag_uptime_ms();
+
+		if (cfg_req.op == CFG_OP_SET) {
+			uint8_t layers = LGPS_UBX_LAYER_RAM | LGPS_UBX_LAYER_BBR;
+
+			if (cfg_req.flash) {
+				layers |= LGPS_UBX_LAYER_FLASH;
+			}
+
+			LOG_INF("CFG-VALSET key 0x%08x = %u (layers 0x%02x)", cfg_req.key,
+				(unsigned int)cfg_req.value, layers);
+			(void)gnss_send_cfg_item(cfg_req.key, cfg_req.value, cfg_req.len, layers);
+		}
+
+		/* Always finish with a read: it is the only proof of what took effect. */
+		(void)gnss_send_cfg_get(cfg_req.key);
+		return;
+	}
+
+	if (cfg_wait != 0) {
+		if ((uint32_t)(lgps_diag_uptime_ms() - cfg_wait_ms) >= GNSS_CFG_TIMEOUT_MS) {
+			cfg_wait = 0;
+			cfg_status = -ETIMEDOUT;
+			cfg_req.op = CFG_OP_NONE;
+			k_sem_give(&cfg_done_sem);
+		}
+	}
+}
+
+int lgps_gnss_cfg_get(uint32_t key, struct lgps_gnss_cfg_value *out)
+{
+	int ret;
+
+	if (out == NULL) {
+		return -EINVAL;
+	}
+
+	if (cfg_key_lookup(key) == NULL) {
+		return -EINVAL;
+	}
+
+	if (k_mutex_lock(&cfg_req_lock, K_MSEC(GNSS_CFG_TIMEOUT_MS * 2U)) != 0) {
+		return -EBUSY;
+	}
+
+	(void)k_sem_take(&cfg_done_sem, K_NO_WAIT);
+	cfg_req.op = CFG_OP_GET;
+	cfg_req.sent = false;
+	cfg_req.key = key;
+	cfg_req.len = 0U;
+	cfg_req.value = 0U;
+	cfg_req.flash = false;
+
+	ret = k_sem_take(&cfg_done_sem, K_MSEC(GNSS_CFG_TIMEOUT_MS + 300U));
+	if (ret == 0) {
+		ret = cfg_status;
+	}
+
+	if (ret == 0) {
+		*out = cfg_result;
+	} else {
+		cfg_req.op = CFG_OP_NONE;
+	}
+
+	k_mutex_unlock(&cfg_req_lock);
+
+	return (ret == 0) ? 0 : ((ret == -EAGAIN) ? -ETIMEDOUT : ret);
+}
+
+int lgps_gnss_cfg_set(uint32_t key, uint32_t value, bool persist_to_flash,
+		      struct lgps_gnss_cfg_value *readback)
+{
+	const struct gnss_cfg_key *desc = cfg_key_lookup(key);
+	int ret;
+
+	if (desc == NULL) {
+		return -EINVAL;
+	}
+
+	if ((value < desc->min_value) || (value > desc->max_value)) {
+		LOG_WRN("%s = %u is outside %u..%u", desc->name, (unsigned int)value,
+			(unsigned int)desc->min_value, (unsigned int)desc->max_value);
+		return -ERANGE;
+	}
+
+	if (k_mutex_lock(&cfg_req_lock, K_MSEC(GNSS_CFG_TIMEOUT_MS * 2U)) != 0) {
+		return -EBUSY;
+	}
+
+	(void)k_sem_take(&cfg_done_sem, K_NO_WAIT);
+	cfg_req.op = CFG_OP_SET;
+	cfg_req.sent = false;
+	cfg_req.key = key;
+	cfg_req.len = desc->len;
+	cfg_req.value = value;
+	cfg_req.flash = persist_to_flash;
+
+	ret = k_sem_take(&cfg_done_sem, K_MSEC(GNSS_CFG_TIMEOUT_MS + 300U));
+	if (ret == 0) {
+		ret = cfg_status;
+	}
+
+	if (ret == 0) {
+		if (readback != NULL) {
+			*readback = cfg_result;
+		}
+
+		LOG_INF("%s set to %u (readback %u)", desc->name, (unsigned int)value,
+			(unsigned int)cfg_result.value);
+	} else if (ret == -ENOTSUP) {
+		LOG_WRN("%s: the receiver rejected the key", desc->name);
+	}
+
+	k_mutex_unlock(&cfg_req_lock);
+
+	return (ret == -EAGAIN) ? -ETIMEDOUT : ret;
+}
+
 static void handle_nav_pvt(const struct lgps_nav_pvt *pvt)
 {
 	struct lgps_utc utc;
@@ -331,7 +919,12 @@ static void handle_nav_pvt(const struct lgps_nav_pvt *pvt)
 	current_fix.utc_valid = utc_ok;
 	current_fix.fix_type = pvt->fix_type;
 	current_fix.satellites = pvt->num_sv;
-	current_fix.pdop_1e2 = pvt->pdop_1e2;
+	/*
+	 * pDOP 99.99 is the receiver's "no solution" sentinel, not a DOP value; it
+	 * must not reach the status frame, where the App would render it as a real
+	 * HDOP of 99.99.
+	 */
+	current_fix.pdop_1e2 = (fix_valid && (pvt->pdop_1e2 < 9999U)) ? pvt->pdop_1e2 : 0U;
 	current_fix.lat_e7 = pvt->lat_e7;
 	current_fix.lon_e7 = pvt->lon_e7;
 	current_fix.hmsl_mm = pvt->hmsl_mm;
@@ -392,6 +985,16 @@ static void handle_ubx_ack(void)
 	LOG_WRN("UBX-ACK-NAK for class 0x%02x id 0x%02x: the receiver refused it "
 		"(unknown key, bad layer, or message not available on this product)",
 		ack_class, ack_id);
+
+	/* A rejected CFG message must end the pending request, otherwise the BLE
+	 * command thread would wait for an answer that is never sent.
+	 */
+	if ((cfg_wait != 0) && (ack_class == LGPS_UBX_CLASS_CFG)) {
+		cfg_wait = 0;
+		cfg_status = -ENOTSUP;
+		cfg_req.op = CFG_OP_NONE;
+		k_sem_give(&cfg_done_sem);
+	}
 }
 
 /*
@@ -400,18 +1003,34 @@ static void handle_ubx_ack(void)
  */
 static void handle_cfg_valget(void)
 {
-	uint8_t value = 0U;
+	uint8_t value[LGPS_UBX_CFG_VALUE_MAX_LEN];
+	uint8_t value_len = 0U;
+	uint8_t u1 = 0U;
 
-	if (lgps_ubx_decode_valget_u1(&parser, LGPS_UBX_CFG_KEY_MSGOUT_NAV_PVT_UART1, &value) != 0) {
-		LOG_WRN("CFG-VALGET response without key 0x%08x (%u payload bytes)",
-			LGPS_UBX_CFG_KEY_MSGOUT_NAV_PVT_UART1, (unsigned int)parser.payload_len);
+	/* A configuration read issued by the BLE command thread comes first. */
+	if ((cfg_wait != 0) &&
+	    (lgps_ubx_decode_valget(&parser, cfg_req.key, value, sizeof(value), &value_len) == 0)) {
+		cfg_wait = 0;
+		cfg_status = 0;
+		cfg_result.key = cfg_req.key;
+		cfg_result.len = value_len;
+		cfg_result.value = cfg_value_assemble(value, value_len);
+		cfg_req.op = CFG_OP_NONE;
+		k_sem_give(&cfg_done_sem);
 		return;
 	}
 
-	LOG_INF("CFG-VALGET readback: NAV-PVT UART1 rate = %u (key 0x%08x)", value,
+	if (lgps_ubx_decode_valget_u1(&parser, LGPS_UBX_CFG_KEY_MSGOUT_NAV_PVT_UART1, &u1) != 0) {
+		LOG_WRN("CFG-VALGET response without a key this firmware asked for "
+			"(%u payload bytes)",
+			(unsigned int)parser.payload_len);
+		return;
+	}
+
+	LOG_INF("CFG-VALGET readback: NAV-PVT UART1 rate = %u (key 0x%08x)", u1,
 		LGPS_UBX_CFG_KEY_MSGOUT_NAV_PVT_UART1);
 
-	if (value == 0U) {
+	if (u1 == 0U) {
 		nav_pvt_rate_verified = false;
 		return;
 	}
@@ -427,7 +1046,10 @@ static void gnss_process_rx(void)
 	uint8_t byte;
 
 	while (ring_buf_get(&gnss_rx_ring, &byte, 1) == 1U) {
-		enum lgps_ubx_status status = lgps_ubx_parser_feed(&parser, byte);
+		enum lgps_ubx_status status;
+
+		nmea_feed(byte);
+		status = lgps_ubx_parser_feed(&parser, byte);
 
 		if (status == LGPS_UBX_STATUS_BAD_CHECKSUM) {
 			ubx_bad_checksum++;
@@ -446,6 +1068,20 @@ static void gnss_process_rx(void)
 
 			if (lgps_ubx_decode_nav_pvt(&parser, &pvt) == 0) {
 				handle_nav_pvt(&pvt);
+			}
+		} else if (parser.msg_class == LGPS_UBX_CLASS_NAV &&
+			   parser.msg_id == LGPS_UBX_ID_NAV_SAT) {
+			struct lgps_gnss_sat sats[LGPS_UBX_NAV_SAT_MAX_SV];
+			uint8_t count = 0U;
+
+			if (lgps_ubx_decode_nav_sat(&parser, sats, (uint8_t)ARRAY_SIZE(sats),
+						    &count) == 0) {
+				k_spinlock_key_t key = k_spin_lock(&sat_lock);
+
+				memcpy(sat_list, sats, (size_t)count * sizeof(sats[0]));
+				sat_count = count;
+				sat_uptime_ms = lgps_diag_uptime_ms();
+				k_spin_unlock(&sat_lock, key);
 			}
 		} else if (parser.msg_class == LGPS_UBX_CLASS_ACK) {
 			handle_ubx_ack();
@@ -523,6 +1159,14 @@ static void gnss_power_up(void)
 	 */
 	nav_pvt_rate_verified = false;
 	nav_pvt_rate_failure_logged = false;
+	/* RAM-layer outputs are gone after the standby request: re-assert them. */
+	debug_applied_flags = 0U;
+	{
+		k_spinlock_key_t key = k_spin_lock(&sat_lock);
+
+		sat_count = 0U;
+		k_spin_unlock(&sat_lock, key);
+	}
 	next_reconfig_ms = 0U;
 	baud_probe_base_bytes = rx_bytes_total();
 	(void)gnss_enable_nav_pvt();
@@ -534,17 +1178,24 @@ static void gnss_power_up(void)
 		current_baud);
 }
 
-static uint32_t backoff_duration_ms(enum lgps_gnss_state previous, uint32_t previous_ms)
+/*
+ * Next backoff step, i.e. what follows a wait of @p current_ms.
+ *
+ * The previous version stepped *up* before the first wait: backoff_ms starts at
+ * 120 s, the first cut asked for the successor of 120 s and slept 300 s, so the
+ * documented 120 -> 300 -> 900 sequence never started at 120. The wait is now
+ * the current value and only the next attempt escalates.
+ */
+static uint32_t backoff_next_ms(uint32_t current_ms)
 {
-	if (previous_ms < LGPS_GNSS_BACKOFF_STEP1_MS) {
-		return LGPS_GNSS_BACKOFF_STEP1_MS;
-	}
-
-	if (previous_ms < LGPS_GNSS_BACKOFF_STEP2_MS) {
+	if (current_ms < LGPS_GNSS_BACKOFF_STEP2_MS) {
 		return LGPS_GNSS_BACKOFF_STEP2_MS;
 	}
 
-	ARG_UNUSED(previous);
+	if (current_ms < LGPS_GNSS_BACKOFF_STEP3_MS) {
+		return LGPS_GNSS_BACKOFF_STEP3_MS;
+	}
+
 	return LGPS_GNSS_BACKOFF_STEP3_MS;
 }
 
@@ -568,6 +1219,8 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 	for (;;) {
 		uint32_t dropped;
 
+		gnss_service_debug();
+		gnss_service_cfg();
 		gnss_process_rx();
 		lgps_wdt_checkin(LGPS_WDT_TASK_GNSS);
 
@@ -634,25 +1287,28 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 					ubx_frames, (uint32_t)atomic_get(&isr_nmea_starts));
 			}
 
-			if (elapsed >= LGPS_GNSS_COLD_START_TIMEOUT_MS) {
+			if ((elapsed >= LGPS_GNSS_COLD_START_TIMEOUT_MS) && !gnss_debug_hold_power()) {
 				LOG_WRN("no 3D fix within %u s, cutting the GNSS rail",
 					LGPS_GNSS_COLD_START_TIMEOUT_MS / 1000U);
 				gnss_power_down();
-				backoff_ms = backoff_duration_ms(gnss_state, backoff_ms);
 				set_state(LGPS_GNSS_STATE_BACKOFF, backoff_ms);
+				backoff_ms = backoff_next_ms(backoff_ms);
 			}
 			break;
 		}
 
 		case LGPS_GNSS_STATE_FIXED:
+			/* A solution resets the escalation: the next cut is a fresh 120 s. */
+			backoff_ms = LGPS_GNSS_BACKOFF_STEP1_MS;
 			set_state(LGPS_GNSS_STATE_EPHEMERIS_HOLD, LGPS_GNSS_EPHEMERIS_HOLD_MS);
 			break;
 
 		case LGPS_GNSS_STATE_EPHEMERIS_HOLD:
-			if (elapsed >= LGPS_GNSS_EPHEMERIS_HOLD_MS) {
+			if ((elapsed >= LGPS_GNSS_EPHEMERIS_HOLD_MS) && !gnss_debug_hold_power()) {
 				LOG_INF("ephemeris hold done, powering the GNSS rail down");
 				gnss_power_down();
 				set_state(LGPS_GNSS_STATE_BACKOFF, backoff_ms);
+				backoff_ms = backoff_next_ms(backoff_ms);
 			}
 			break;
 
@@ -660,7 +1316,6 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 			if (elapsed >= backoff_ms) {
 				LOG_INF("backoff expired (%u ms), retrying GNSS", backoff_ms);
 				gnss_power_up();
-				backoff_ms = backoff_duration_ms(gnss_state, backoff_ms);
 				set_state(LGPS_GNSS_STATE_COLD_START,
 					  LGPS_GNSS_COLD_START_TIMEOUT_MS);
 			}

@@ -468,4 +468,114 @@ class BleFrameTest {
         assertFalse(utcOnly!!.fixValid)
         assertTrue(utcOnly.utcValid)
     }
+
+    @Test
+    fun parseSatTelemetryMatchesTheDocumentedOffsets() {
+        val payload = ByteArray(SatTelemetry.HEADER + 2 * SatTelemetry.SIZE_ENTRY)
+        payload[0] = 2                     // count
+        payload[1] = 2                     // total
+        payload[SatTelemetry.HEADER + 0] = 0     // gnssId GPS
+        payload[SatTelemetry.HEADER + 1] = 7     // svId
+        payload[SatTelemetry.HEADER + 2] = 42    // cno
+        payload[SatTelemetry.HEADER + 3] = 55    // elev
+        payload[SatTelemetry.HEADER + 4] = 0x0C  // quality 4 | used
+        val second = SatTelemetry.HEADER + SatTelemetry.SIZE_ENTRY
+        payload[second + 0] = 3
+        payload[second + 1] = 21
+        payload[second + 2] = 28
+        payload[second + 3] = 0xF4.toByte()      // -12
+        payload[second + 4] = 0x01               // quality 1, not used
+
+        val sat = BleFrame.parseSatTelemetry(payload)
+        assertNotNull(sat)
+        sat!!
+        assertEquals(2, sat.total)
+        assertEquals(2, sat.rows.size)
+        assertEquals(0, sat.rows[0].gnssId)
+        assertEquals(7, sat.rows[0].svId)
+        assertEquals(42, sat.rows[0].cno)
+        assertEquals(55, sat.rows[0].elevation)
+        assertEquals(4, sat.rows[0].quality)
+        assertTrue(sat.rows[0].used)
+        assertEquals("跟踪", sat.rows[0].qualityLabel)
+        assertEquals(-12, sat.rows[1].elevation)
+        assertFalse(sat.rows[1].used)
+        assertEquals("搜索中", sat.rows[1].qualityLabel)
+
+        // A declared count larger than the payload must not read past the end.
+        payload[0] = 9
+        val truncated = BleFrame.parseSatTelemetry(payload)
+        assertNotNull(truncated)
+        assertEquals(2, truncated!!.rows.size)
+
+        assertNull(BleFrame.parseSatTelemetry(ByteArray(3)))
+    }
+
+    @Test
+    fun parseNmeaTelemetryReadsTheLengthPrefixedText() {
+        val line = "$GNGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,"
+        val payload = ByteArray(1 + line.length)
+        payload[0] = line.length.toByte()
+        line.toByteArray(Charsets.US_ASCII).copyInto(payload, 1)
+
+        val nmea = BleFrame.parseNmeaTelemetry(payload)
+        assertNotNull(nmea)
+        assertEquals(line, nmea!!.text)
+
+        assertNull(BleFrame.parseNmeaTelemetry(ByteArray(1)))
+        assertNull(BleFrame.parseNmeaTelemetry(byteArrayOf(9, 0x24)))
+    }
+
+    @Test
+    fun gnssDebugCodecRoundTrips() {
+        val body = GnssCodec.encodeDebug(
+            GnssCodec.FLAG_HOLD_POWER or GnssCodec.FLAG_NAV_SAT,
+            300,
+        )
+        assertEquals(3, body.size)
+        assertEquals(0x03, body[0].toInt())
+        assertEquals(300, (body[1].toInt() and 0xFF) or ((body[2].toInt() and 0xFF) shl 8))
+
+        val state = GnssCodec.decodeDebug(byteArrayOf(0x07, 0x2C, 0x01))
+        assertNotNull(state)
+        state!!
+        assertEquals(7, state.flags)
+        assertEquals(300, state.remainingSeconds)
+        assertTrue(state.holdPower && state.navSat && state.nmea)
+
+        assertNull(GnssCodec.decodeDebug(ByteArray(2)))
+        assertEquals(0, GnssCodec.encodeDebugQuery().size)
+    }
+
+    @Test
+    fun gnssCfgCodecUsesTheWhitelistedWidths() {
+        val get = GnssCodec.encodeCfgGet(GnssCfgKeys.RATE_MEAS.key)
+        assertEquals(GnssCodec.ACTION_GET, get[0].toInt())
+        assertEquals(5, get.size)
+
+        val set = GnssCodec.encodeCfgSet(GnssCfgKeys.RATE_MEAS.key, 1000, 2, persist = true)
+        assertEquals(GnssCodec.ACTION_SET_PERSIST, set[0].toInt())
+        assertEquals(7, set.size)
+        assertEquals(0xE8, set[5].toInt() and 0xFF)
+        assertEquals(0x03, set[6].toInt() and 0xFF)
+
+        // Response body: key u32, len u8, value[len].
+        val readback = ByteArray(7)
+        writeU32(readback, 0, GnssCfgKeys.RATE_MEAS.key)
+        readback[4] = 2
+        readback[5] = 0xE8.toByte()
+        readback[6] = 0x03
+        val value = GnssCodec.decodeCfg(readback)
+        assertNotNull(value)
+        assertEquals(GnssCfgKeys.RATE_MEAS.key, value!!.key)
+        assertEquals(2, value.len)
+        assertEquals(1000L, value.value)
+
+        assertNull(GnssCodec.decodeCfg(ByteArray(5)))
+        // Every key in the table carries 1, 2 or 4 bytes - never something else.
+        GnssCfgKeys.ALL.forEach { key ->
+            assertTrue(key.len == 1 || key.len == 2 || key.len == 4)
+            assertTrue(key.min <= key.max)
+        }
+    }
 }

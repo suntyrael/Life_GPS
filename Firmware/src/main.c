@@ -48,6 +48,10 @@ LOG_MODULE_REGISTER(lgps_main, LOG_LEVEL_INF);
  * earlier capture.
  */
 #define TELEMETRY_PERIOD_MS 1000U
+/* NMEA drain cadence: the ring holds 8 sentences, a burst must not overflow it. */
+#define NMEA_PUMP_PERIOD_MS 50U
+#define NMEA_PUMP_BURST 4U
+#define GNSS_NMEA_LINE_MAX_TEXT 96U
 #define BATTERY_PERIOD_MS 10000U
 /* The BLE Status frame is the phone UI's only live feed, so it is published much
  * faster - but only while a central is subscribed. Without a subscriber there is
@@ -385,6 +389,59 @@ static void publish_gnss(const struct lgps_telemetry_snapshot *snap)
 	lgps_ble_publish_gnss(&gnss);
 }
 
+/* Satellite table (telemetry 0x09), 1 Hz while the debug session collects it. */
+static void publish_sat(void)
+{
+	static struct lgps_ble_telem_sat_entry entries[LGPS_BLE_TELEM_SAT_MAX];
+	struct lgps_gnss_sat sats[LGPS_UBX_NAV_SAT_MAX_SV];
+	uint8_t count;
+
+	count = lgps_gnss_get_satellites(sats, (uint8_t)ARRAY_SIZE(sats));
+	if (count == 0U) {
+		return;
+	}
+
+	for (uint8_t index = 0U; index < count; index++) {
+		entries[index].gnss_id = sats[index].gnss_id;
+		entries[index].sv_id = sats[index].sv_id;
+		entries[index].cno = sats[index].cno;
+		entries[index].elev = sats[index].elev;
+		entries[index].state = (uint8_t)(sats[index].quality |
+						 (sats[index].used ? 0x08U : 0U));
+	}
+
+	lgps_ble_publish_sat(entries, count, count);
+}
+
+/*
+ * Hand queued NMEA sentences to the phone.
+ *
+ * A 1 Hz navigation epoch produces roughly 15 sentences once several talkers
+ * emit GSV, so the drain runs on its own 50 ms cadence rather than inside the
+ * 1 Hz status path; otherwise the ring would overflow between two publishes.
+ */
+static void pump_nmea(uint32_t now_ms)
+{
+	static char line[GNSS_NMEA_LINE_MAX_TEXT];
+	static uint32_t last_ms;
+	size_t len;
+
+	if ((uint32_t)(now_ms - last_ms) < NMEA_PUMP_PERIOD_MS) {
+		return;
+	}
+
+	last_ms = now_ms;
+
+	for (uint8_t burst = 0U; burst < NMEA_PUMP_BURST; burst++) {
+		len = lgps_gnss_pop_nmea(line, sizeof(line));
+		if (len == 0U) {
+			break;
+		}
+
+		lgps_ble_publish_nmea(line, (uint8_t)len);
+	}
+}
+
 /*
  * One step detector update per IMU sample. Steps are only counted while the
  * device is moving (ZUPT unlocked); the detector itself additionally enforces a
@@ -539,8 +596,11 @@ int main(void)
 				 */
 				publish_pdr();
 				publish_gnss(snap);
+				publish_sat();
 			}
 		}
+
+		pump_nmea(now_ms);
 
 		lgps_wdt_feed();
 

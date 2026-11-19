@@ -40,6 +40,40 @@ enum lgps_gnss_state {
 	LGPS_GNSS_STATE_BACKOFF,
 };
 
+/*
+ * GNSS debug session (BLE opcode 0x36).
+ *
+ * The normal power policy cuts the rail 35 s after the first fix and retries
+ * minutes later, which makes the receiver impossible to watch. A debug session
+ * suspends that policy for a bounded time and can switch the extra outputs on:
+ * NAV-SAT for the satellite table, and the raw NMEA stream.
+ */
+#define LGPS_GNSS_DEBUG_HOLD_POWER 0x01U
+#define LGPS_GNSS_DEBUG_NAV_SAT 0x02U
+#define LGPS_GNSS_DEBUG_NMEA 0x04U
+#define LGPS_GNSS_DEBUG_FLAGS_ALL                                                             \
+	(LGPS_GNSS_DEBUG_HOLD_POWER | LGPS_GNSS_DEBUG_NAV_SAT | LGPS_GNSS_DEBUG_NMEA)
+
+#define LGPS_GNSS_DEBUG_DEFAULT_TTL_S 300U
+#define LGPS_GNSS_DEBUG_MAX_TTL_S 3600U
+
+/* One satellite for the App table (UBX-NAV-SAT, interface description 3.15.13). */
+struct lgps_gnss_sat {
+	uint8_t gnss_id;
+	uint8_t sv_id;
+	uint8_t cno;
+	int8_t elev;
+	uint8_t quality;
+	bool used;
+};
+
+/* A whitelisted receiver configuration item with its current value. */
+struct lgps_gnss_cfg_value {
+	uint32_t key;
+	uint8_t len;   /* value width in bytes: 1, 2 or 4 */
+	uint32_t value; /* little-endian bytes assembled into a u32 */
+};
+
 struct lgps_gnss_fix {
 	/* fixType 3 (3D) or 4 (GNSS + DR) with gnssFixOK set. fixType 5 is time-only:
 	 * the receiver reports it without a position, so it must not lock a fix.
@@ -77,6 +111,59 @@ struct lgps_gnss_counters {
  * below has no data race; values from different fields may be one frame apart.
  */
 void lgps_gnss_get_counters(struct lgps_gnss_counters *out);
+
+/*
+ * Copy the newest satellite list (at most @p max entries) and return the number
+ * of entries. Returns 0 when the list is stale (older than 5 s), so the caller
+ * never renders a table that stops updating without saying so.
+ */
+uint8_t lgps_gnss_get_satellites(struct lgps_gnss_sat *out, uint8_t max);
+
+/*
+ * Debug session control (called from the BLE command thread).
+ *
+ * @p flags is a mask of LGPS_GNSS_DEBUG_*; @p ttl_s == 0 selects the default.
+ * The request is handed to the GNSS thread, which owns the UART and applies the
+ * extra outputs, so this returns immediately. A session always implies a bounded
+ * lifetime: no path in this firmware can leave the rail on forever.
+ */
+int lgps_gnss_debug_set(uint8_t flags, uint16_t ttl_s);
+
+/* Current flags and the remaining lifetime in seconds (0 = no session). */
+void lgps_gnss_debug_get(uint8_t *flags, uint16_t *remaining_s);
+
+/*
+ * Pull one captured NMEA sentence (ASCII, "$..." with the checksum, no CR/LF).
+ *
+ * Returns the length written to @p out, or 0 when no sentence is queued. Only
+ * fills while the debug session has the LGPS_GNSS_DEBUG_NMEA flag set; the text
+ * never goes through the log backend, because a 1 Hz NMEA burst would starve both
+ * the UART console and the BLE log ring.
+ */
+size_t lgps_gnss_pop_nmea(char *out, size_t capacity);
+
+/*
+ * Read one whitelisted configuration item from the receiver (RAM layer).
+ *
+ * Blocks up to about 800 ms while the GNSS thread performs CFG-VALGET, because
+ * the request and its answer share the UART with the navigation stream.
+ * Returns 0 on success, -ENODEV when the module is not powered, -EINVAL for a key
+ * that is not whitelisted, -ETIMEDOUT when the receiver did not answer within the
+ * window and -ENOTSUP when the receiver rejected the key (ACK-NAK).
+ */
+int lgps_gnss_cfg_get(uint32_t key, struct lgps_gnss_cfg_value *out);
+
+/*
+ * Write one whitelisted configuration item and read it back.
+ *
+ * The value goes to the RAM and BBR layers, so it survives the RXM-PMREQ power
+ * down (the integration manual notes that software standby clears RAM); with
+ * @p persist_to_flash the flash layer is written as well, which costs an erase
+ * cycle and is therefore never implicit. @p readback receives what the receiver
+ * reports afterwards - the caller must display that, not the value it sent.
+ */
+int lgps_gnss_cfg_set(uint32_t key, uint32_t value, bool persist_to_flash,
+		      struct lgps_gnss_cfg_value *readback);
 
 /* Latest decoded solution (copy, safe to call from any thread). */
 void lgps_gnss_get_fix(struct lgps_gnss_fix *out);

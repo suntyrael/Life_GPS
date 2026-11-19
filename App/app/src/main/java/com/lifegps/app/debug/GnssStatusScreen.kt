@@ -22,6 +22,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.lifegps.app.ble.GnssCodec
 import com.lifegps.app.ui.components.CardBlock
 import com.lifegps.app.ui.components.DebugScaffold
 import com.lifegps.app.ui.components.MetricRow
@@ -40,9 +41,12 @@ import java.util.Locale
 fun GnssStatusScreen(
     repo: DebugRepository,
     onBack: () -> Unit,
+    onOpenNmea: () -> Unit = {},
+    onOpenConfig: () -> Unit = {},
 ) {
     val gnss by repo.gnss.collectAsStateWithLifecycle()
     val link by repo.gnssLink.collectAsStateWithLifecycle()
+    val debug by repo.gnssDebug.collectAsStateWithLifecycle()
     val device by repo.device.collectAsStateWithLifecycle()
 
     val fixColor = if (gnss.fix) Green else Red
@@ -89,8 +93,8 @@ fun GnssStatusScreen(
                     MetricRow("定位", if (gnss.fix) "YES" else "NO", fixColor)
                     MetricRow("有效卫星", "${gnss.sats}", if (gnss.sats >= 8) Green else Amber)
                     ValueBar("HDOP", gnss.hdop.toFloat(), 5f, hdopColor, fmtOne(gnss.hdop))
-                    MetricRow("参与解算", if (gnss.satellites.isEmpty()) "固件未提供" else "$used / ${gnss.satellites.size}")
-                    MetricRow("平均 C/N0", if (gnss.satellites.isEmpty()) "固件未提供" else "$avgCno dB-Hz")
+                    MetricRow("参与解算", if (gnss.satellites.isEmpty()) "需要调试会话" else "$used / ${gnss.satellites.size}")
+                    MetricRow("平均 C/N0", if (gnss.satellites.isEmpty()) "需要调试会话" else "$avgCno dB-Hz")
                     MetricRow("TTFF", gnss.ttff)
                     MetricRow("UTC 时间", gnss.utcTime)
                     MetricRow("设备", device.name)
@@ -133,11 +137,15 @@ fun GnssStatusScreen(
             }
 
             item {
-                SectionHeader("卫星信息", "SVID / 系统 / C/N0 / 仰角 / 方位 / 参与解算")
+                SectionHeader("卫星信息", "系统 / SVID / C/N0 / 仰角 / 状态")
                 CardBlock {
                     if (gnss.satellites.isEmpty()) {
                         Text(
-                            "固件 v1 的 Status 帧不含单星信息（SVID / C/N0 / 仰角 / 方位），此处没有数据可显示。",
+                            if (debug.navSat) {
+                                "调试会话已请求 NAV-SAT，但接收机还没有报告任何卫星（室内或天线未接时就是这样）。"
+                            } else {
+                                "单星信息来自 UBX-NAV-SAT，只在调试会话期间采集。请在下方开启调试会话。"
+                            },
                             color = TextDim,
                             fontSize = 12.sp,
                         )
@@ -151,18 +159,60 @@ fun GnssStatusScreen(
                 }
             }
 
+            /* The normal power policy cuts the rail 60 s after a cold start without a
+             * fix and retries minutes later, so the satellite table can never fill in
+             * while debugging indoors. A bounded session suspends that policy and
+             * switches the extra outputs on.
+             */
+            item {
+                CardBlock("调试会话") {
+                    MetricRow(
+                        "状态",
+                        if (debug.flags != 0) "运行中，剩余 ${debug.remainingSeconds} s" else "关闭",
+                        if (debug.flags != 0) Green else TextDim,
+                    )
+                    MetricRow("保持上电", if (debug.holdPower) "是" else "否")
+                    MetricRow("单星 NAV-SAT", if (debug.navSat) "是" else "否")
+                    MetricRow("NMEA 直通", if (debug.nmea) "是" else "否")
+                    debug.error?.let { message ->
+                        Text(message, color = Red, fontSize = 12.sp)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                repo.setGnssDebug(
+                                    GnssCodec.FLAG_HOLD_POWER or
+                                        GnssCodec.FLAG_NAV_SAT or
+                                        GnssCodec.FLAG_NMEA,
+                                    300,
+                                )
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("开启 5 分钟") }
+                        OutlinedButton(
+                            onClick = { repo.setGnssDebug(0, 0) },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("关闭") }
+                    }
+                    Text(
+                        "会话会让模组持续上电（不按 60 s 冷启动超时断电），到期自动恢复省电策略。",
+                        color = TextDim,
+                        fontSize = 11.sp,
+                    )
+                }
+            }
+
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // SET_MODE exists in the protocol; v1 answers 03 NOT_SUPPORTED, and the
-                    // console shows that answer verbatim. The leading byte is the mode.
-                    Button(
-                        onClick = { repo.sendCommand("SET_MODE", "00") },
-                        modifier = Modifier.weight(1f),
-                    ) { Text("冷启动") }
                     OutlinedButton(
-                        onClick = { repo.sendCommand("SET_MODE", "01") },
+                        onClick = onOpenNmea,
                         modifier = Modifier.weight(1f),
-                    ) { Text("热启动") }
+                    ) { Text("NMEA 日志") }
+                    OutlinedButton(
+                        onClick = onOpenConfig,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("GNSS 设置") }
                 }
             }
 
@@ -186,12 +236,12 @@ private fun SatHeader() {
             .padding(vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        SatCell("SVID", 0.9f, TextAlign.Start, TextDim, header = true)
-        SatCell("SYS", 0.8f, TextAlign.Start, TextDim, header = true)
-        SatCell("C/N0", 0.8f, TextAlign.End, TextDim, header = true)
-        SatCell("EL", 0.7f, TextAlign.End, TextDim, header = true)
-        SatCell("AZ", 0.8f, TextAlign.End, TextDim, header = true)
-        SatCell("USED", 0.8f, TextAlign.End, TextDim, header = true)
+        SatCell("SVID", 0.8f, TextAlign.Start, TextDim, header = true)
+        SatCell("SYS", 0.7f, TextAlign.Start, TextDim, header = true)
+        SatCell("C/N0", 0.7f, TextAlign.End, TextDim, header = true)
+        SatCell("EL", 0.6f, TextAlign.End, TextDim, header = true)
+        SatCell("状态", 0.9f, TextAlign.End, TextDim, header = true)
+        SatCell("USED", 0.7f, TextAlign.End, TextDim, header = true)
     }
 }
 
@@ -210,18 +260,23 @@ private fun SatRow(satellite: SatelliteInfo) {
     ) {
         SatCell(
             text = satellite.svid.toString().padStart(2, '0'),
-            weight = 0.9f,
+            weight = 0.8f,
             align = TextAlign.Start,
             color = TextMain,
             bold = satellite.used,
         )
-        SatCell(satellite.system, 0.8f, TextAlign.Start, TextDim)
-        SatCell("${satellite.cno}", 0.8f, TextAlign.End, cnoColor, bold = true)
-        SatCell("${satellite.elevation}°", 0.7f, TextAlign.End, TextMain)
-        SatCell("${satellite.azimuth}°", 0.8f, TextAlign.End, TextDim)
+        SatCell(satellite.system, 0.7f, TextAlign.Start, TextDim)
+        SatCell("${satellite.cno}", 0.7f, TextAlign.End, cnoColor, bold = true)
+        SatCell("${satellite.elevation}°", 0.6f, TextAlign.End, TextMain)
+        SatCell(
+            text = satellite.tracking.ifBlank { "—" },
+            weight = 0.9f,
+            align = TextAlign.End,
+            color = if (satellite.used) Green else TextDim,
+        )
         SatCell(
             text = if (satellite.used) "YES" else "-",
-            weight = 0.8f,
+            weight = 0.7f,
             align = TextAlign.End,
             color = if (satellite.used) Green else TextDim,
         )

@@ -95,6 +95,11 @@ static uint32_t get_le32(const uint8_t *src)
 	       ((uint32_t)src[3] << 24);
 }
 
+static uint8_t min_u8(uint8_t left, uint8_t right)
+{
+	return (left < right) ? left : right;
+}
+
 static void put_le32(uint8_t *dst, uint32_t value)
 {
 	dst[0] = (uint8_t)(value & 0xFFU);
@@ -410,7 +415,24 @@ int lgps_ubx_decode_ack(const struct lgps_ubx_parser *parser, bool *accepted, ui
 
 int lgps_ubx_decode_valget_u1(const struct lgps_ubx_parser *parser, uint32_t key, uint8_t *value)
 {
-	if ((parser == NULL) || (value == NULL)) {
+	uint8_t len = 0U;
+
+	if (value == NULL) {
+		return -EINVAL;
+	}
+
+	/* -ENOENT stays visible: "the answer is about another key" and "the answer is
+	 * malformed" lead to different log lines at the call site.
+	 */
+	return lgps_ubx_decode_valget(parser, key, value, 1U, &len);
+}
+
+int lgps_ubx_decode_valget(const struct lgps_ubx_parser *parser, uint32_t key, uint8_t *value,
+			   uint8_t max_len, uint8_t *value_len)
+{
+	size_t width;
+
+	if ((parser == NULL) || (value == NULL) || (value_len == NULL)) {
 		return -EINVAL;
 	}
 
@@ -418,10 +440,8 @@ int lgps_ubx_decode_valget_u1(const struct lgps_ubx_parser *parser, uint32_t key
 		return -EINVAL;
 	}
 
-	/* version, layer, position u2, then one key and its value. A 4-byte-wide item
-	 * would need 12 bytes; anything shorter than 9 cannot even hold a U1 value.
-	 */
-	if (parser->payload_len < (uint16_t)(CFG_OFF_VALUE + 1U)) {
+	/* version, layer, position u2, one key, then the value bytes. */
+	if (parser->payload_len <= (uint16_t)(CFG_OFF_KEY + 3U)) {
 		return -EINVAL;
 	}
 
@@ -429,7 +449,54 @@ int lgps_ubx_decode_valget_u1(const struct lgps_ubx_parser *parser, uint32_t key
 		return -ENOENT;
 	}
 
-	*value = parser->payload[CFG_OFF_VALUE];
+	width = (size_t)parser->payload_len - (size_t)CFG_OFF_VALUE;
+	if ((width == 0U) || (width > (size_t)max_len) || (width > LGPS_UBX_CFG_VALUE_MAX_LEN)) {
+		return -EINVAL;
+	}
+
+	memcpy(value, &parser->payload[CFG_OFF_VALUE], width);
+	*value_len = (uint8_t)width;
+
+	return 0;
+}
+
+int lgps_ubx_decode_nav_sat(const struct lgps_ubx_parser *parser, struct lgps_nav_sat *out,
+			    uint8_t max_sv, uint8_t *count)
+{
+	uint8_t declared;
+	uint8_t available;
+	uint8_t stored;
+
+	if ((parser == NULL) || (out == NULL) || (count == NULL)) {
+		return -EINVAL;
+	}
+
+	if ((parser->msg_class != LGPS_UBX_CLASS_NAV) || (parser->msg_id != LGPS_UBX_ID_NAV_SAT) ||
+	    (parser->payload_len < LGPS_UBX_NAV_SAT_HEADER_LEN)) {
+		return -EINVAL;
+	}
+
+	/* Byte 5 is numSvs; the rest of the header is iTOW, version and reserved. */
+	declared = parser->payload[5];
+	available = (uint8_t)((parser->payload_len - LGPS_UBX_NAV_SAT_HEADER_LEN) /
+			      LGPS_UBX_NAV_SAT_SV_LEN);
+	stored = min_u8(declared, available);
+	stored = min_u8(stored, max_sv);
+
+	for (uint8_t index = 0U; index < stored; index++) {
+		const uint8_t *group = &parser->payload[LGPS_UBX_NAV_SAT_HEADER_LEN +
+						   ((size_t)index * LGPS_UBX_NAV_SAT_SV_LEN)];
+		uint32_t flags = get_le32(&group[8]);
+
+		out[index].gnss_id = group[0];
+		out[index].sv_id = group[1];
+		out[index].cno = group[2];
+		out[index].elev = (int8_t)group[3];
+		out[index].quality = (uint8_t)(flags & LGPS_UBX_NAV_SAT_QUALITY_MASK);
+		out[index].used = (flags & LGPS_UBX_NAV_SAT_FLAG_SV_USED) != 0U;
+	}
+
+	*count = stored;
 
 	return 0;
 }

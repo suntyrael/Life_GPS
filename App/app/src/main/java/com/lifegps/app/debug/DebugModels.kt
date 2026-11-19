@@ -52,8 +52,11 @@ data class SatelliteInfo(
     val system: String,
     val cno: Int,
     val elevation: Int,
-    val azimuth: Int,
-    val used: Boolean,
+    /** -1 when the receiver does not report an azimuth for this satellite. */
+    val azimuth: Int = -1,
+    val used: Boolean = false,
+    /** UBX-NAV-SAT `qualityInd` rendered as words: 搜索中 / 已捕获 / 跟踪 / 不可用. */
+    val tracking: String = "",
 )
 
 /**

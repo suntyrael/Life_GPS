@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <zephyr/sys/util.h>
 #include <zephyr/ztest.h>
 
 #include <lifegps/ubx.h>
@@ -380,6 +381,137 @@ ZTEST(lifegps_ubx, test_valget_response_readback)
 	parser.payload_len = 8U;
 	zassert_equal(lgps_ubx_decode_valget_u1(&parser, CFG_KEY_NAV_PVT_UART1, &value), -EINVAL,
 		      "truncated payload must be rejected");
+}
+
+/* UBX-NAV-SAT (section 3.15.13): 8-byte header, 12 bytes per satellite. */
+static size_t build_nav_sat_frame(uint8_t *frame, uint8_t declared_svs, uint8_t payload_svs,
+				  size_t frame_len)
+{
+	size_t payload_len = LGPS_UBX_NAV_SAT_HEADER_LEN +
+			     ((size_t)payload_svs * LGPS_UBX_NAV_SAT_SV_LEN);
+	size_t index;
+
+	memset(frame, 0, frame_len);
+	frame[0] = LGPS_UBX_SYNC1;
+	frame[1] = LGPS_UBX_SYNC2;
+	frame[2] = LGPS_UBX_CLASS_NAV;
+	frame[3] = LGPS_UBX_ID_NAV_SAT;
+	put_le16(&frame[4], (uint16_t)payload_len);
+	put_le32(&frame[LGPS_UBX_HEADER_LEN + 0U], 0x11223344U);
+	frame[LGPS_UBX_HEADER_LEN + 4U] = 0x01U;
+	frame[LGPS_UBX_HEADER_LEN + 5U] = declared_svs;
+
+	for (index = 0U; index < payload_svs; index++) {
+		uint8_t *group = &frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_NAV_SAT_HEADER_LEN +
+				       (index * LGPS_UBX_NAV_SAT_SV_LEN)];
+		uint32_t flags;
+
+		group[0] = (uint8_t)(index == 0U ? 0U : 3U); /* GPS, then BeiDou */
+		group[1] = (uint8_t)(index == 0U ? 7U : 21U);
+		group[2] = (uint8_t)(index == 0U ? 42U : 28U);
+		group[3] = (uint8_t)(index == 0U ? 55 : -12);
+		put_le16(&group[6], 0U); /* prRes */
+		flags = (uint32_t)(index == 0U ? (LGPS_UBX_NAV_SAT_FLAG_SV_USED | 4U) : 1U);
+		put_le32(&group[8], flags);
+	}
+
+	{
+		uint8_t ck_a = 0U;
+		uint8_t ck_b = 0U;
+
+		for (index = 2U; index < LGPS_UBX_HEADER_LEN + payload_len; index++) {
+			ck_a = (uint8_t)(ck_a + frame[index]);
+			ck_b = (uint8_t)(ck_b + ck_a);
+		}
+
+		frame[LGPS_UBX_HEADER_LEN + payload_len] = ck_a;
+		frame[LGPS_UBX_HEADER_LEN + payload_len + 1U] = ck_b;
+	}
+
+	return LGPS_UBX_HEADER_LEN + payload_len + LGPS_UBX_TRAILER_LEN;
+}
+
+ZTEST(lifegps_ubx, test_nav_sat_decode)
+{
+	uint8_t frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_NAV_SAT_HEADER_LEN +
+		      (2U * LGPS_UBX_NAV_SAT_SV_LEN) + LGPS_UBX_TRAILER_LEN];
+	struct lgps_ubx_parser parser;
+	struct lgps_nav_sat sats[LGPS_UBX_NAV_SAT_MAX_SV];
+	uint8_t count = 0xFFU;
+	size_t len;
+
+	len = build_nav_sat_frame(frame, 2U, 2U, sizeof(frame));
+	lgps_ubx_parser_reset(&parser);
+	feed_expect_ready(frame, len, &parser);
+
+	zassert_equal(parser.payload_len,
+		      (uint16_t)(LGPS_UBX_NAV_SAT_HEADER_LEN + (2U * LGPS_UBX_NAV_SAT_SV_LEN)),
+		      "NAV-SAT payload length");
+	zassert_equal(lgps_ubx_decode_nav_sat(&parser, sats, ARRAY_SIZE(sats), &count), 0,
+		      "NAV-SAT must decode");
+	zassert_equal(count, 2U, "two satellites");
+
+	zassert_equal(sats[0].gnss_id, 0U, "GPS");
+	zassert_equal(sats[0].sv_id, 7U, "GPS PRN 7");
+	zassert_equal(sats[0].cno, 42U, "C/N0");
+	zassert_equal(sats[0].elev, 55, "elevation");
+	zassert_equal(sats[0].quality, 4U, "qualityInd 4 = code locked");
+	zassert_true(sats[0].used, "svUsed bit");
+
+	zassert_equal(sats[1].gnss_id, 3U, "BeiDou");
+	zassert_equal(sats[1].elev, -12, "negative elevation is sign-extended");
+	zassert_false(sats[1].used, "not used for navigation");
+
+	/* max_sv caps the list without failing the decode. */
+	count = 0xFFU;
+	zassert_equal(lgps_ubx_decode_nav_sat(&parser, sats, 1U, &count), 0, "capped decode");
+	zassert_equal(count, 1U, "cap respected");
+}
+
+ZTEST(lifegps_ubx, test_nav_sat_truncated_and_wrong_class)
+{
+	uint8_t frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_NAV_SAT_HEADER_LEN +
+		      (2U * LGPS_UBX_NAV_SAT_SV_LEN) + LGPS_UBX_TRAILER_LEN];
+	struct lgps_ubx_parser parser;
+	struct lgps_nav_sat sats[LGPS_UBX_NAV_SAT_MAX_SV];
+	uint8_t count = 0U;
+	size_t len;
+
+	/* Declares five satellites but carries two: store what exists, do not read
+	 * past the payload.
+	 */
+	len = build_nav_sat_frame(frame, 5U, 2U, sizeof(frame));
+	lgps_ubx_parser_reset(&parser);
+	feed_expect_ready(frame, len, &parser);
+	zassert_equal(lgps_ubx_decode_nav_sat(&parser, sats, ARRAY_SIZE(sats), &count), 0,
+		      "declared count above the payload must not fail");
+	zassert_equal(count, 2U, "only the satellites really present are stored");
+
+	parser.msg_id = LGPS_UBX_ID_NAV_PVT;
+	zassert_equal(lgps_ubx_decode_nav_sat(&parser, sats, ARRAY_SIZE(sats), &count), -EINVAL,
+		      "a non-NAV-SAT frame must be refused");
+}
+
+ZTEST(lifegps_ubx, test_valget_wide_value)
+{
+	/* Response for CFG-RATE-MEAS (u2, value 1000 ms = 0x03E8). */
+	static const uint8_t response[] = {
+		0xB5U, 0x62U, 0x06U, 0x8BU, 0x0AU, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+		0x01U, 0x00U, 0x21U, 0x30U, 0xE8U, 0x03U, 0xD8U, 0xC8U,
+	};
+	struct lgps_ubx_parser parser;
+	uint8_t value[LGPS_UBX_CFG_VALUE_MAX_LEN] = { 0 };
+	uint8_t value_len = 0U;
+
+	lgps_ubx_parser_reset(&parser);
+	feed_expect_ready(response, sizeof(response), &parser);
+
+	zassert_equal(lgps_ubx_decode_valget(&parser, LGPS_UBX_CFG_KEY_RATE_MEAS, value,
+					    sizeof(value), &value_len),
+		      0, "two-byte value must decode");
+	zassert_equal(value_len, 2U, "width reported");
+	zassert_equal(value[0], 0xE8U, "value low byte");
+	zassert_equal(value[1], 0x03U, "value high byte");
 }
 
 ZTEST_SUITE(lifegps_ubx, NULL, NULL, NULL, NULL, NULL);

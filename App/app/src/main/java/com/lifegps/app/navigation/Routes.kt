@@ -7,6 +7,8 @@ object Routes {
     const val SENSORS = "sensors"
     const val CALIB = "calibration"
     const val GNSS = "gnss"
+    const val GNSS_NMEA = "gnss_nmea"
+    const val GNSS_CFG = "gnss_cfg"
     const val CHECK = "hardware_check"
     const val FLASH = "flash"
     const val SPATIAL = "spatial_trail"

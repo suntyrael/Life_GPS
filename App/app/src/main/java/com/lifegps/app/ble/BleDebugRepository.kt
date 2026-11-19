@@ -109,6 +109,15 @@ class BleDebugRepository(context: Context) : DebugRepository {
     private val _gnssLink = MutableStateFlow(GnssLinkInfo())
     override val gnssLink: StateFlow<GnssLinkInfo> = _gnssLink.asStateFlow()
 
+    private val _gnssDebug = MutableStateFlow(GnssDebugState())
+    override val gnssDebug: StateFlow<GnssDebugState> = _gnssDebug.asStateFlow()
+
+    private val _nmea = MutableStateFlow<List<String>>(emptyList())
+    override val nmea: StateFlow<List<String>> = _nmea.asStateFlow()
+
+    private val _gnssCfg = MutableStateFlow<Map<Long, GnssCfgValue>>(emptyMap())
+    override val gnssCfg: StateFlow<Map<Long, GnssCfgValue>> = _gnssCfg.asStateFlow()
+
     private val _imu = MutableStateFlow(initialImu())
     override val imu: StateFlow<ImuStatus> = _imu.asStateFlow()
 
@@ -292,6 +301,9 @@ class BleDebugRepository(context: Context) : DebugRepository {
         }
         _gnss.value = initialGnss()
         _gnssLink.value = GnssLinkInfo()
+        _gnssDebug.value = GnssDebugState()
+        _nmea.value = emptyList()
+        _gnssCfg.value = emptyMap()
         _imu.value = initialImu()
         _mag.value = initialMag()
         _baro.value = initialBaro()
@@ -438,6 +450,8 @@ class BleDebugRepository(context: Context) : DebugRepository {
             TelemetryId.GNSS -> BleFrame.parseGnssTelemetry(packet.payload)?.let { onGnssTelemetry(it) }
             TelemetryId.IMU -> BleFrame.parseImuTelemetry(packet.payload)?.let { onImuTelemetry(it) }
             TelemetryId.PDR -> BleFrame.parsePdrTelemetry(packet.payload)?.let { onPdrTelemetry(it) }
+            TelemetryId.SAT -> BleFrame.parseSatTelemetry(packet.payload)?.let { onSatTelemetry(it) }
+            TelemetryId.NMEA -> BleFrame.parseNmeaTelemetry(packet.payload)?.let { onNmea(it) }
             else -> Unit
         }
     }
@@ -464,6 +478,125 @@ class BleDebugRepository(context: Context) : DebugRepository {
             rxDropped = telemetry.rxDropped,
             baud = telemetry.baud,
         )
+    }
+
+    /**
+     * Satellite table (1 Hz while the debug session collects NAV-SAT).
+     *
+     * The Status frame carries only the number of satellites used, so this is the
+     * only place the per-satellite rows come from. Azimuth and ephemeris flags are
+     * not published by this firmware version and stay unset instead of zero-filled.
+     */
+    private fun onSatTelemetry(telemetry: BleFrame.SatTelemetry) {
+        val rows = telemetry.rows
+            .sortedWith(compareByDescending<SatTelemetryRow> { it.used }.thenByDescending { it.cno })
+            .map { row ->
+                SatelliteInfo(
+                    svid = row.svId,
+                    system = gnssSystemName(row.gnssId),
+                    cno = row.cno,
+                    elevation = row.elevation,
+                    azimuth = -1,
+                    used = row.used,
+                    tracking = row.qualityLabel,
+                )
+            }
+
+        _gnss.update { it.copy(satellites = rows, sats = if (telemetry.total > 0) telemetry.total else it.sats) }
+    }
+
+    private fun onNmea(telemetry: NmeaTelemetry) {
+        _nmea.update { lines -> (lines + telemetry.text).takeLast(MAX_NMEA_LINES) }
+    }
+
+    private fun gnssSystemName(gnssId: Int): String = when (gnssId) {
+        0 -> "GPS"
+        1 -> "SBAS"
+        2 -> "GAL"
+        3 -> "BDS"
+        5 -> "QZSS"
+        6 -> "GLO"
+        else -> "ID$gnssId"
+    }
+
+    // --- GNSS debug session and receiver settings ------------------------------
+
+    override fun setGnssDebug(flags: Int, ttlSeconds: Int) {
+        scope.launch {
+            val result = request(Opcode.GNSS_DEBUG, GnssCodec.encodeDebug(flags, ttlSeconds))
+            val body = result?.payload?.drop(1)?.toByteArray()
+            val decoded = body?.let { GnssCodec.decodeDebug(it) }
+            _gnssDebug.value = when {
+                result == null -> GnssDebugState(error = "链路未就绪或超时")
+                result.status != 0 -> GnssDebugState(error = describeStatus(result.status))
+                decoded == null -> GnssDebugState(error = "响应无法解析")
+                else -> decoded
+            }
+        }
+    }
+
+    override fun refreshGnssDebug() {
+        scope.launch {
+            val result = request(Opcode.GNSS_DEBUG, GnssCodec.encodeDebugQuery())
+            val body = result?.payload?.drop(1)?.toByteArray()
+            val decoded = body?.let { GnssCodec.decodeDebug(it) }
+            _gnssDebug.value = when {
+                result == null -> GnssDebugState(error = "链路未就绪或超时")
+                result.status != 0 -> GnssDebugState(error = describeStatus(result.status))
+                decoded == null -> GnssDebugState(error = "响应无法解析")
+                else -> decoded
+            }
+        }
+    }
+
+    override fun clearNmea() {
+        _nmea.value = emptyList()
+    }
+
+    override fun refreshGnssCfg() {
+        scope.launch {
+            GnssCfgKeys.ALL.forEach { key ->
+                val result = request(Opcode.GNSS_CFG, GnssCodec.encodeCfgGet(key.key))
+                val body = result?.payload?.drop(1)?.toByteArray()
+                val decoded = body?.let { GnssCodec.decodeCfg(it) }
+                val value = when {
+                    result == null -> GnssCfgValue(key.key, key.len, 0, "链路未就绪或超时")
+                    result.status != 0 -> GnssCfgValue(key.key, key.len, 0, describeStatus(result.status))
+                    decoded == null -> GnssCfgValue(key.key, key.len, 0, "响应无法解析")
+                    else -> decoded
+                }
+                _gnssCfg.update { it + (key.key to value) }
+            }
+        }
+    }
+
+    override fun setGnssCfg(key: Long, value: Long, persistToFlash: Boolean) {
+        val desc = GnssCfgKeys.byKey(key) ?: return
+        scope.launch {
+            val result = request(
+                Opcode.GNSS_CFG,
+                GnssCodec.encodeCfgSet(key, value, desc.len, persistToFlash),
+            )
+            val body = result?.payload?.drop(1)?.toByteArray()
+            val decoded = body?.let { GnssCodec.decodeCfg(it) }
+            val store = when {
+                result == null -> GnssCfgValue(key, desc.len, 0, "链路未就绪或超时")
+                result.status != 0 -> GnssCfgValue(key, desc.len, 0, describeStatus(result.status))
+                decoded == null -> GnssCfgValue(key, desc.len, 0, "响应无法解析")
+                else -> decoded
+            }
+            _gnssCfg.update { it + (key to store) }
+        }
+    }
+
+    /** Protocol status code as words (`BLE_Wire_v1.md` §3.1). */
+    private fun describeStatus(status: Int): String = when (status) {
+        0x01 -> "参数无效（固件拒绝）"
+        0x02 -> "未知 opcode"
+        0x03 -> "固件不支持"
+        0x04 -> "忙：GNSS 模组当前未上电或未应答"
+        0x06 -> "需要先 DEBUG_UNLOCK"
+        else -> "状态 0x%02X".format(status)
     }
 
     /**
@@ -1768,6 +1901,9 @@ class BleDebugRepository(context: Context) : DebugRepository {
         const val MAX_TRAIL_POINTS = 600
         const val MAX_LOG_ENTRIES = 300
         const val MAX_CONSOLE_ENTRIES = 40
+
+        /** NMEA lines kept in memory; a 1 Hz stream with ~15 sentences/s fills this in ~30 s. */
+        const val MAX_NMEA_LINES = 500
 
         const val PENDING_RESPONSE = "-- 等待响应…"
 

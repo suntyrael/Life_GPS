@@ -25,6 +25,7 @@
 
 #define LGPS_UBX_CLASS_NAV 0x01U
 #define LGPS_UBX_ID_NAV_PVT 0x07U
+#define LGPS_UBX_ID_NAV_SAT 0x35U
 #define LGPS_UBX_CLASS_RXM 0x02U
 #define LGPS_UBX_ID_RXM_PMREQ 0x41U
 #define LGPS_UBX_CLASS_ACK 0x05U
@@ -36,6 +37,14 @@
 
 #define LGPS_UBX_NAV_PVT_PAYLOAD_LEN 92U
 #define LGPS_UBX_RXM_PMREQ_PAYLOAD_LEN 16U
+
+/* UBX-NAV-SAT (section 3.15.13): 8-byte header, then 12 bytes per satellite. */
+#define LGPS_UBX_NAV_SAT_HEADER_LEN 8U
+#define LGPS_UBX_NAV_SAT_SV_LEN 12U
+
+/* NAV-SAT flags (12-byte group, offset +8) bit masks and field positions. */
+#define LGPS_UBX_NAV_SAT_QUALITY_MASK 0x07U
+#define LGPS_UBX_NAV_SAT_FLAG_SV_USED 0x08U
 
 /*
  * UBX-CFG-VALSET / UBX-CFG-VALGET (interface description sections 3.10.5 and
@@ -79,8 +88,29 @@
  */
 #define LGPS_UBX_CFG_KEY_MSGOUT_NAV_PVT_UART1 0x20910007U
 
-/* Largest payload the streaming parser accepts (NAV-PVT is the biggest we use). */
-#define LGPS_UBX_MAX_PAYLOAD_LEN 128U
+/*
+ * Further configuration keys this firmware reads or writes. Ids and types are
+ * from section 4.9 of the same document; every one of them is a whitelisted item
+ * in gnss.c, never an arbitrary key from the air.
+ */
+#define LGPS_UBX_CFG_KEY_MSGOUT_NAV_SAT_UART1 0x20910016U /* U1, section 4.9.11 */
+#define LGPS_UBX_CFG_KEY_ANA_USE 0x10230001U              /* L, section 4.9.1 */
+#define LGPS_UBX_CFG_KEY_ANA_ORBMAXERR 0x30230002U        /* U2, section 4.9.1 */
+#define LGPS_UBX_CFG_KEY_DYNMODEL 0x20110021U             /* E1, section 4.9.13 */
+#define LGPS_UBX_CFG_KEY_SIGNAL_GPS_ENA 0x1031001FU       /* L, section 4.9.20 */
+#define LGPS_UBX_CFG_KEY_SIGNAL_GAL_ENA 0x10310021U
+#define LGPS_UBX_CFG_KEY_SIGNAL_BDS_ENA 0x10310022U
+#define LGPS_UBX_CFG_KEY_SIGNAL_GLO_ENA 0x10310025U
+#define LGPS_UBX_CFG_KEY_INFIL_MINELEV 0x201100A4U         /* I1, section 4.9.13 */
+#define LGPS_UBX_CFG_KEY_OUTFIL_PDOP 0x301100B1U           /* U2 0.1, section 4.9.13 */
+#define LGPS_UBX_CFG_KEY_RATE_MEAS 0x30210001U             /* U2 0.001 s, section 4.9.17 */
+
+/*
+ * Largest payload the streaming parser accepts. UBX-NAV-PVT is 92 bytes, but
+ * UBX-NAV-SAT scales with the number of satellites in view (8 + 12 * numSvs), so
+ * the buffer covers the 32-satellite worst case the M10 can report.
+ */
+#define LGPS_UBX_MAX_PAYLOAD_LEN (LGPS_UBX_NAV_SAT_HEADER_LEN + (32U * LGPS_UBX_NAV_SAT_SV_LEN))
 
 /* NAV-PVT valid (offset 11) bit masks. */
 #define LGPS_UBX_PVT_VALID_DATE 0x01U
@@ -242,6 +272,36 @@ int lgps_ubx_decode_ack(const struct lgps_ubx_parser *parser, bool *accepted, ui
  * not the one the receiver answered with.
  */
 int lgps_ubx_decode_valget_u1(const struct lgps_ubx_parser *parser, uint32_t key, uint8_t *value);
+
+/*
+ * Same, for any item width: copies up to @p max_len value bytes and reports the
+ * real width in @p value_len (1..4). A response whose key does not match is
+ * reported as -ENOENT instead of being guessed at.
+ */
+int lgps_ubx_decode_valget(const struct lgps_ubx_parser *parser, uint32_t key, uint8_t *value,
+			   uint8_t max_len, uint8_t *value_len);
+
+/* One satellite entry as the App needs it (interface description 3.15.13.1). */
+#define LGPS_UBX_NAV_SAT_MAX_SV 32U
+
+struct lgps_nav_sat {
+	uint8_t gnss_id;
+	uint8_t sv_id;
+	uint8_t cno;    /* dBHz */
+	int8_t elev;    /* deg, unknown if out of range */
+	uint8_t quality; /* qualityInd 0..7, bit 3 of the flags field carries svUsed */
+	bool used;
+};
+
+/*
+ * Decode the payload of a NAV-SAT frame previously reported as MSG_READY.
+ *
+ * Returns 0 on success and writes the number of entries to @p count; at most
+ * @p max_sv entries are stored. -EINVAL on a NULL argument, a non-NAV-SAT frame
+ * or a payload too short for the declared satellite count.
+ */
+int lgps_ubx_decode_nav_sat(const struct lgps_ubx_parser *parser, struct lgps_nav_sat *out,
+			    uint8_t max_sv, uint8_t *count);
 
 /*
  * Build UBX-RXM-PMREQ (16-byte payload, version 0).

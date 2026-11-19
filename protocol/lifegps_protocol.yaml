@@ -160,6 +160,9 @@ commands:
   - {opcode: 0x31, name: GNSS_SNAPSHOT, direction: app_to_dev}
   - {opcode: 0x32, name: IMU_SNAPSHOT, direction: app_to_dev}
   - {opcode: 0x33, name: BUTTON_EVENT, direction: dev_to_app}
+  # 0x35 / 0x36 只在 0.2.0 追加。载荷字段表在 Doc/Software/BLE_Wire_v1.md §6.6 / §6.7。
+  - {opcode: 0x35, name: GNSS_CFG, direction: app_to_dev}
+  - {opcode: 0x36, name: GNSS_DEBUG, direction: app_to_dev}
   - {opcode: 0x40, name: SELFTEST, direction: app_to_dev}
   - {opcode: 0x41, name: MAG_CAL, direction: app_to_dev}
   - {opcode: 0x42, name: BARO_BASELINE, direction: app_to_dev}
@@ -185,3 +188,5 @@ telemetry:
   - {id: 0x05, name: PDR}
   - {id: 0x06, name: POWER}
   - {id: 0x07, name: SYSTEM}
+  - {id: 0x08, name: NMEA}
+  - {id: 0x09, name: SAT}

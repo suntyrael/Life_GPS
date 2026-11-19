@@ -41,10 +41,11 @@
 #include <lifegps/ble_frame.h>
 #include <lifegps/ble_uuid.h>
 #include <lifegps/calib.h>
+#include <lifegps/ubx.h>
 #include <lifegps/diag.h>
 #include <lifegps/flash_ring.h>
-#include <lifegps/led.h>
 #include <lifegps/gnss.h>
+#include <lifegps/led.h>
 #include <lifegps/telemetry.h>
 #include <lifegps/traj.h>
 
@@ -176,6 +177,8 @@ static uint8_t status_frame[LGPS_BLE_STATUS_SIZE];
 static uint16_t telem_seq_imu;
 static uint16_t telem_seq_pdr;
 static uint16_t telem_seq_gnss;
+static uint16_t telem_seq_sat;
+static uint16_t telem_seq_nmea;
 static bool status_frame_valid;
 static struct k_spinlock status_lock;
 
@@ -532,12 +535,13 @@ static uint8_t cmd_get_caps(uint8_t *payload, size_t capacity, size_t *out_len)
 	struct lgps_ble_caps caps = {
 		.caps = LGPS_BLE_CAP_STATUS_NOTIFY | LGPS_BLE_CAP_LOG_NOTIFY | LGPS_BLE_CAP_POI |
 			LGPS_BLE_CAP_FLASH_INFO | LGPS_BLE_CAP_REBOOT |
-			LGPS_BLE_CAP_DEBUG_UNLOCK |
+			LGPS_BLE_CAP_DEBUG_UNLOCK | LGPS_BLE_CAP_GNSS_DEBUG | LGPS_BLE_CAP_GNSS_CFG |
 			(IS_ENABLED(CONFIG_LGPS_CALIB)
 				 ? (LGPS_BLE_CAP_MAG_CAL | LGPS_BLE_CAP_ACCEL_CAL)
 				 : 0U),
 		.telemetry_mask = LGPS_BLE_TELEM_MASK_GNSS | LGPS_BLE_TELEM_MASK_IMU |
-				  LGPS_BLE_TELEM_MASK_PDR,
+				  LGPS_BLE_TELEM_MASK_PDR | LGPS_BLE_TELEM_MASK_NMEA |
+				  LGPS_BLE_TELEM_MASK_SAT,
 		.att_mtu = (uint16_t)LGPS_PROTO_MTU,
 	};
 	int len;
@@ -916,6 +920,138 @@ static uint8_t cmd_reboot(void)
 	return LGPS_BLE_OK;
 }
 
+static uint8_t cmd_gnss_debug(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t capacity,
+			      size_t *out_len)
+{
+	uint8_t flags = 0U;
+	uint16_t remaining_s = 0U;
+
+	/* Response body: status, flags, remaining seconds (u16). */
+	if (capacity < 1U + 3U) {
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+
+	if (cmd->payload_len == 0U) {
+		lgps_gnss_debug_get(&flags, &remaining_s);
+	} else if (cmd->payload_len == 3U) {
+		uint8_t wanted = cmd->payload[0];
+		uint16_t ttl_s = (uint16_t)((uint16_t)cmd->payload[1] |
+					    ((uint16_t)cmd->payload[2] << 8));
+
+		if (lgps_gnss_debug_set(wanted, ttl_s) != 0) {
+			return LGPS_BLE_INVALID_ARGUMENT;
+		}
+
+		/* Echo the request: the GNSS thread applies it within one loop pass,
+		 * so reading back immediately would report the old session.
+		 */
+		flags = wanted;
+		remaining_s = (ttl_s != 0U) ? ttl_s : (uint16_t)LGPS_GNSS_DEBUG_DEFAULT_TTL_S;
+	} else {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	payload[1] = flags;
+	payload[2] = (uint8_t)(remaining_s & 0xFFU);
+	payload[3] = (uint8_t)(remaining_s >> 8);
+	*out_len = 1U + 3U;
+
+	return LGPS_BLE_OK;
+}
+
+static uint32_t read_le32(const uint8_t *src)
+{
+	return (uint32_t)src[0] | ((uint32_t)src[1] << 8) | ((uint32_t)src[2] << 16) |
+	       ((uint32_t)src[3] << 24);
+}
+
+static uint8_t status_from_errno(int err)
+{
+	switch (err) {
+	case 0:
+		return LGPS_BLE_OK;
+	case -EINVAL:
+	case -ERANGE:
+		return LGPS_BLE_INVALID_ARGUMENT;
+	case -ENOTSUP:
+		return LGPS_BLE_NOT_SUPPORTED;
+	case -ENODEV:
+	case -ETIMEDOUT:
+	case -EBUSY:
+	case -EAGAIN:
+		return LGPS_BLE_BUSY;
+	default:
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+}
+
+/*
+ * Whitelisted receiver setting: request body is action, key (u32) and - for a
+ * write - the little-endian value bytes. The answer always carries the value the
+ * receiver reports afterwards, never the one the host asked for.
+ */
+static uint8_t cmd_gnss_cfg(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t capacity,
+			    size_t *out_len)
+{
+	struct lgps_gnss_cfg_value value = { 0 };
+	uint32_t key;
+	uint32_t raw = 0U;
+	uint8_t action;
+	uint8_t value_len;
+	int ret;
+
+	if ((cmd->payload_len < 5U) || (cmd->payload_len > 5U + LGPS_UBX_CFG_VALUE_MAX_LEN)) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	if (capacity < 1U + 5U + LGPS_UBX_CFG_VALUE_MAX_LEN) {
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+
+	action = cmd->payload[0];
+	key = read_le32(&cmd->payload[1]);
+	value_len = (uint8_t)(cmd->payload_len - 5U);
+
+	if (action == 0U) {
+		if (value_len != 0U) {
+			return LGPS_BLE_INVALID_ARGUMENT;
+		}
+
+		ret = lgps_gnss_cfg_get(key, &value);
+	} else if ((action == 1U) || (action == 2U)) {
+		if ((value_len == 0U) || (value_len > LGPS_UBX_CFG_VALUE_MAX_LEN)) {
+			return LGPS_BLE_INVALID_ARGUMENT;
+		}
+
+		for (uint8_t index = 0U; index < value_len; index++) {
+			raw |= (uint32_t)cmd->payload[5U + index] << (8U * index);
+		}
+
+		ret = lgps_gnss_cfg_set(key, raw, action == 2U, &value);
+	} else {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	if (ret != 0) {
+		return status_from_errno(ret);
+	}
+
+	/* Echo the key and the value the receiver reports. */
+	payload[1] = (uint8_t)(key & 0xFFU);
+	payload[2] = (uint8_t)((key >> 8) & 0xFFU);
+	payload[3] = (uint8_t)((key >> 16) & 0xFFU);
+	payload[4] = (uint8_t)((key >> 24) & 0xFFU);
+	payload[5] = value.len;
+
+	for (uint8_t index = 0U; (index < value.len) && (index < LGPS_UBX_CFG_VALUE_MAX_LEN); index++) {
+		payload[6U + index] = (uint8_t)((value.value >> (8U * index)) & 0xFFU);
+	}
+
+	*out_len = 1U + 5U + value.len;
+
+	return LGPS_BLE_OK;
+}
+
 static uint8_t dispatch(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t capacity,
 			size_t *out_len)
 {
@@ -936,6 +1072,10 @@ static uint8_t dispatch(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t
 		return cmd_flash_info(payload, capacity, out_len);
 	case LGPS_CMD_LOG_SUBSCRIBE:
 		return cmd_log_subscribe(cmd);
+	case LGPS_CMD_GNSS_DEBUG:
+		return cmd_gnss_debug(cmd, payload, capacity, out_len);
+	case LGPS_CMD_GNSS_CFG:
+		return cmd_gnss_cfg(cmd, payload, capacity, out_len);
 	case LGPS_CMD_DEBUG_UNLOCK:
 		return cmd_debug_unlock(cmd);
 	case LGPS_CMD_REBOOT:
@@ -1274,6 +1414,43 @@ void lgps_ble_publish_gnss(const struct lgps_ble_telem_gnss *gnss)
 		notify_guarded(telem_attr, packet, (uint16_t)len);
 	}
 }
+
+void lgps_ble_publish_sat(const struct lgps_ble_telem_sat_entry *entries, uint8_t count,
+			  uint8_t total)
+{
+	uint8_t packet[LGPS_BLE_TELEM_HEADER_SIZE + LGPS_BLE_TELEM_SAT_HEADER +
+		       (LGPS_BLE_TELEM_SAT_MAX * LGPS_BLE_TELEM_SAT_ENTRY)];
+	int len;
+
+	if (!telem_subscribed || (entries == NULL) || (count == 0U)) {
+		return;
+	}
+
+	len = lgps_ble_telem_sat_encode(telem_seq_sat, entries, count, total, packet, sizeof(packet));
+	telem_seq_sat++;
+
+	if (len > 0) {
+		notify_guarded(telem_attr, packet, (uint16_t)len);
+	}
+}
+
+void lgps_ble_publish_nmea(const char *line, uint8_t len)
+{
+	uint8_t packet[LGPS_BLE_TELEM_HEADER_SIZE + 1U + LGPS_BLE_TELEM_NMEA_MAX];
+	int out_len;
+
+	if (!telem_subscribed || (line == NULL) || (len == 0U)) {
+		return;
+	}
+
+	out_len = lgps_ble_telem_nmea_encode(telem_seq_nmea, line, len, packet, sizeof(packet));
+	telem_seq_nmea++;
+
+	if (out_len > 0) {
+		notify_guarded(telem_attr, packet, (uint16_t)out_len);
+	}
+}
+
 
 static void build_device_name(void)
 {

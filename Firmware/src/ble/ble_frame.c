@@ -322,6 +322,56 @@ int lgps_ble_telem_pdr_encode(uint16_t seq, const struct lgps_ble_telem_pdr *pdr
 				     out_size);
 }
 
+
+int lgps_ble_telem_sat_encode(uint16_t seq, const struct lgps_ble_telem_sat_entry *entries,
+			      uint8_t count, uint8_t total, uint8_t *out, size_t out_size)
+{
+	uint8_t payload[LGPS_BLE_TELEM_SAT_HEADER + (LGPS_BLE_TELEM_SAT_MAX * LGPS_BLE_TELEM_SAT_ENTRY)];
+
+	if ((entries == NULL) && (count != 0U)) {
+		return -EINVAL;
+	}
+
+	if (count > LGPS_BLE_TELEM_SAT_MAX) {
+		return -EINVAL;
+	}
+
+	payload[0] = count;
+	payload[1] = total;
+	payload[2] = 0U;
+	payload[3] = 0U;
+
+	for (uint8_t index = 0U; index < count; index++) {
+		uint8_t *entry = &payload[LGPS_BLE_TELEM_SAT_HEADER +
+					  ((size_t)index * LGPS_BLE_TELEM_SAT_ENTRY)];
+
+		entry[0] = entries[index].gnss_id;
+		entry[1] = entries[index].sv_id;
+		entry[2] = entries[index].cno;
+		entry[3] = (uint8_t)entries[index].elev;
+		entry[4] = entries[index].state;
+	}
+
+	return lgps_ble_telem_encode((uint8_t)LGPS_BLE_TELEM_SAT, seq, payload,
+				     LGPS_BLE_TELEM_SAT_PAYLOAD(count), out, out_size);
+}
+
+int lgps_ble_telem_nmea_encode(uint16_t seq, const char *line, uint8_t len, uint8_t *out,
+			       size_t out_size)
+{
+	uint8_t payload[1U + LGPS_BLE_TELEM_NMEA_MAX];
+
+	if ((line == NULL) || (len == 0U) || (len > LGPS_BLE_TELEM_NMEA_MAX)) {
+		return -EINVAL;
+	}
+
+	payload[0] = len;
+	memcpy(&payload[1], line, len);
+
+	return lgps_ble_telem_encode((uint8_t)LGPS_BLE_TELEM_NMEA, seq, payload,
+				     (uint16_t)(1U + len), out, out_size);
+}
+
 int lgps_ble_telem_gnss_encode(uint16_t seq, const struct lgps_ble_telem_gnss *gnss, uint8_t *out,
 			       size_t out_size)
 {

@@ -99,7 +99,20 @@ private fun AppNavHost(repo: BleDebugRepository) {
             MapLiveScreen(repo) { navController.popBackStack() }
         }
         composable(Routes.GNSS) {
-            GnssStatusScreen(repo) { navController.popBackStack() }
+            GnssStatusScreen(
+                repo = repo,
+                onBack = { navController.popBackStack() },
+                onOpenNmea = { navController.navigate(Routes.GNSS_NMEA) },
+                onOpenConfig = { navController.navigate(Routes.GNSS_CFG) },
+            )
+        }
+
+        composable(Routes.GNSS_NMEA) {
+            GnssNmeaScreen(repo) { navController.popBackStack() }
+        }
+
+        composable(Routes.GNSS_CFG) {
+            GnssConfigScreen(repo) { navController.popBackStack() }
         }
         composable(Routes.CHECK) {
             HardwareCheckScreen(repo) { navController.popBackStack() }

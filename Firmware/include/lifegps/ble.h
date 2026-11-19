@@ -72,4 +72,11 @@ void lgps_ble_publish_pdr(int32_t x_mm, int32_t y_mm, int16_t heading_ddeg, uint
  */
 void lgps_ble_publish_gnss(const struct lgps_ble_telem_gnss *gnss);
 
+/* Satellite table (telemetry 0x09): at most LGPS_BLE_TELEM_SAT_MAX rows. */
+void lgps_ble_publish_sat(const struct lgps_ble_telem_sat_entry *entries, uint8_t count,
+			  uint8_t total);
+
+/* One raw NMEA sentence (telemetry 0x08). Cheap no-op when nobody subscribes. */
+void lgps_ble_publish_nmea(const char *line, uint8_t len);
+
 #endif /* LIFEGPS_BLE_H_ */

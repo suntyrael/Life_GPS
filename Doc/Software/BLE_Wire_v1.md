@@ -109,7 +109,9 @@ off  size  field
 表现为「上一秒 −1 g、下一秒 +1 g」。**主机不得把两种坐标系的加速度混进同一个量**。
 
 没有的物理量（四元数、高度 hPa、单星 C/N0、TTFF、BMP388 的 °C）**不在帧里**，App 不得编造；
-`baro_temp_raw` 是未补偿的 24 位原值，换算成 °C 需要读 BMP388 的 TPG 系数，固件尚未实现。
+`baro_temp_raw` / `baro_press_raw` 仍是未补偿的 24 位原值（**帧布局未变**）。固件已实现 TPG 补偿
+（`Firmware/src/imu/bmp388.c`，DS BST-BMP388-DS001-07 §9.2/§9.3），但补偿后的 hPa/°C 目前只进串口遥测；
+把它们放进 Status 帧是**协议改动**，需单独批准并升 `version`。
 
 ## 5. Log 通知（Log 特征）
 
@@ -140,6 +142,8 @@ off type  field
 | `0x01` GNSS | 34 B（整包 38 B） | 见下方字段表 | 1 Hz |
 | `0x02` IMU | 20 B（整包 24 B） | `i16 acc_lsb[3]`、`i16 gyro_lsb[3]`、`i16 quat_q15[4]`（w,x,y,z，32767 = 1.0） | 26 Hz（仅订阅时） |
 | `0x05` PDR | 12 B（整包 16 B） | `i32 x_mm`（东）、`i32 y_mm`（北）、`i16 heading_ddeg`、`u16 steps` | 每完成一步 + 1 Hz 心跳 |
+| `0x08` NMEA | 1 B + 文本（整包 ≤ 133 B） | `u8 len`、`char text[len]`（ASCII，`$...*hh`，不含 CR/LF） | 每句一包，仅调试会话开启 NMEA 直通时 |
+| `0x09` SAT | 4 B + 5 B×N（整包 ≤ 168 B） | 见下方字段表 | 1 Hz，仅调试会话开启单星采集时 |
 
 **`0x01` GNSS 是接收链路诊断，不是定位结果**：定位结果仍在 Status 帧（§4），这里只回答
 「模块到底有没有在说话」。payload 布局（小端，固件侧 `LGPS_BLE_TELEM_GNSS_PAYLOAD` 与
@@ -160,9 +164,25 @@ App 侧 `GnssTelemetryOffset` 必须一致）：
 | 26 | u32 | `rx_dropped` | ISR 因环形缓冲满而丢弃的字节 |
 | 30 | u32 | `baud` | UART 当前实际波特率（38400，或 9600 回退后） |
 
+**`0x09` SAT 字段表**（`u8 count`、`u8 total`、`u16 reserved`，随后每星 5 字节）：
+
+| off | type | 字段 | 说明 |
+| :--- | :--- | :--- | :--- |
+| 0 | u8 | `count` | 本包内的卫星行数（≤ 32） |
+| 1 | u8 | `total` | 接收机报告的卫星总数，与 `count` 不同表示被截断 |
+| 2 | u16 | `reserved` | 0 |
+| 4 + n·5 | u8 | `gnss_id` | 0 GPS / 1 SBAS / 2 GAL / 3 BDS / 5 QZSS / 6 GLO |
+| +1 | u8 | `sv_id` | 卫星号 |
+| +2 | u8 | `cno` | C/N0，dBHz |
+| +3 | i8 | `elev` | 仰角，度 |
+| +4 | u8 | `state` | bit2..0 = UBX `qualityInd`（0 无信号 / 1 搜索 / 2 已捕获 / 3 不可用 / 4..7 跟踪），bit3 = `svUsed` |
+
+方位角、星历可用位、健康位**不在本版本**，App 显示 “—”，不补零。
+`0x08` / `0x09` 只在调试会话期间有流量；会话关闭后接收机不再输出 NAV-SAT，也没有 NMEA 直通。
+
 `GET_CAPS.telemetry_mask`（§6.1 off 16）的 bit n 表示 **id = n 的遥测组已实现**：
-bit1 GNSS、bit2 IMU、bit3 MAG、bit4 BARO、bit5 PDR、bit6 POWER、bit7 SYSTEM（bit0 未用）。
-当前固件实现 bit1|bit2|bit5（`0x26`），主机必须按位判断，不得按协议版本号推测。
+bit1 GNSS、bit2 IMU、bit3 MAG、bit4 BARO、bit5 PDR、bit6 POWER、bit7 SYSTEM、bit8 NMEA、bit9 SAT（bit0 未用）。
+当前固件实现 bit1|bit2|bit5|bit8|bit9（`0x326`），主机必须按位判断，不得按协议版本号推测。
 
 **IMU 包是 body 帧**（X 右 / Y 前 / Z 前脸法向），四元数把 body 映射到 world
 （X 东 / Y 北 / Z 上），所以加速度矢量可以直接和姿态一起画。
@@ -185,13 +205,15 @@ yaw（并顺带学习磁力计偏置），否则用磁力计按该偏置维持 y
 | `0x41` | MAG_CAL | `u8 action`（6.3） | 见 6.3 |
 | `0x42` | BARO_BASELINE | `u8 action` + `u32 baseline_pa_q4`（6.5） | 见 6.5（U4 复活前返回 `0x03`） |
 | `0x43` | ACCEL_CAL | `u8 action` + `u8 position`（6.4） | 见 6.4 |
+| `0x35` | GNSS_CFG | `u8 action` + `u32 key` (+ value)（6.6） | 见 6.6 |
+| `0x36` | GNSS_DEBUG | `u8 flags` + `u16 ttl_s`（6.7） | 见 6.7 |
 | `0x52` | REBOOT | — | —（响应发出后 200 ms 冷复位，需先 `DEBUG_UNLOCK`） |
 | `0x60` | FLASH_INFO | — | 见 6.2 |
 | `0x7F` | DEBUG_UNLOCK | 4 字节 ASCII `LGPS` | — |
 
 其余协议 opcode（SET_MODE / SET_TIME / SET_CONFIG / GET_CONFIG / SYNC_* / GET_DAY_INDEX /
 GET_ARCHIVE / GNSS_SNAPSHOT / IMU_SNAPSHOT / BUTTON_EVENT / SELFTEST / ERASE_DAY /
-FACTORY_RESET / FLASH_READ / FLASH_ERASE / GET_FAULT_LOG / POWER_TEST_MARK）v1 一律返回
+FACTORY_RESET / FLASH_READ / FLASH_ERASE / GET_FAULT_LOG / POWER_TEST_MARK）一律返回
 `0x03 NOT_SUPPORTED`；完全不认识的 opcode 返回 `0x02`。App 必须把这两种情况显示给用户，不得伪造成功。
 
 三个校准 opcode（`0x41` / `0x42` / `0x43`）的载荷已经冻结（6.3~6.5），但**固件侧的采集与
@@ -209,7 +231,7 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
 | 7 | u8 | `reserved` |
 | 8 | u16 | `att_mtu`（固件配置的 L2CAP TX MTU，247） |
 | 10 | u16 | `max_cmd_payload`（235） |
-| 12 | u32 | `caps`：bit0 Status notify，bit1 Log notify，bit2 POI，bit3 FLASH_INFO，bit4 REBOOT，bit5 DEBUG_UNLOCK，bit6 Data 同步（v1 = 0），bit7 MAG_CAL，bit8 ACCEL_CAL，bit9 BARO_BASELINE（三位置位条件见 6.3~6.5） |
+| 12 | u32 | `caps`：bit0 Status notify，bit1 Log notify，bit2 POI，bit3 FLASH_INFO，bit4 REBOOT，bit5 DEBUG_UNLOCK，bit6 Data 同步（v1 = 0），bit7 MAG_CAL，bit8 ACCEL_CAL，bit9 BARO_BASELINE（三位置位条件见 6.3~6.5），bit10 GNSS_DEBUG，bit11 GNSS_CFG |
 | 16 | u32 | `telemetry_mask`（v1 = `0x26`：bit1 GNSS、bit2 IMU、bit5 PDR，语义见 §5.1） |
 | 20 | u16 | `status_size` = 100 |
 | 22 | u16 | `reserved` |
@@ -295,6 +317,56 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
 
 **前置条件**：BMP388 必须应答，且固件已完成 TPG 补偿（系数 `0x30..0x57`）。没有 Pa 就没有
 相对高度 —— 在此之前该 opcode 返回 `0x03`，App 只展示只读说明，不给可点按钮。
+
+### 6.6 GNSS_CFG（`0x35`）请求 / 响应
+
+```
+请求  u8 action (0=GET 1=SET 2=SET+FLASH) · u32 key · value[len]（GET 时无 value）
+响应  u8 status · u32 key · u8 len · value[len]      ← 永远是接收机回读到的值
+```
+
+- `action=1` 写入接收机 **RAM + BBR** 层（`CFG-VALSET layers = ram|bbr`）：跨 `RXM-PMREQ`
+  断电保留（集成手册 §3.6.3.2 说明软件待机清 RAM），但整机断 `V_BCKP` 后回到出厂值。
+- `action=2` 额外写 **Flash** 层，消耗一次擦写，必须由用户显式选择。
+- 状态码：`0x01` 键不在白名单或值超范围，`0x03` 接收机 NAK 该键，`0x04` 模组当前未上电 /
+  未应答（等一个电源周期后重试），`0x00` 成功。
+- 命令会阻塞到接收机应答或约 800 ms 超时（请求与答案共用导航串口）。
+
+白名单（固件 `Firmware/src/gnss/gnss.c` 与 App `GnssCfgKeys` 必须一致）：
+
+| key | 名称 | 类型 | 允许范围 | 说明 |
+| :--- | :--- | :--- | :--- | :--- |
+| `0x10230001` | CFG-ANA-USE_ANA | U1 | 0..1 | AssistNow Autonomous（预测星历存 BBR） |
+| `0x30230002` | CFG-ANA-ORBMAXERR | U2 | 1..65535 | 预测星历最大误差，m |
+| `0x20110021` | CFG-NAVSPG-DYNMODEL | E1 | 0..10 | 动态模型 0 便携 / 2 静止 / 3 步行 / 4 车载 … |
+| `0x1031001f` | CFG-SIGNAL-GPS_ENA | L | 0..1 | GPS 星座 |
+| `0x10310021` | CFG-SIGNAL-GAL_ENA | L | 0..1 | Galileo |
+| `0x10310022` | CFG-SIGNAL-BDS_ENA | L | 0..1 | 北斗 |
+| `0x10310025` | CFG-SIGNAL-GLO_ENA | L | 0..1 | GLONASS |
+| `0x201100a4` | CFG-NAVSPG-INFIL_MINELEV | I1 | 0..90 | 最小仰角，度 |
+| `0x301100b1` | CFG-NAVSPG-OUTFIL_PDOP | U2 | 1..9999 | pDOP 门限 ×0.1 |
+| `0x30210001` | CFG-RATE-MEAS | U2 | 25..1000 | 导航频率，ms |
+
+`CFG-UART1-BAUDRATE`、`CFG-UART1OUTPROT-*` 等**不在白名单**：写错会让链路失联，
+调试功能不允许具备这种能力。
+
+### 6.7 GNSS_DEBUG（`0x36`）请求 / 响应
+
+```
+请求  （空）= 查询 ；或 u8 flags · u16 ttl_s（小端，0 = 默认 300 s）
+响应  u8 status · u8 flags · u16 remaining_s
+```
+
+| flags 位 | 含义 |
+| :--- | :--- |
+| bit0 | `HOLD_POWER`：会话期间跳过冷启动 60 s 超时断电与星历保持 35 s 断电 |
+| bit1 | `NAV_SAT`：把接收机 NAV-SAT 输出打开（1 Hz，RAM 层），供 `0x09` 遥测 |
+| bit2 | `NMEA`：把原始 NMEA 语句通过 `0x08` 遥测转发 |
+
+- 会话一定有寿命上限（默认 300 s，最大 3600 s）：本固件没有任何路径能让 GNSS 轨道无限期上电。
+- `NAV_SAT` 只写 RAM 层，断电即失效；`flags=0` 立即恢复常规省电策略。
+- 写入响应回显**请求的** flags/ttl（GNSS 线程在一个循环周期内应用），
+  约 100 ms 后再查询一次即可读到真实剩余时间。
 
 ## 7. 版本策略
 

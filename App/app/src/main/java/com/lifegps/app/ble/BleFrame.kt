@@ -135,6 +135,9 @@ enum class Opcode(val code: Int, val label: String) {
     GET_ARCHIVE(0x24, "GET_ARCHIVE"),
     LOG_SUBSCRIBE(0x30, "LOG_SUBSCRIBE"),
     GNSS_SNAPSHOT(0x31, "GNSS_SNAPSHOT"),
+    /* 0.2.0: GNSS debugging (see BLE_Wire_v1.md §6.6 / §6.7). */
+    GNSS_CFG(0x35, "GNSS_CFG"),
+    GNSS_DEBUG(0x36, "GNSS_DEBUG"),
     IMU_SNAPSHOT(0x32, "IMU_SNAPSHOT"),
     BUTTON_EVENT(0x33, "BUTTON_EVENT"),
     SELFTEST(0x40, "SELFTEST"),
@@ -291,7 +294,51 @@ object TelemetryId {
     const val PDR = 0x05
     const val POWER = 0x06
     const val SYSTEM = 0x07
+    const val NMEA = 0x08
+    const val SAT = 0x09
 }
+
+/**
+ * Satellite table packet (telemetry 0x09): `u8 count, u8 total, u16 reserved`,
+ * then [SatTelemetry.SIZE_ENTRY] bytes per satellite.
+ *
+ * [state] packs `qualityInd` in bits 2..0 and the `svUsed` flag in bit 3, exactly
+ * as UBX-NAV-SAT reports them.
+ */
+data class SatTelemetry(
+    val rows: List<SatTelemetryRow>,
+    val total: Int,
+) {
+    companion object {
+        const val HEADER = 4
+        const val SIZE_ENTRY = 5
+        const val MAX = 32
+    }
+}
+
+data class SatTelemetryRow(
+    val gnssId: Int,
+    val svId: Int,
+    val cno: Int,
+    val elevation: Int,
+    val state: Int,
+) {
+    val quality: Int get() = state and 0x07
+    val used: Boolean get() = state and 0x08 != 0
+
+    /** Human wording for `qualityInd` (UBX-NAV-SAT §3.15.13.1), never "fix". */
+    val qualityLabel: String
+        get() = when (quality) {
+            0 -> "无信号"
+            1 -> "搜索中"
+            2 -> "已捕获"
+            3 -> "不可用"
+            else -> "跟踪"
+        }
+}
+
+/** One NMEA sentence (telemetry 0x08): length prefix plus ASCII text. */
+data class NmeaTelemetry(val text: String)
 
 /** One telemetry packet; [payload] excludes the 4-byte header. */
 data class TelemetryPacket(
@@ -578,6 +625,35 @@ object BleFrame {
             rxDropped = u32(payload, GnssTelemetryOffset.RX_DROPPED),
             baud = u32(payload, GnssTelemetryOffset.BAUD).toInt(),
         )
+    }
+
+    /** Satellite table payload (see [SatTelemetry]); tolerates a shorter list. */
+    fun parseSatTelemetry(payload: ByteArray): SatTelemetry? {
+        if (payload.size < SatTelemetry.HEADER) return null
+        val count = u8(payload, 0)
+        val total = u8(payload, 1)
+        val available = (payload.size - SatTelemetry.HEADER) / SatTelemetry.SIZE_ENTRY
+        val rows = (minOf(count, available)).coerceAtMost(SatTelemetry.MAX)
+        val out = ArrayList<SatTelemetryRow>(rows)
+        for (index in 0 until rows) {
+            val base = SatTelemetry.HEADER + index * SatTelemetry.SIZE_ENTRY
+            out += SatTelemetryRow(
+                gnssId = u8(payload, base),
+                svId = u8(payload, base + 1),
+                cno = u8(payload, base + 2),
+                elevation = payload[base + 3].toInt(),
+                state = u8(payload, base + 4),
+            )
+        }
+        return SatTelemetry(rows = out, total = if (total == 0) rows else total)
+    }
+
+    /** NMEA payload: `u8 len` then that many ASCII bytes (no terminator). */
+    fun parseNmeaTelemetry(payload: ByteArray): NmeaTelemetry? {
+        if (payload.size < 2) return null
+        val len = u8(payload, 0)
+        if (len == 0 || payload.size < 1 + len) return null
+        return NmeaTelemetry(text = String(payload, 1, len, Charsets.US_ASCII))
     }
 
     /** Parses a Log notification; returns null when the framing prefix is invalid. */

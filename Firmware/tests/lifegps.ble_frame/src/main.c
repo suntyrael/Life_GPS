@@ -494,4 +494,58 @@ ZTEST(lifegps_ble, test_telemetry_generic_encoder_bounds)
 		      -ENOMEM, "short output buffer");
 }
 
+ZTEST(lifegps_ble, test_telemetry_sat_packet_layout)
+{
+	const struct lgps_ble_telem_sat_entry entries[2] = {
+		{ .gnss_id = 0U, .sv_id = 7U, .cno = 42U, .elev = 55, .state = 0x0CU },
+		{ .gnss_id = 3U, .sv_id = 21U, .cno = 28U, .elev = -12, .state = 0x01U },
+	};
+	uint8_t out[LGPS_BLE_TELEM_HEADER_SIZE + LGPS_BLE_TELEM_SAT_HEADER +
+		    (2U * LGPS_BLE_TELEM_SAT_ENTRY)];
+	int len;
+
+	len = lgps_ble_telem_sat_encode(0x0005U, entries, 2U, 2U, out, sizeof(out));
+
+	zassert_equal(len, (int)sizeof(out), "satellite packet length");
+	zassert_equal(out[0], 0x09U, "telemetry id SAT");
+	zassert_equal(out[4], 2U, "count");
+	zassert_equal(out[5], 2U, "total");
+	zassert_equal(out[6], 0U, "reserved low");
+	zassert_equal(out[8], 0U, "entry 0 gnssId");
+	zassert_equal(out[9], 7U, "entry 0 svId");
+	zassert_equal(out[10], 42U, "entry 0 cno");
+	zassert_equal(out[11], 55U, "entry 0 elev");
+	zassert_equal(out[12], 0x0CU, "entry 0 state (quality 4 | used)");
+	zassert_equal(out[13], 3U, "entry 1 gnssId");
+	zassert_equal(out[16], 0xF4U, "entry 1 elev is i8 (-12)");
+	zassert_equal(out[17], 0x01U, "entry 1 state");
+
+	zassert_equal(lgps_ble_telem_sat_encode(0U, NULL, 1U, 1U, out, sizeof(out)), -EINVAL,
+		      "NULL entries with a non-zero count");
+	zassert_equal(lgps_ble_telem_sat_encode(0U, entries, LGPS_BLE_TELEM_SAT_MAX + 1U, 0U, out,
+					       sizeof(out)),
+		      -EINVAL, "more rows than the format allows");
+}
+
+ZTEST(lifegps_ble, test_telemetry_nmea_packet_layout)
+{
+	static const char line[] = "$GNGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,";
+	uint8_t out[LGPS_BLE_TELEM_HEADER_SIZE + 1U + LGPS_BLE_TELEM_NMEA_MAX];
+	int len;
+
+	len = lgps_ble_telem_nmea_encode(0x0007U, line, (uint8_t)(sizeof(line) - 1U), out, sizeof(out));
+
+	zassert_equal(len, (int)(LGPS_BLE_TELEM_HEADER_SIZE + sizeof(line)), "NMEA packet length");
+	zassert_equal(out[0], 0x08U, "telemetry id NMEA");
+	zassert_equal(out[2], 7U, "seq low byte");
+	zassert_equal(out[4], (uint8_t)(sizeof(line) - 1U), "text length prefix");
+	zassert_equal(out[5], (uint8_t)'$', "text starts with the sentence delimiter");
+	zassert_equal(out[5 + (sizeof(line) - 2U)], (uint8_t)'*', "checksum star is inside the line");
+
+	zassert_equal(lgps_ble_telem_nmea_encode(0U, NULL, 4U, out, sizeof(out)), -EINVAL,
+		      "NULL line");
+	zassert_equal(lgps_ble_telem_nmea_encode(0U, line, 0U, out, sizeof(out)), -EINVAL,
+		      "empty line");
+}
+
 ZTEST_SUITE(lifegps_ble, NULL, NULL, NULL, NULL, NULL);

@@ -88,6 +88,12 @@ enum lgps_ble_status_code {
 #define LGPS_BLE_CAP_MAG_CAL 0x00000080U
 #define LGPS_BLE_CAP_ACCEL_CAL 0x00000100U
 #define LGPS_BLE_CAP_BARO_BASELINE 0x00000200U
+/* GNSS debugging: 0x36 debug session, 0x35 whitelisted receiver settings,
+ * 0x08/0x09 telemetry groups. Advertised separately because a host must not
+ * offer a settings screen against a firmware that would answer 0x03.
+ */
+#define LGPS_BLE_CAP_GNSS_DEBUG 0x00000400U
+#define LGPS_BLE_CAP_GNSS_CFG 0x00000800U
 
 /*
  * GET_CAPS.telemetry_mask bits: bit n set means the telemetry group whose id is
@@ -102,6 +108,8 @@ enum lgps_ble_status_code {
 #define LGPS_BLE_TELEM_MASK_PDR 0x00000020U  /* id 0x05 */
 #define LGPS_BLE_TELEM_MASK_POWER 0x00000040U  /* id 0x06 */
 #define LGPS_BLE_TELEM_MASK_SYSTEM 0x00000080U /* id 0x07 */
+#define LGPS_BLE_TELEM_MASK_NMEA 0x00000100U  /* id 0x08 */
+#define LGPS_BLE_TELEM_MASK_SAT 0x00000200U   /* id 0x09 */
 
 /* soc_pct is "unknown" until a fuel gauge or a coulomb counter exists; the app
  * derives a percentage from bat_mv instead of the firmware pretending to know.
@@ -132,6 +140,16 @@ enum lgps_ble_status_code {
 #define LGPS_BLE_TELEM_GNSS_PAYLOAD 34U
 #define LGPS_BLE_TELEM_GNSS_SIZE (LGPS_BLE_TELEM_HEADER_SIZE + LGPS_BLE_TELEM_GNSS_PAYLOAD)
 
+/* Satellite table: 8-byte payload header, then 5 bytes per satellite. */
+#define LGPS_BLE_TELEM_SAT_HEADER 4U
+#define LGPS_BLE_TELEM_SAT_ENTRY 5U
+#define LGPS_BLE_TELEM_SAT_MAX 32U
+#define LGPS_BLE_TELEM_SAT_PAYLOAD(sat_count)                                                 \
+	((uint16_t)(LGPS_BLE_TELEM_SAT_HEADER + ((uint16_t)(sat_count) * LGPS_BLE_TELEM_SAT_ENTRY)))
+
+/* One NMEA sentence per packet: u8 length, then that many ASCII bytes. */
+#define LGPS_BLE_TELEM_NMEA_MAX 128U
+
 /* Telemetry ids, mirroring protocol/lifegps_protocol.yaml `telemetry:`. */
 enum lgps_ble_telem_id {
 	LGPS_BLE_TELEM_GNSS = 0x01,
@@ -141,6 +159,8 @@ enum lgps_ble_telem_id {
 	LGPS_BLE_TELEM_PDR = 0x05,
 	LGPS_BLE_TELEM_POWER = 0x06,
 	LGPS_BLE_TELEM_SYSTEM = 0x07,
+	LGPS_BLE_TELEM_NMEA = 0x08,
+	LGPS_BLE_TELEM_SAT = 0x09,
 };
 
 /* Body-frame IMU sample plus the quaternion estimate (Q15, 32767 = 1.0). */
@@ -164,6 +184,15 @@ struct lgps_ble_telem_pdr {
  */
 #define LGPS_BLE_TELEM_GNSS_FLAG_FIX_VALID 0x01U
 #define LGPS_BLE_TELEM_GNSS_FLAG_UTC_VALID 0x02U
+
+/* One satellite row, already reduced to what the App table shows. */
+struct lgps_ble_telem_sat_entry {
+	uint8_t gnss_id;
+	uint8_t sv_id;
+	uint8_t cno;
+	int8_t elev;
+	uint8_t state; /* bits 2..0 qualityInd, bit 3 svUsed */
+};
 
 struct lgps_ble_telem_gnss {
 	uint8_t state;
@@ -372,6 +401,18 @@ int lgps_ble_telem_pdr_encode(uint16_t seq, const struct lgps_ble_telem_pdr *pdr
  * negative errno.
  */
 int lgps_ble_telem_gnss_encode(uint16_t seq, const struct lgps_ble_telem_gnss *gnss, uint8_t *out,
+			       size_t out_size);
+
+/*
+ * Satellite table packet: u8 count, u8 total, u16 reserved, then @p count rows of
+ * 5 bytes. @p total is the number of satellites the receiver reported, so a host
+ * can tell "we capped the list" from "this is all of them".
+ */
+int lgps_ble_telem_sat_encode(uint16_t seq, const struct lgps_ble_telem_sat_entry *entries,
+			      uint8_t count, uint8_t total, uint8_t *out, size_t out_size);
+
+/* One NMEA sentence (ASCII, no terminator) in one packet. */
+int lgps_ble_telem_nmea_encode(uint16_t seq, const char *line, uint8_t len, uint8_t *out,
 			       size_t out_size);
 
 #endif /* LIFEGPS_BLE_FRAME_H_ */
