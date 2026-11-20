@@ -130,7 +130,7 @@ void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 		(void)snprintk(utc, sizeof(utc), "---");
 	}
 
-	char ttff_s[8];
+	char ttff_s[16];
 
 	/*
 	 * TTFF of the current power cycle: 0 until the first 3D fix, then the number

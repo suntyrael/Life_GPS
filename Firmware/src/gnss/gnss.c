@@ -64,6 +64,8 @@ static uint32_t state_since_ms;
 static uint32_t last_pvt_log_ms;
 static uint32_t next_reconfig_ms;
 static uint32_t current_baud = LGPS_GNSS_BAUD_DEFAULT;
+static bool baud_fallback_done;
+
 /* --- TTFF and receiver liveness -------------------------------------------- */
 
 /*

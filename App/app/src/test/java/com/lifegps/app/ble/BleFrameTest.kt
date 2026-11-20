@@ -438,6 +438,8 @@ class BleFrameTest {
         writeU32(payload, GnssTelemetryOffset.NMEA_STARTS, 0x42)
         writeU32(payload, GnssTelemetryOffset.RX_DROPPED, 0)
         writeU32(payload, GnssTelemetryOffset.BAUD, 38400)
+        writeU32(payload, GnssTelemetryOffset.TTFF_MS, 4_200L)
+        writeU32(payload, GnssTelemetryOffset.POWER_OFF_MS, 180_000L)
 
         val gnss = BleFrame.parseGnssTelemetry(payload)
         assertNotNull(gnss)
@@ -455,11 +457,21 @@ class BleFrameTest {
         assertEquals(0x42L, gnss.nmeaStarts)
         assertEquals(0L, gnss.rxDropped)
         assertEquals(38400, gnss.baud)
+        assertEquals(4_200L, gnss.ttffMs)
+        assertEquals(180_000L, gnss.powerOffMs)
 
         // The packet size is pinned on the firmware side too
-        // (LGPS_BLE_TELEM_GNSS_SIZE == 38 -> 34 payload bytes).
-        assertEquals(34, GnssTelemetryOffset.SIZE)
-        assertNull(BleFrame.parseGnssTelemetry(ByteArray(GnssTelemetryOffset.SIZE - 1)))
+        // (LGPS_BLE_TELEM_GNSS_SIZE == 46 -> 42 payload bytes, 38 before 0.3.0).
+        assertEquals(42, GnssTelemetryOffset.SIZE)
+        assertEquals(34, GnssTelemetryOffset.SIZE_V020)
+        assertNull(BleFrame.parseGnssTelemetry(ByteArray(GnssTelemetryOffset.SIZE_V020 - 1)))
+
+        // A 0.2.0 packet must still parse: no TTFF is claimed because it was not sent.
+        val old = payload.copyOf(GnssTelemetryOffset.SIZE_V020)
+        val oldGnss = BleFrame.parseGnssTelemetry(old)
+        assertNotNull(oldGnss)
+        assertEquals(0L, oldGnss!!.ttffMs)
+        assertEquals(GnssTelemetry.UINT32_MAX, oldGnss.powerOffMs)
 
         // A flag byte without the fix bit must not report a fix.
         payload[GnssTelemetryOffset.FLAGS] = GnssTelemetryOffset.FLAG_UTC_VALID.toByte()
