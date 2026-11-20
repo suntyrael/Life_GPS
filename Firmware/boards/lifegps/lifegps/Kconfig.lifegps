@@ -15,6 +15,47 @@ config LGPS_IMU_HUB_DIAG
 	bool "Run the sensor hub bring-up diagnostic once at boot"
 	default n
 
+# Bench debugging escape hatch for the GNSS power policy: a receiver that runs
+# continuously cannot be watched on a scope or in u-center, because README section
+# 11 cuts the rail after the 60 s cold-start window (no fix) or 35 s after the
+# first fix (ephemeris collected). With this set, src/gnss/gnss.c never calls
+# gnss_power_down() on its own, so the receiver stays in full multi-GNSS tracking
+# until the board is powered off.
+#
+# Off by default: a continuously powered MAX-M10S draws about 8 mA at the 1.8 V
+# rail on top of the rest of the system, which is the whole point of the policy.
+# The build-time flag is deliberate - nothing on the BLE command path can put the
+# rail in a state where a lost link leaves it on forever.
+config LGPS_GNSS_ALWAYS_ON
+	bool "Keep the GNSS rail powered (disable the timeout power policy)"
+	default n
+
+# 10 Hz needs more line rate than 38400 can carry once anything else is on the
+# wire: NAV-PVT is 100 bytes per epoch (1 kB/s at 10 Hz, fine), but the factory
+# NMEA set is ~1.25 kB per epoch and NAV-SAT is 16 + 12*n bytes. The profile in
+# src/gnss/gnss.c therefore writes three keys once the first NAV-PVT readback
+# proves the receiver answers at the boot rate - NMEA output off,
+# CFG-RATE-MEAS, then CFG-UART1-BAUDRATE = 460800 (RAM layer, so the next power
+# cycle starts at 38400 again) - and waits for each ACK.
+#
+# 460800 is legal on both sides: MAX-M10S integration manual table 16 lists it and
+# the nRF54L15 UARTE limit is 1 Mbit/s on the UARTE20-22/30 instances (datasheet
+# section 11.24). The BAUDRATE table value gives 457143 bit/s from a 16 MHz PCLK,
+# i.e. -0.8 %, inside the UART tolerance, but it does depend on HFCLK coming from
+# the 32 MHz crystal.
+#
+# If the receiver never answers at the new rate, the firmware drops the link back
+# to 38400 by itself after 10 s (gnss.c, cold-start state).
+config LGPS_GNSS_FAST_LINK
+	bool "Raise the GNSS link to 460800 and sample at the configured rate"
+	default n
+
+config LGPS_GNSS_RATE_MS
+	int "GNSS measurement period written at power-up (ms)"
+	depends on LGPS_GNSS_FAST_LINK
+	default 100
+	range 25 1000
+
 # Sensor calibration: MAG_CAL (0x41) and ACCEL_CAL (0x43). The capture state
 # machines, the coefficient maths and the 80-byte record in the external NOR.
 # Coefficients are applied in software - lifegps/calib.h records why the sensor

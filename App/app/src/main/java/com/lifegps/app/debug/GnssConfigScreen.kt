@@ -100,8 +100,10 @@ fun GnssConfigScreen(
                 CardBlock {
                     CfgRow(GnssCfgKeys.DYNMODEL, cfg[GnssCfgKeys.DYNMODEL.key]) { editing = it }
                     CfgRow(GnssCfgKeys.MINELEV, cfg[GnssCfgKeys.MINELEV.key]) { editing = it }
+                    CfgRow(GnssCfgKeys.MINCNO, cfg[GnssCfgKeys.MINCNO.key]) { editing = it }
                     CfgRow(GnssCfgKeys.PDOP, cfg[GnssCfgKeys.PDOP.key]) { editing = it }
                     CfgRow(GnssCfgKeys.RATE_MEAS, cfg[GnssCfgKeys.RATE_MEAS.key]) { editing = it }
+                    CfgRow(GnssCfgKeys.RATE_NAV, cfg[GnssCfgKeys.RATE_NAV.key]) { editing = it }
                 }
             }
 
@@ -111,6 +113,32 @@ fun GnssConfigScreen(
                     GnssCfgKeys.SIGNALS.forEach { key ->
                         CfgRow(key, cfg[key.key]) { editing = it }
                     }
+                    Text(
+                        "MAX-M10S 的北斗 B1I 不能与北斗 B1C 或 GLONASS L1OF 同时开启（集成手册 §2.1.3），" +
+                            "接收机会直接回 ACK-NAK。所以开 GLONASS 是一个顺序：先把「北斗 B1I」关掉，" +
+                            "再开「北斗 B1C」，最后开「GLONASS 星座 / L1」；每一步本身都必须是合法组合。",
+                        color = TextDim,
+                        fontSize = 11.sp,
+                    )
+                }
+            }
+
+            item { SectionHeader("功耗与运动检测", "CFG-PM / CFG-MOT：接收机自己的省电与静止判定") }
+            item {
+                CardBlock {
+                    CfgRow(GnssCfgKeys.PM_OPERATEMODE, cfg[GnssCfgKeys.PM_OPERATEMODE.key]) { editing = it }
+                    CfgRow(GnssCfgKeys.PM_POSUPDATEPERIOD, cfg[GnssCfgKeys.PM_POSUPDATEPERIOD.key]) { editing = it }
+                    CfgRow(GnssCfgKeys.PM_ACQPERIOD, cfg[GnssCfgKeys.PM_ACQPERIOD.key]) { editing = it }
+                    CfgRow(GnssCfgKeys.PM_ONTIME, cfg[GnssCfgKeys.PM_ONTIME.key]) { editing = it }
+                    CfgRow(GnssCfgKeys.PM_DONOTENTEROFF, cfg[GnssCfgKeys.PM_DONOTENTEROFF.key]) { editing = it }
+                    CfgRow(GnssCfgKeys.MOT_GNSSSPEED_THRS, cfg[GnssCfgKeys.MOT_GNSSSPEED_THRS.key]) { editing = it }
+                    CfgRow(GnssCfgKeys.MOT_GNSSDIST_THRS, cfg[GnssCfgKeys.MOT_GNSSDIST_THRS.key]) { editing = it }
+                    Text(
+                        "周期类字段只在「功耗模式」为 PSMOO/PSMCT 时才起作用；FULL 下接收机连续跟踪。" +
+                            "静止判定两项与固件 PDR 的 ZUPT 判据同源，0 表示用出厂默认值。",
+                        color = TextDim,
+                        fontSize = 11.sp,
+                    )
                 }
             }
 

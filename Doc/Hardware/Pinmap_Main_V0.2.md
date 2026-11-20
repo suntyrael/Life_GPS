@@ -106,7 +106,7 @@
    - 设备树：`&uicr { nfct-pins-as-gpios; };`（NCS ≥ 2.6 起支持，本项目 v3.4.2 可用）；
    - 或运行时寄存器：`NRF_NFCT->PADCONFIG = 0`（nrfx 提供 `NFCT_PADCONFIG_ENABLE_Disabled`）。
 2. **SPI**：`&spi22 { status = "okay"; pinctrl-0 = <&spi22_default>; pinctrl-names = "default"; cs-gpios = <&gpio1 14 GPIO_ACTIVE_LOW>; }`；Kconfig 需 `CONFIG_SPI=y`、`CONFIG_SPI_NRFX_SPIM=y`（实例 `CONFIG_NRFX_SPIM22` 一般由 DT 自动 select，**须在 v3.4.2 源码树确认**）。
-3. **UART**：`&uart20`（或 `uart21`）`current-speed = <115200>`，pinctrl 指 `P1.04/P1.05`；与 SPI22 无共享资源。
+3. **UART**：`&uart20`（或 `uart21`）`current-speed = <38400>`，pinctrl 指 `P1.04/P1.05`；与 SPI22 无共享资源。38400 是每次上电的起步速率（MAX-M10S 接口说明书 `CFG-UART1-BAUDRATE` 出厂值 = 38400，MAX 系列另有 9600 出货批次），运行期可由 `CONFIG_LGPS_GNSS_FAST_LINK` 抬到 460800（nRF54L15 UARTE 普通实例上限 1 Mbit/s）。
 4. **不再需要** `CONSTLAT`/`LOWPWR` 手动切换；IMU 中断仍走 `P0.02`（GPIOTE30）。
 5. **待核实（仓库内无 NCS 源码树，不得凭记忆断言）**：`&spi22` 的 DT 标签与 `spi@c8000` 地址、`CONFIG_NRFX_SPIM22` 是否 auto-select、`nfct-pins-as-gpios` 在 nRF54L 上是否经 UICR 层处理（对 TF-M/secure 分区的影响）、`pinctrl` 状态名（`spi22_default`/`spi22_sleep`）。
 
@@ -122,7 +122,7 @@
 | 2 | `P1.01 / XL2` | `LFXO_OUT` | P1 / 模拟 | — | 32.768kHz 晶体 X1.2 | 同上 |
 | 3 | `P1.02 / NFC1` | `LSM6_SPI_MOSI` | P1 | OUT | U12.14 `SDA/SDI/SDO` | `SPIM22` 的 SDO；**须先关 NFC**（`NFCT.PADCONFIG`）；8 MHz |
 | 4 | `P1.03 / NFC2` | `LSM6_SPI_CLK` | P1 / **clock** | OUT | U12.13 `SCL/SPC` | `SPIM22` 的 SCK（clock 脚）；**须先关 NFC**；8 MHz |
-| 5 | `P1.04 / AIN0` | `GPS_TX` | P1 / clock | OUT | `UARTE20/21 TXD` → R10 100Ω → U1.3 `RXD` | 115200 8N1；GPS 断电前先置高阻/低电平 |
+| 5 | `P1.04 / AIN0` | `GPS_TX` | P1 / clock | OUT | `UARTE20/21 TXD` → R10 100Ω → U1.3 `RXD` | 38400 8N1 起（运行期可升 460800）；GPS 断电前先置高阻/低电平 |
 | 6 | `P1.05 / AIN1`（RADIO[6]） | `GPS_RX` | P1 | IN | `UARTE20/21 RXD` ← R11 100Ω ← U1.2 `TXD` | 同域 UART，固件用 `UARTE2x` |
 | 7 | `P1.06 / AIN2` | `KEY1_POI` | P1 | IN | R20 100Ω → SW7（按下接地） | **内部上拉**；SENSE 低电平唤醒（System OFF） |
 | 8 | `P1.07 / AIN3` | `GPS_EN` | P1 | OUT | U9.3 `EN`（SGM2045-1.8） | **高 = 给 GNSS 供电**，低 = 断电（关断漏电 30nA） |

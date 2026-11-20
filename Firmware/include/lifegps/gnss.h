@@ -7,6 +7,11 @@
  *   fix so it can collect broadcast ephemeris, then cut the rail and retry with
  *   the exponential backoff 120 s -> 300 s -> 900 s.
  *
+ * That policy is a build option: CONFIG_LGPS_GNSS_ALWAYS_ON (boards/lifegps/
+ * Kconfig.lifegps) removes both cuts from src/gnss/gnss.c and leaves the receiver
+ * tracking continuously - for bench work, or for a full multi-GNSS session that is
+ * longer than the debug session TTL below.
+ *
  * Electrical order for power-down is fixed by the pinmap (section 3): put the
  * receiver into software backup first, park the UART pins, then drop GPS_EN.
  */
@@ -20,11 +25,25 @@
 /*
  * Line rate of the receiver. The u-blox M10 factory default is 38400 8N1
  * (interface description, CFG-UART1-BAUDRATE 0x40520001), and the devicetree
- * current-speed matches it; 9600 is the only other rate worth trying before
+ * current-speed matches it; 9600 is the other rate the MAX-M10S ships with
+ * (integration manual section 2.1.4: the MAX family is delivered at 9600 for
+ * backwards compatibility), and it is the only other rate worth trying before
  * declaring the link broken.
+ *
+ * 38400 stays the rate every power cycle starts at, on both sides. A 10 Hz
+ * profile does not fit it, so CONFIG_LGPS_GNSS_FAST_LINK raises the link to
+ * LGPS_GNSS_BAUD_FAST after the receiver has answered at the slow rate, and the
+ * next power-up starts at 38400 again (the baud rate is written to the RAM layer
+ * only, and RXM-PMREQ standby clears RAM).
+ *
+ * 460800 is inside the MAX-M10S list (integration manual table 16: 4800 ...
+ * 921600) and inside the nRF54L15 UARTE limit (datasheet section 11.24:
+ * fUARTE = 1000 kbps for the UARTE20-22/30 instances; the BAUDRATE table value
+ * 0x07400000 yields 457143 bit/s from a 16 MHz PCLK, i.e. -0.8 %).
  */
 #define LGPS_GNSS_BAUD_DEFAULT 38400U
 #define LGPS_GNSS_BAUD_FALLBACK 9600U
+#define LGPS_GNSS_BAUD_FAST 460800U
 
 #define LGPS_GNSS_COLD_START_TIMEOUT_MS 60000U
 #define LGPS_GNSS_EPHEMERIS_HOLD_MS 35000U
@@ -56,6 +75,24 @@ enum lgps_gnss_state {
 
 #define LGPS_GNSS_DEBUG_DEFAULT_TTL_S 300U
 #define LGPS_GNSS_DEBUG_MAX_TTL_S 3600U
+
+/*
+ * Settle time after a UBX-ACK before the next command, for the configuration
+ * groups that restart the GNSS subsystem.
+ *
+ * Integration manual section 2.1.3 and interface description section 4.9.21:
+ * "Any change to the signal configuration items triggers a restart of the GNSS
+ * subsystem. During the restart, the host application should wait for message
+ * acknowledgement and a margin of 0.5 seconds prior to sending any further
+ * commands." A VALGET issued into that restart is either not answered or
+ * answered with ACK-NAK, which the App then reports as "not supported".
+ */
+#define LGPS_GNSS_CFG_SIGNAL_SETTLE_MS 500U
+
+/* Gap between a baud rate change and the first byte at the new rate (integration
+ * manual section 3.2.1: "a short time delay of typically 100 ms").
+ */
+#define LGPS_GNSS_BAUD_SETTLE_MS 100U
 
 /* Largest satellite list the firmware caches (UBX-NAV-SAT, section 3.15.13). */
 #define LGPS_GNSS_SAT_MAX 32U
@@ -132,8 +169,10 @@ uint8_t lgps_gnss_get_satellites(struct lgps_gnss_sat *out, uint8_t max);
  *
  * @p flags is a mask of LGPS_GNSS_DEBUG_*; @p ttl_s == 0 selects the default.
  * The request is handed to the GNSS thread, which owns the UART and applies the
- * extra outputs, so this returns immediately. A session always implies a bounded
- * lifetime: no path in this firmware can leave the rail on forever.
+ * extra outputs, so this returns immediately. A session always has a bounded
+ * lifetime: no BLE command can leave the rail on after the TTL. The only way to
+ * keep the receiver powered without an expiry is the build-time switch
+ * CONFIG_LGPS_GNSS_ALWAYS_ON, which is deliberately not reachable from here.
  */
 int lgps_gnss_debug_set(uint8_t flags, uint16_t ttl_s);
 

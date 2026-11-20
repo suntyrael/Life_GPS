@@ -73,7 +73,7 @@
 | 模块类别 | 选定器件完整型号 | 原厂品牌 | 封装规格 | 工作电压域 | 关键总线 / 目标时钟 | 上电 / 控制方式 | 归档官方规格书 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **主控 SoC** | **nRF54L15-QFAA** | Nordic Semi | QFN48<br>*(6×6mm, 0.4mm pitch, 49 脚含 EP)* | 稳定 1.9V<br>*(VDD 1.7~3.6V, POR 1.75V)* | 128MHz Cortex-M33 + RISC-V FLPR<br>HFXO 32MHz (CL=8pF) / LFXO 32.768kHz (CL=9pF)<br>RRAM 1524KB / RAM 256KB | 全天候常通供电 (Always-On)<br>31 个 GPIO，分 **P0(LP)/P1(PERI)/P2(MCU)** 三域<br>**启用片上硬件看门狗 (WDT 30s)** | `Doc/Hardware/Datasheets/nRF54L15_nRF54L10_nRF54L05_Datasheet_v1.0.pdf` |
-| **GNSS 模组（默认装配 · 唯一默认料）** | **MAX-M10S-00B** | u-blox | 18-LCC<br>*(10.1×9.7mm)* | 主电 1.8V (Pin8 VCC, 1.76~3.6V)<br>IO 1.8V (Pin7 V_IO, VIO_SEL=GND)<br>后备 1.9V (Pin6 V_BCKP, 1.65~3.6V) | UART 115200bps (UBX / NMEA)<br>多星并发 (GPS+BDS+GAL+GLO) | Pin8 VCC 经 SGM2045-1.8 受控通断（`GPS_EN`=**P1.07**）<br>Pin15 `VIO_SEL` **必须接 GND**（1.8V IO 模式）<br>**【M10S 装配】R13=0Ω 贴 / R28=100Ω 贴 / R27=NC** | `Doc/Hardware/Datasheets/UBLOX/MAX-M10S_DataSheet_UBX-20035208.pdf` |
+| **GNSS 模组（默认装配 · 唯一默认料）** | **MAX-M10S-00B** | u-blox | 18-LCC<br>*(10.1×9.7mm)* | 主电 1.8V (Pin8 VCC, 1.76~3.6V)<br>IO 1.8V (Pin7 V_IO, VIO_SEL=GND)<br>后备 1.9V (Pin6 V_BCKP, 1.65~3.6V) | UART **38400 8N1 起步**（运行期可升 460800，UBX / NMEA）<br>多星并发 (GPS+BDS+GAL+GLO) | Pin8 VCC 经 SGM2045-1.8 受控通断（`GPS_EN`=**P1.07**）<br>Pin15 `VIO_SEL` **必须接 GND**（1.8V IO 模式）<br>**【M10S 装配】R13=0Ω 贴 / R28=100Ω 贴 / R27=NC** | `Doc/Hardware/Datasheets/UBLOX/MAX-M10S_DataSheet_UBX-20035208.pdf` |
 | **GNSS 备份料（兼容位 · 默认不采购/不装配）** | **LC79H 系列** | Quectel (移远) | 18-LCC + 10-LGA<br>*(10.1×9.7×2.4mm，1~18 脚同构)* | 主电 1.8V (Pin8 VCC, **1.75~1.98V**)<br>IO 跟随 VCC<br>后备 1.9V (Pin6 V_BCKP, 1.62~1.98V) | UART 115200bps (NMEA / PAIR)<br>L1+L5 双频 | **【LC79H 装配】R13=NC、R28=NC（Pin5/Pin7 为 RESERVED，禁止外接），且 Pin15 对地跳线必须 NC**；用 WAKEUP 唤醒时贴 R27=100Ω(Pin18)<br>固件自适应协议识别 | `Doc/Hardware/Datasheets/LC79H/quectel_lc79h_series_hardware_design_v1-6.pdf` |
 | **GNSS 射频天线** | **`BWGNSCNX25-25W4`（U7）** | 待补原厂手册 | `ANT-TH_L250-W250`<br>*(25×25mm)* | 无源器件 | 50Ω 馈电 + 预留 π 调谐位 | **纯无源、零直流偏置**；`Pin14 VCC_RF` 保持悬空（改有源天线必须由 VCC_RF 供电 ≤50mA）<br>馈电端缺低结容 ESD（改版补齐） | BOM 定稿后归档 |
 | **板载双频 LNA** | **ATR2652（U5）** | 杭州中科微 | DFN-6 / SOT23-6 | 1.8V 受控<br>*(支持 1.5~3.6V)* | L1 增益 22.4dB / NF 0.85dB<br>L5 增益 22.0dB / NF 0.75dB | **本版 DNP（不贴）**：V0.2 量产只贴直通，仅保留焊盘/BOM 位；贴装时必须同时 NC 掉 C46/C47<br>工作电流 4.5mA | 原厂选型手册 |
@@ -134,7 +134,7 @@
 | **定位 / 测速精度** | **1.5 m (CEP50)** / **0.05 m/s (1σ)** | 航迹极为平滑平稳，漂移抑制能力出众 |
 | **启动时间 (TTFF)** | 冷启动 $\le 28\text{ s}$，**热启动 $\le 1\text{ s}$**，辅助启动 $\le 1\text{ s}$ | 具备后备电源 V_BCKP 时，重新通电瞬间实现秒级锁定 |
 | **最大定位更新率** | **最高 10 Hz** (默认 1Hz 快照 / 高精 5Hz) | 兼顾全天候记录平滑度与极低能耗 |
-| **串口通信特性** | **默认 115200 bps** (8-N-1) | 采用高效紧凑二进制 UBX-NAV-PVT 协议，单包仅数十字节，极速吐字 |
+| **串口通信特性** | **默认 38400 bps** (8-N-1)，调试可升到 460800 | 上电两侧均从 38400 起步（MAX-M10S 接口说明书 `CFG-UART1-BAUDRATE` 出厂值；MAX 系列亦有 9600 出货批次，固件带回退探测）；`CONFIG_LGPS_GNSS_FAST_LINK` 在回读确认后把链路抬到 460800（仅 RAM 层），因为 10 Hz 下的出厂 NMEA 集（~1.25 kB/历元 = 12 kB/s）装不进 38400 的 3.84 kB/s |
 | **运行功耗参数 (出处: 官方 Table 16 1.8V 规范)**| **默认三星连续跟踪：15.2 mA @ 1.8V (27.4 mW)**<br>*(IVCC 13mA + IV_IO 2.2mA)*<br>**默认三星省电跟踪 (PSM)：8.5 mA @ 1.8V (15.3 mW)**<br>*(IVCC 6.5mA + IV_IO 2.0mA)* | 后备供电 Pin 6 V_BCKP 手册值 **28 µA @3.3V**（1.9V 下待实测，预算按 15µA 保守估算）(由 SGM6040A 1.9V 常通供电维持 RTC/SRAM 星历) |
 | **独立供电架构** | **圣邦微 SGM2045-1.8 专用受控 LDO 供电** | **微型 XTDFN-1×1-4L，92dB PSRR，9.5µVrms 低噪，额定压差仅 100mV**；专供 Pin 8 VCC，由 P1.07 控制，关断漏电仅 30nA |
 | **射频前端天线方案** | **微型 Chip 天线 + 双 BOM 兼容架构** | **【BOM Option A】默认直通版**（贴片 C46/C47 22pF，NC: LNA与SAW，最简低成本零额外功耗）；<br>**【BOM Option B】增强版**（贴片 ATR2652 LNA + B39162 SAW，NC: C46/C47） |
@@ -147,7 +147,7 @@
    * **电池端放电电流暴降**：9mA @ 1.8V 经 SGM6040A 降压，折算至 3.8V 锂电池端仅需 **$\approx 4.6\text{ mA}$**！
    * **极致射频底噪**：SGM2045 在 1kHz 下具备高达 **92 dB 的超高 PSRR** 和 **9.5 µVrms 超低底噪**，彻底吸收 SGM6040A 的 1.5MHz 开关纹波，为 MAX-M10S 提供纯净电源；
 2. **固件级 UBX 极速报文传输**：
-   * 模组出厂支持 NMEA 与 UBX 双协议。固件配置模组仅输出 **`UBX-NAV-PVT`** 核心时空二进制包（单包仅 92 字节，在 115200bps 下传输耗时仅约 **8ms**）；
+   * 模组出厂支持 NMEA 与 UBX 双协议。固件配置模组仅输出 **`UBX-NAV-PVT`** 核心时空二进制包（单包 92 字节酬荷 = 100 字节上线，38400 下耗时约 **24 ms**，460800 下约 **2 ms**）；
    * 极短的数据传输时间使 MCU 串口 DMA 接收完成后即可迅速将 MAX-M10S 断电，每次快照比传统 NMEA 节省 80% 以上的活跃接收功耗。
 3. **射频前端双模式兼容设计（直通 vs 增强 LNA+SAW）**：
    * **BOM Option A（默认标准直通版）**：贴片 **C47 (22pF) 隔直** 与 **C46 (0Ω 跳线)**，**严禁贴片 U5 (ATR2652) 与 Q1 (B39162)**。天线经调谐匹配后直连 MAX-M10S Pin 11 (RF_IN)，适用于日常开阔场景，零额外功耗；
@@ -598,7 +598,7 @@ stateDiagram-v2
     note right of STATE_STARTUP
         • 拉高 P1.07 (GPS_EN)
         • 硬件延时 10ms 待电源稳定
-        • 初始化 UART 115200bps (UBX)
+        • 初始化 UART 38400bps (UBX)，回读确认后可升 460800
     end note
 
     state STATE_COLD_ACQ {

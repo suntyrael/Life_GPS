@@ -106,6 +106,53 @@
 #define LGPS_UBX_CFG_KEY_RATE_MEAS 0x30210001U             /* U2 0.001 s, section 4.9.17 */
 
 /*
+ * Per-signal enables (section 4.9.21, table 42). They are not decoration: on
+ * MAX-M10S the signal combination decides whether a write is accepted at all.
+ * Integration manual section 2.1.3: "BeiDou B1I signal cannot be used
+ * simultaneously with the BeiDou B1C or GLONASS L1OF signals. Unsupported
+ * combinations are rejected with a UBX-ACK-NAK message". The factory profile is
+ * GPS + Galileo + BeiDou B1I, so CFG-SIGNAL-GLO_ENA alone can never be accepted -
+ * B1I has to be switched off first (or replaced by B1C in the same profile).
+ */
+#define LGPS_UBX_CFG_KEY_SIGNAL_BDS_B1_ENA 0x1031000DU  /* L, BeiDou B1I */
+#define LGPS_UBX_CFG_KEY_SIGNAL_BDS_B1C_ENA 0x1031000FU /* L, BeiDou B1C */
+#define LGPS_UBX_CFG_KEY_SIGNAL_GLO_L1_ENA 0x10310018U  /* L, GLONASS L1OF */
+
+/* Power management (section 4.9.15, table 33). Lengths differ: the periods are
+ * U4, ONTIME is U2 and the rest are one-byte E1/L items.
+ */
+#define LGPS_UBX_CFG_KEY_PM_OPERATEMODE 0x20D00001U    /* E1, 0 FULL / 1 PSMOO / 2 PSMCT */
+#define LGPS_UBX_CFG_KEY_PM_POSUPDATEPERIOD 0x40D00002U /* U4, s */
+#define LGPS_UBX_CFG_KEY_PM_ACQPERIOD 0x40D00003U      /* U4, s */
+#define LGPS_UBX_CFG_KEY_PM_ONTIME 0x30D00005U         /* U2, s */
+#define LGPS_UBX_CFG_KEY_PM_DONOTENTEROFF 0x10D00008U  /* L */
+
+/* Motion detector (section 4.9.10, table 18): the receiver's own static-hold
+ * thresholds, i.e. the same idea as the firmware's ZUPT test.
+ */
+#define LGPS_UBX_CFG_KEY_MOT_GNSSSPEED_THRS 0x20250038U /* U1 0.01 m/s */
+#define LGPS_UBX_CFG_KEY_MOT_GNSSDIST_THRS 0x3025003BU  /* U2, m */
+
+/* Rate ratio and signal-quality gate (sections 4.9.17 and 4.9.12). */
+#define LGPS_UBX_CFG_KEY_RATE_NAV 0x30210002U   /* U2, measurements per solution */
+#define LGPS_UBX_CFG_KEY_INFIL_MINCNO 0x201100A3U /* U1, dBHz */
+
+/*
+ * Interface items this firmware writes without exposing them to the BLE host.
+ *
+ * CFG-UART1OUTPROT-NMEA alternates all NMEA output on UART1 in one key (section
+ * 4.9.29, table 57): the factory set costs about 1.25 kB per epoch, which is
+ * 12 kB/s at 10 Hz and does not fit the 460800 link the fast profile opens.
+ *
+ * CFG-UART1-BAUDRATE is the one item that can lose the link for good, which is
+ * why it is written to the RAM layer only: RXM-PMREQ standby clears RAM
+ * (integration manual section 3.6.3.2), so the receiver always comes back up at
+ * the rate its flash holds, and the host is free to power-cycle at 38400.
+ */
+#define LGPS_UBX_CFG_KEY_UART1OUTPROT_NMEA 0x10740002U /* L, section 4.9.29 */
+#define LGPS_UBX_CFG_KEY_UART1_BAUDRATE 0x40520001U    /* U4, section 4.9.27 */
+
+/*
  * Largest payload the streaming parser accepts. UBX-NAV-PVT is 92 bytes, but
  * UBX-NAV-SAT scales with the number of satellites in view (8 + 12 * numSvs), so
  * the buffer covers the 32-satellite worst case the M10 can report.

@@ -24,8 +24,18 @@ LOG_MODULE_REGISTER(lgps_gnss, LOG_LEVEL_INF);
 
 #define GNSS_THREAD_STACK 2048
 #define GNSS_THREAD_PRIORITY 6
-#define GNSS_RX_RING_SIZE 512
+#define GNSS_RX_RING_SIZE 4096
 #define GNSS_PVT_LOG_PERIOD_MS 5000U
+/*
+ * How long NAV-PVT may stay silent before the link is treated as broken.
+ *
+ * Only reachable with CONFIG_LGPS_GNSS_ALWAYS_ON, where the state machine never
+ * powers the receiver down and therefore never gets the "power cycle re-sends the
+ * configuration" recovery for free: a receiver reset (brown-out, ESD) reloads its
+ * configuration from BBR/flash, the RAM-layer NAV-PVT rate is gone, and without
+ * this check the firmware would sit in FIXED forever while only NMEA arrives.
+ */
+#define GNSS_PVT_LOST_MS 10000U
 
 /*
  * Configuration path: UBX-CFG-VALSET / UBX-CFG-VALGET.
@@ -52,6 +62,10 @@ static uint32_t last_pvt_log_ms;
 static uint32_t next_reconfig_ms;
 static uint32_t current_baud = LGPS_GNSS_BAUD_DEFAULT;
 static bool baud_fallback_done;
+/* The fast-link profile raised the line rate and the receiver never answered at
+ * it; the revert runs once per power cycle.
+ */
+static bool baud_revert_done;
 
 /*
  * True once CFG-VALGET read the NAV-PVT output rate back as non-zero.
@@ -65,6 +79,9 @@ static bool nav_pvt_rate_verified;
 
 /* One-shot warning per cold-start window; reset together with the verification. */
 static bool nav_pvt_rate_failure_logged;
+
+/* One-shot "the window is over but the rail stays on" notice, per power cycle. */
+static bool policy_hold_logged;
 
 /*
  * Debug session (BLE opcode 0x36).
@@ -132,11 +149,13 @@ enum lgps_gnss_cfg_op {
 
 static struct {
 	uint8_t op;
+	uint8_t phase;
 	bool flash;
-	bool sent;
+	bool acked;
 	uint32_t key;
 	uint32_t value;
 	uint8_t len;
+	uint32_t deadline_ms;
 } cfg_req;
 
 static struct lgps_gnss_cfg_value cfg_result;
@@ -144,10 +163,137 @@ static int cfg_status;
 static int cfg_wait; /* GNSS thread: outstanding CFG answer expected */
 static uint32_t cfg_wait_ms;
 
+/*
+ * Where the request currently is on the wire.
+ *
+ * A write is not one frame but four steps: VALSET, wait for UBX-ACK, wait out the
+ * GNSS subsystem restart when the key belongs to CFG-SIGNAL, then VALGET for the
+ * readback. Sending the VALGET straight after the VALSET - which is what this
+ * code used to do - puts it inside the restart, where the receiver either ignores
+ * it or answers ACK-NAK, i.e. it looks exactly like "the key is unsupported".
+ */
+enum lgps_gnss_cfg_phase {
+	CFG_PHASE_SEND = 0, /* nothing on the wire yet */
+	CFG_PHASE_ACK,      /* VALSET sent, waiting for UBX-ACK */
+	CFG_PHASE_SETTLE,   /* ACK seen, waiting out the subsystem restart */
+	CFG_PHASE_READ,     /* VALGET sent, waiting for the answer */
+};
+
+/*
+ * Only one VALSET can be outstanding at a time, because an ACK carries only the
+ * class/id it acknowledges and not the key. Two producers exist: the BLE command
+ * thread (opcode 0x35) and the power-up profile below; they take turns instead of
+ * interleaving frames.
+ */
+enum lgps_gnss_ack_owner {
+	ACK_OWNER_NONE = 0,
+	ACK_OWNER_CFG,
+	ACK_OWNER_BRINGUP,
+};
+
+static uint8_t ack_owner;
+
+/*
+ * Power-up profile (CONFIG_LGPS_GNSS_FAST_LINK).
+ *
+ * Every entry is written one frame at a time and waits for its ACK, so a step the
+ * receiver rejects is skipped instead of silently corrupting the next one. The
+ * line rate is changed last and is the only step that touches the host side.
+ *
+ * The 10 Hz arithmetic: NAV-PVT is 100 bytes on the wire, so 10 Hz needs 1 kB/s,
+ * which 38400 carries fine. What does not fit is the factory NMEA set (~1.25 kB
+ * per epoch => 12 kB/s at 10 Hz) and NAV-SAT (16 + 12*n bytes, 400 at 32 sats),
+ * so step 1 removes NMEA and step 3 opens the 460800 link. That rate carries
+ * ~46 kB/s, i.e. 12 k nav-PVT + 4 k NAV-SAT + 6.6 k NAV-SIG at 10 Hz (about 50 %
+ * of the line).
+ */
+struct gnss_bringup_step {
+	uint32_t key;
+	uint32_t value;
+	uint8_t len;
+	uint8_t layers;
+	uint16_t gap_ms;
+	bool switch_baud;
+};
+
+#if IS_ENABLED(CONFIG_LGPS_GNSS_FAST_LINK)
+static const struct gnss_bringup_step bringup_profile[] = {
+	/* NMEA off: one key for the whole protocol on UART1 (section 4.9.29). */
+	{ LGPS_UBX_CFG_KEY_UART1OUTPROT_NMEA, 0U, 1U, LGPS_UBX_LAYER_RAM, 0U, false },
+	/* Measurement period; BBR so it survives the standby request. */
+	{ LGPS_UBX_CFG_KEY_RATE_MEAS, CONFIG_LGPS_GNSS_RATE_MS, 2U,
+	  LGPS_UBX_LAYER_RAM | LGPS_UBX_LAYER_BBR, 0U, false },
+	/* Line rate last, RAM layer only (see ubx.h). */
+	{ LGPS_UBX_CFG_KEY_UART1_BAUDRATE, LGPS_GNSS_BAUD_FAST, 4U, LGPS_UBX_LAYER_RAM,
+	  LGPS_GNSS_BAUD_SETTLE_MS, true },
+};
+#endif
+
+enum lgps_gnss_bringup_phase {
+	BRINGUP_PHASE_SEND = 0,
+	BRINGUP_PHASE_ACK,
+	BRINGUP_PHASE_SETTLE,
+};
+
+#define GNSS_BRINGUP_DONE 0xFFU
+
+/* Outside the conditional on purpose: the thread loop and gnss_bringup_active()
+ * consult it whether or not the profile was compiled in.
+ */
+static uint8_t bringup_index = GNSS_BRINGUP_DONE;
+
+#if IS_ENABLED(CONFIG_LGPS_GNSS_FAST_LINK)
+static uint8_t bringup_phase;
+static uint32_t bringup_deadline_ms;
+#endif
+
+/* Written by handle_ubx_ack() either way, so not part of the block above. */
+static bool bringup_acked;
+static bool bringup_nak;
+
+/* The profile runs at most once per power cycle, and only after the receiver has
+ * proved it answers at the boot rate. Without the latch the readback that follows
+ * the baud rate change would arm the profile again, forever.
+ */
+static bool bringup_armed;
+
+/* True while a profile step is in flight; the BLE path then waits its turn. */
+static bool gnss_bringup_active(void)
+{
+#if IS_ENABLED(CONFIG_LGPS_GNSS_FAST_LINK)
+	return bringup_index < ARRAY_SIZE(bringup_profile);
+#else
+	return false;
+#endif
+}
+
+static void gnss_bringup_start(void)
+{
+#if IS_ENABLED(CONFIG_LGPS_GNSS_FAST_LINK)
+	bringup_index = 0U;
+	bringup_phase = BRINGUP_PHASE_SEND;
+	bringup_acked = false;
+	bringup_nak = false;
+#else
+	bringup_index = GNSS_BRINGUP_DONE;
+#endif
+}
+
 static K_MUTEX_DEFINE(cfg_req_lock);
 static K_SEM_DEFINE(cfg_done_sem, 0, 1);
 
 #define GNSS_CFG_TIMEOUT_MS 800
+
+/*
+ * How long the BLE command thread waits for a write.
+ *
+ * A write is ACK + (CFG-SIGNAL restart margin, 0.5 s) + readback, and a 1 Hz
+ * receiver only answers the VALGET at its next navigation epoch. The flat
+ * GNSS_CFG_TIMEOUT_MS + 300 used before was shorter than that sum, so a perfectly
+ * healthy CFG-SIGNAL write could time out in the App and show up as "busy".
+ */
+#define GNSS_CFG_SET_WAIT_MS                                                                 \
+	(GNSS_CFG_TIMEOUT_MS + LGPS_GNSS_CFG_SIGNAL_SETTLE_MS + GNSS_CFG_TIMEOUT_MS + 300U)
 
 /*
  * Receive-path counters, split by the thread that owns them.
@@ -401,6 +547,17 @@ struct gnss_cfg_key {
  * exactly what a debug feature must not be able to do. Ranges are the documented
  * ones (interface description section 4.9 and the enums in the M10 SPG release
  * notes); a value outside the range is rejected before it reaches the UART.
+ *
+ * Deliberately absent, and not an oversight (decided 2026-11-20 during the M1 GNSS bring-up):
+ *   - CFG-HW-RF_LNA_MODE (0x20a30057) programs OTP memory and needs a power cycle
+ *     to take effect; a mis-set value is not undoable over BLE.
+ *   - CFG-NAVSPG-CONSTR_ALT / CONSTR_ALTVAR (0x401100c1 / c2) only apply when
+ *     CFG-NAVSPG-FIXMODE is 2D; writing the altitude alone pins nothing and looks
+ *     like a working feature.
+ *   - CFG-ITFM-* thresholds are unreadable without UBX-MON-RF, so exposing them
+ *     would be a blind control.
+ *   - CFG-UART1-BAUDRATE / CFG-UART1OUTPROT-NMEA: written by the firmware itself
+ *     (power-up profile), never by the host.
  */
 static const struct gnss_cfg_key cfg_keys[] = {
 	{ LGPS_UBX_CFG_KEY_ANA_USE, 1U, 0U, 1U, "CFG-ANA-USE_ANA" },
@@ -409,10 +566,33 @@ static const struct gnss_cfg_key cfg_keys[] = {
 	{ LGPS_UBX_CFG_KEY_SIGNAL_GPS_ENA, 1U, 0U, 1U, "CFG-SIGNAL-GPS_ENA" },
 	{ LGPS_UBX_CFG_KEY_SIGNAL_GAL_ENA, 1U, 0U, 1U, "CFG-SIGNAL-GAL_ENA" },
 	{ LGPS_UBX_CFG_KEY_SIGNAL_BDS_ENA, 1U, 0U, 1U, "CFG-SIGNAL-BDS_ENA" },
+	/* Per-signal items: needed because MAX-M10S rejects BDS B1I together with
+	 * GLONASS L1OF (integration manual section 2.1.3). Enabling GLONASS is
+	 * therefore a sequence, not a single write: BDS_B1_ENA=0 first, then
+	 * BDS_B1C_ENA=1, then GLO_ENA/GLO_L1_ENA=1. Every intermediate state has to
+	 * be legal on its own, so the order matters.
+	 */
+	{ LGPS_UBX_CFG_KEY_SIGNAL_BDS_B1_ENA, 1U, 0U, 1U, "CFG-SIGNAL-BDS_B1_ENA" },
+	{ LGPS_UBX_CFG_KEY_SIGNAL_BDS_B1C_ENA, 1U, 0U, 1U, "CFG-SIGNAL-BDS_B1C_ENA" },
 	{ LGPS_UBX_CFG_KEY_SIGNAL_GLO_ENA, 1U, 0U, 1U, "CFG-SIGNAL-GLO_ENA" },
+	{ LGPS_UBX_CFG_KEY_SIGNAL_GLO_L1_ENA, 1U, 0U, 1U, "CFG-SIGNAL-GLO_L1_ENA" },
 	{ LGPS_UBX_CFG_KEY_INFIL_MINELEV, 1U, 0U, 90U, "CFG-NAVSPG-INFIL_MINELEV" },
+	{ LGPS_UBX_CFG_KEY_INFIL_MINCNO, 1U, 0U, 60U, "CFG-NAVSPG-INFIL_MINCNO" },
 	{ LGPS_UBX_CFG_KEY_OUTFIL_PDOP, 2U, 1U, 9999U, "CFG-NAVSPG-OUTFIL_PDOP" },
 	{ LGPS_UBX_CFG_KEY_RATE_MEAS, 2U, 25U, 1000U, "CFG-RATE-MEAS" },
+	{ LGPS_UBX_CFG_KEY_RATE_NAV, 2U, 1U, 127U, "CFG-RATE-NAV" },
+	/* Power management (section 4.9.15). OPERATEMODE is the switch that actually
+	 * saves power in the pulse-positioning profile; the periods next to it are
+	 * meaningless while it is FULL, which is the factory value.
+	 */
+	{ LGPS_UBX_CFG_KEY_PM_OPERATEMODE, 1U, 0U, 2U, "CFG-PM-OPERATEMODE" },
+	{ LGPS_UBX_CFG_KEY_PM_POSUPDATEPERIOD, 4U, 5U, 604800U, "CFG-PM-POSUPDATEPERIOD" },
+	{ LGPS_UBX_CFG_KEY_PM_ACQPERIOD, 4U, 0U, 604800U, "CFG-PM-ACQPERIOD" },
+	{ LGPS_UBX_CFG_KEY_PM_ONTIME, 2U, 0U, 65535U, "CFG-PM-ONTIME" },
+	{ LGPS_UBX_CFG_KEY_PM_DONOTENTEROFF, 1U, 0U, 1U, "CFG-PM-DONOTENTEROFF" },
+	/* Receiver-side static hold, the hardware twin of the firmware's ZUPT test. */
+	{ LGPS_UBX_CFG_KEY_MOT_GNSSSPEED_THRS, 1U, 0U, 255U, "CFG-MOT-GNSSSPEED_THRS" },
+	{ LGPS_UBX_CFG_KEY_MOT_GNSSDIST_THRS, 2U, 0U, 65535U, "CFG-MOT-GNSSDIST_THRS" },
 };
 
 static const struct gnss_cfg_key *cfg_key_lookup(uint32_t key)
@@ -498,6 +678,27 @@ static void gnss_apply_nav_sat_rate(bool enable)
 	}
 }
 
+/*
+ * NMEA output on UART1, as one protocol-level switch (CFG-UART1OUTPROT-NMEA).
+ *
+ * With CONFIG_LGPS_GNSS_FAST_LINK the power-up profile turns the factory NMEA set
+ * off, because it does not fit a 10 Hz link. That would also silence the debug
+ * session's raw NMEA forwarding, so the session turns the protocol back on while
+ * it holds the NMEA flag and turns it off again when it ends.
+ */
+static void gnss_apply_nmea_out(bool enable)
+{
+	if (!IS_ENABLED(CONFIG_LGPS_GNSS_FAST_LINK)) {
+		/* Nothing ever switched NMEA off, so nothing may switch it on. */
+		return;
+	}
+
+	if (gnss_send_cfg_item(LGPS_UBX_CFG_KEY_UART1OUTPROT_NMEA, enable ? 1U : 0U, 1U,
+			       LGPS_UBX_LAYER_RAM) != 0U) {
+		LOG_INF("NMEA output on UART1 -> %u (RAM layer)", enable ? 1U : 0U);
+	}
+}
+
 /* --- debug session --------------------------------------------------------- */
 
 static bool gnss_debug_active(void)
@@ -528,12 +729,31 @@ static bool gnss_debug_hold_power(void)
 	return (flags & LGPS_GNSS_DEBUG_HOLD_POWER) != 0U;
 }
 
+/*
+ * The single question the state machine is allowed to ask before dropping the
+ * rail. Two independent sources can say no: the build-time switch
+ * CONFIG_LGPS_GNSS_ALWAYS_ON (bench debugging, full multi-GNSS tracking) and a
+ * live debug session that holds power for its TTL.
+ */
+static bool gnss_may_cut_power(void)
+{
+	if (IS_ENABLED(CONFIG_LGPS_GNSS_ALWAYS_ON)) {
+		return false;
+	}
+
+	return !gnss_debug_hold_power();
+}
+
 static void gnss_debug_apply_outputs(void)
 {
 	uint8_t wanted = gnss_debug_active() ? debug_flags : 0U;
 
 	if ((wanted & LGPS_GNSS_DEBUG_NAV_SAT) != (debug_applied_flags & LGPS_GNSS_DEBUG_NAV_SAT)) {
 		gnss_apply_nav_sat_rate((wanted & LGPS_GNSS_DEBUG_NAV_SAT) != 0U);
+	}
+
+	if ((wanted & LGPS_GNSS_DEBUG_NMEA) != (debug_applied_flags & LGPS_GNSS_DEBUG_NMEA)) {
+		gnss_apply_nmea_out((wanted & LGPS_GNSS_DEBUG_NMEA) != 0U);
 	}
 
 	debug_applied_flags = wanted;
@@ -748,9 +968,43 @@ uint8_t lgps_gnss_get_satellites(struct lgps_gnss_sat *out, uint8_t max)
 
 /* --- configuration request handling (GNSS thread side) ---------------------- */
 
+/* End the pending request: hand the verdict to the blocked BLE thread and drop
+ * every "something is outstanding" flag, so the next request starts clean.
+ */
+static void gnss_cfg_finish(int status)
+{
+	ack_owner = ACK_OWNER_NONE;
+	cfg_wait = 0;
+	cfg_status = status;
+	cfg_req.op = CFG_OP_NONE;
+	k_sem_give(&cfg_done_sem);
+}
+
+/*
+ * How long to wait after the ACK before the readback.
+ *
+ * The group id is bits 16..23 of a configuration key. 0x31 is CFG-SIGNAL, the one
+ * group whose writes restart the GNSS subsystem; everything else can be read back
+ * immediately.
+ */
+static uint32_t gnss_cfg_settle_ms(uint32_t key)
+{
+	return (((key >> 16) & 0xFFU) == 0x31U) ? LGPS_GNSS_CFG_SIGNAL_SETTLE_MS : 0U;
+}
+
 static void gnss_service_cfg(void)
 {
+	uint32_t now_ms;
+
 	if (cfg_req.op == CFG_OP_NONE) {
+		/* The host may have given up while a write was in flight (its
+		 * semaphore timed out). Clearing the state here, in the GNSS thread,
+		 * keeps the single-writer rule for ack_owner.
+		 */
+		if (ack_owner == ACK_OWNER_CFG) {
+			ack_owner = ACK_OWNER_NONE;
+			cfg_wait = 0;
+		}
 		return;
 	}
 
@@ -758,17 +1012,21 @@ static void gnss_service_cfg(void)
 		/* The receiver is unpowered: answer now instead of waiting for a
 		 * timeout that cannot produce a value.
 		 */
-		cfg_status = -ENODEV;
-		cfg_req.op = CFG_OP_NONE;
-		k_sem_give(&cfg_done_sem);
+		gnss_cfg_finish(-ENODEV);
 		return;
 	}
 
-	if (!cfg_req.sent) {
-		cfg_req.sent = true;
-		cfg_wait = 1;
-		cfg_wait_ms = lgps_diag_uptime_ms();
+	/* A profile step owns the ACK while it is in flight; one ACK cannot answer
+	 * two requests. The BLE side waits (at most the profile's ~1 s) instead.
+	 */
+	if (gnss_bringup_active() && ((cfg_req.phase == CFG_PHASE_SEND))) {
+		return;
+	}
 
+	now_ms = lgps_diag_uptime_ms();
+
+	switch (cfg_req.phase) {
+	case CFG_PHASE_SEND:
 		if (cfg_req.op == CFG_OP_SET) {
 			uint8_t layers = LGPS_UBX_LAYER_RAM | LGPS_UBX_LAYER_BBR;
 
@@ -778,21 +1036,70 @@ static void gnss_service_cfg(void)
 
 			LOG_INF("CFG-VALSET key 0x%08x = %u (layers 0x%02x)", cfg_req.key,
 				(unsigned int)cfg_req.value, layers);
-			(void)gnss_send_cfg_item(cfg_req.key, cfg_req.value, cfg_req.len, layers);
+
+			if (gnss_send_cfg_item(cfg_req.key, cfg_req.value, cfg_req.len, layers) ==
+			    0U) {
+				gnss_cfg_finish(-EIO);
+				return;
+			}
+
+			cfg_req.acked = false;
+			cfg_req.deadline_ms = now_ms + GNSS_CFG_TIMEOUT_MS;
+			cfg_req.phase = CFG_PHASE_ACK;
+			ack_owner = ACK_OWNER_CFG;
+			return;
+		}
+
+		/* A read needs no ACK: the VALGET response itself is the answer. */
+		if (gnss_send_cfg_get(cfg_req.key) == 0U) {
+			gnss_cfg_finish(-EIO);
+			return;
+		}
+
+		cfg_wait = 1;
+		cfg_wait_ms = now_ms;
+		cfg_req.phase = CFG_PHASE_READ;
+		return;
+
+	case CFG_PHASE_ACK:
+		if (cfg_req.acked) {
+			cfg_req.acked = false;
+			cfg_req.deadline_ms = now_ms + gnss_cfg_settle_ms(cfg_req.key);
+			cfg_req.phase = CFG_PHASE_SETTLE;
+			return;
+		}
+
+		if ((int32_t)(now_ms - cfg_req.deadline_ms) >= 0) {
+			gnss_cfg_finish(-ETIMEDOUT);
+		}
+		return;
+
+	case CFG_PHASE_SETTLE:
+		if ((int32_t)(now_ms - cfg_req.deadline_ms) < 0) {
+			return;
 		}
 
 		/* Always finish with a read: it is the only proof of what took effect. */
-		(void)gnss_send_cfg_get(cfg_req.key);
-		return;
-	}
-
-	if (cfg_wait != 0) {
-		if ((uint32_t)(lgps_diag_uptime_ms() - cfg_wait_ms) >= GNSS_CFG_TIMEOUT_MS) {
-			cfg_wait = 0;
-			cfg_status = -ETIMEDOUT;
-			cfg_req.op = CFG_OP_NONE;
-			k_sem_give(&cfg_done_sem);
+		if (gnss_send_cfg_get(cfg_req.key) == 0U) {
+			gnss_cfg_finish(-EIO);
+			return;
 		}
+
+		cfg_wait = 1;
+		cfg_wait_ms = now_ms;
+		cfg_req.phase = CFG_PHASE_READ;
+		return;
+
+	case CFG_PHASE_READ:
+		if ((cfg_wait != 0) &&
+		    ((uint32_t)(now_ms - cfg_wait_ms) >= GNSS_CFG_TIMEOUT_MS)) {
+			gnss_cfg_finish(-ETIMEDOUT);
+		}
+		return;
+
+	default:
+		gnss_cfg_finish(-EIO);
+		return;
 	}
 }
 
@@ -814,7 +1121,9 @@ int lgps_gnss_cfg_get(uint32_t key, struct lgps_gnss_cfg_value *out)
 
 	(void)k_sem_take(&cfg_done_sem, K_NO_WAIT);
 	cfg_req.op = CFG_OP_GET;
-	cfg_req.sent = false;
+	cfg_req.phase = CFG_PHASE_SEND;
+	cfg_req.acked = false;
+	cfg_req.deadline_ms = 0U;
 	cfg_req.key = key;
 	cfg_req.len = 0U;
 	cfg_req.value = 0U;
@@ -858,13 +1167,15 @@ int lgps_gnss_cfg_set(uint32_t key, uint32_t value, bool persist_to_flash,
 
 	(void)k_sem_take(&cfg_done_sem, K_NO_WAIT);
 	cfg_req.op = CFG_OP_SET;
-	cfg_req.sent = false;
+	cfg_req.phase = CFG_PHASE_SEND;
+	cfg_req.acked = false;
+	cfg_req.deadline_ms = 0U;
 	cfg_req.key = key;
 	cfg_req.len = desc->len;
 	cfg_req.value = value;
 	cfg_req.flash = persist_to_flash;
 
-	ret = k_sem_take(&cfg_done_sem, K_MSEC(GNSS_CFG_TIMEOUT_MS + 300U));
+	ret = k_sem_take(&cfg_done_sem, K_MSEC(GNSS_CFG_SET_WAIT_MS));
 	if (ret == 0) {
 		ret = cfg_status;
 	}
@@ -883,6 +1194,108 @@ int lgps_gnss_cfg_set(uint32_t key, uint32_t value, bool persist_to_flash,
 	k_mutex_unlock(&cfg_req_lock);
 
 	return (ret == -EAGAIN) ? -ETIMEDOUT : ret;
+}
+
+/* --- power-up profile (CONFIG_LGPS_GNSS_FAST_LINK) ------------------------- */
+
+/*
+ * Advance the profile by at most one frame per call.
+ *
+ * A step the receiver rejects or does not acknowledge is skipped, never retried:
+ * the profile is a bandwidth optimisation, and a receiver that refuses a key keeps
+ * refusing it. The only step whose failure matters is the baud rate change, and
+ * that one is caught by the NAV-PVT readback in the cold-start state.
+ */
+static void gnss_bringup_service(void)
+{
+#if IS_ENABLED(CONFIG_LGPS_GNSS_FAST_LINK)
+	const struct gnss_bringup_step *step;
+	uint32_t now_ms;
+
+	if (bringup_index >= ARRAY_SIZE(bringup_profile)) {
+		return;
+	}
+
+	/* One ACK owner at a time. A request that is already on the wire wins; one
+	 * that is merely queued does not, otherwise the two would wait for each
+	 * other: the request waits for the profile to finish, and the profile waits
+	 * for the queue to empty.
+	 */
+	if ((cfg_req.op != CFG_OP_NONE) && (cfg_req.phase != CFG_PHASE_SEND)) {
+		return;
+	}
+
+	step = &bringup_profile[bringup_index];
+	now_ms = lgps_diag_uptime_ms();
+
+	switch (bringup_phase) {
+	case BRINGUP_PHASE_SEND:
+		if (gnss_send_cfg_item(step->key, step->value, step->len, step->layers) == 0U) {
+			LOG_WRN("bring-up step %u (key 0x%08x) not sent, skipping",
+				bringup_index, step->key);
+			bringup_index++;
+			return;
+		}
+
+		bringup_acked = false;
+		bringup_nak = false;
+		ack_owner = ACK_OWNER_BRINGUP;
+		bringup_deadline_ms = now_ms + GNSS_CFG_TIMEOUT_MS;
+		bringup_phase = BRINGUP_PHASE_ACK;
+		return;
+
+	case BRINGUP_PHASE_ACK:
+		if (bringup_nak) {
+			LOG_WRN("bring-up step %u (key 0x%08x) NAK'd, skipping", bringup_index,
+				step->key);
+			bringup_index++;
+			bringup_phase = BRINGUP_PHASE_SEND;
+			return;
+		}
+
+		if (!bringup_acked) {
+			if ((int32_t)(now_ms - bringup_deadline_ms) >= 0) {
+				ack_owner = ACK_OWNER_NONE;
+				LOG_WRN("bring-up step %u (key 0x%08x) not acknowledged, skipping",
+					bringup_index, step->key);
+				bringup_index++;
+				bringup_phase = BRINGUP_PHASE_SEND;
+			}
+			return;
+		}
+
+		bringup_acked = false;
+		bringup_deadline_ms = now_ms + step->gap_ms;
+		bringup_phase = BRINGUP_PHASE_SETTLE;
+		return;
+
+	case BRINGUP_PHASE_SETTLE:
+		if ((int32_t)(now_ms - bringup_deadline_ms) < 0) {
+			return;
+		}
+
+		if (step->switch_baud) {
+			if (gnss_uart_set_baud(step->value) == 0) {
+				LOG_INF("GNSS link raised to %u 8N1", step->value);
+				/* Prove the new rate instead of assuming it: the NAV-PVT
+				 * readback is the same test that validated the old one.
+				 */
+				baud_probe_base_bytes = rx_bytes_total();
+				nav_pvt_rate_verified = false;
+				next_reconfig_ms = 0U;
+				(void)gnss_request_rate_readback();
+			}
+		}
+
+		bringup_index++;
+		bringup_phase = BRINGUP_PHASE_SEND;
+		return;
+
+	default:
+		bringup_index = GNSS_BRINGUP_DONE;
+		return;
+	}
+#endif
 }
 
 static void handle_nav_pvt(const struct lgps_nav_pvt *pvt)
@@ -980,21 +1393,40 @@ static void handle_ubx_ack(void)
 
 	if (accepted) {
 		LOG_DBG("UBX-ACK-ACK for class 0x%02x id 0x%02x", ack_class, ack_id);
+	} else {
+		LOG_WRN("UBX-ACK-NAK for class 0x%02x id 0x%02x: the receiver refused it "
+			"(unknown key, bad layer, invalid signal combination, or message not "
+			"available on this product)",
+			ack_class, ack_id);
+	}
+
+	if (ack_class != LGPS_UBX_CLASS_CFG) {
 		return;
 	}
 
-	LOG_WRN("UBX-ACK-NAK for class 0x%02x id 0x%02x: the receiver refused it "
-		"(unknown key, bad layer, or message not available on this product)",
-		ack_class, ack_id);
-
-	/* A rejected CFG message must end the pending request, otherwise the BLE
-	 * command thread would wait for an answer that is never sent.
+	/* Only a write carries a key, so only a write has an ACK owner. A NAK is the
+	 * only on-wire evidence that a key or the resulting signal combination is
+	 * refused on this product.
 	 */
-	if ((cfg_wait != 0) && (ack_class == LGPS_UBX_CLASS_CFG)) {
-		cfg_wait = 0;
-		cfg_status = -ENOTSUP;
-		cfg_req.op = CFG_OP_NONE;
-		k_sem_give(&cfg_done_sem);
+	if (ack_owner == ACK_OWNER_CFG) {
+		ack_owner = ACK_OWNER_NONE;
+
+		if (!accepted) {
+			/* End the request now instead of waiting for a readback the
+			 * receiver is not going to send.
+			 */
+			gnss_cfg_finish(-ENOTSUP);
+			return;
+		}
+
+		cfg_req.acked = true;
+		return;
+	}
+
+	if (ack_owner == ACK_OWNER_BRINGUP) {
+		ack_owner = ACK_OWNER_NONE;
+		bringup_acked = accepted;
+		bringup_nak = !accepted;
 	}
 }
 
@@ -1138,6 +1570,16 @@ static void gnss_power_up(void)
 {
 	int ret;
 
+	/*
+	 * The receiver always comes back at the rate its own flash holds, while the
+	 * host may still be at the fast rate the profile opened (the baud rate is
+	 * written to the RAM layer, which RXM-PMREQ standby clears). Park the host
+	 * side first, while the receiver is still unpowered, so the two cannot
+	 * disagree on the first byte.
+	 */
+	(void)gnss_uart_set_baud(LGPS_GNSS_BAUD_DEFAULT);
+	baud_revert_done = false;
+
 	ret = lgps_gnss_rail_set(true);
 	if (ret < 0) {
 		LOG_ERR("GNSS rail on failed (%d)", ret);
@@ -1171,6 +1613,7 @@ static void gnss_power_up(void)
 	 */
 	nav_pvt_rate_verified = false;
 	nav_pvt_rate_failure_logged = false;
+	policy_hold_logged = false;
 	/* RAM-layer outputs are gone after the standby request: re-assert them. */
 	debug_applied_flags = 0U;
 	{
@@ -1183,6 +1626,12 @@ static void gnss_power_up(void)
 	baud_probe_base_bytes = rx_bytes_total();
 	(void)gnss_enable_nav_pvt();
 	(void)gnss_request_rate_readback();
+	/* The bandwidth profile (NMEA off / rate / line rate) stays disarmed until a
+	 * NAV-PVT readback proves the receiver answers at the boot rate; the cold-start
+	 * state arms it. A no-op unless CONFIG_LGPS_GNSS_FAST_LINK is set.
+	 */
+	bringup_index = GNSS_BRINGUP_DONE;
+	bringup_armed = false;
 
 	LOG_INF("GNSS RX counters: rx_bytes=%u ubx=%u ckerr=%u nmea=%u ring_drop=%u baud=%u",
 		rx_bytes_total(), ubx_frames, ubx_bad_checksum,
@@ -1233,6 +1682,7 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 
 		gnss_service_debug();
 		gnss_service_cfg();
+		gnss_bringup_service();
 		gnss_process_rx();
 		lgps_wdt_checkin(LGPS_WDT_TASK_GNSS);
 
@@ -1249,6 +1699,15 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 
 		switch (gnss_state) {
 		case LGPS_GNSS_STATE_COLD_START: {
+			/*
+			 * Arm the bandwidth profile once the receiver has proved that it answers
+			 * at the boot rate. Arming at power-up instead would race the module's
+			 * own 100 ms boot and silently drop the first profile step.
+			 */
+			if (nav_pvt_rate_verified && !bringup_armed) {
+				bringup_armed = true;
+				gnss_bringup_start();
+			}
 			/*
 			 * A receiver that finished booting after our first VALSET ignores it and
 			 * keeps streaming the factory NMEA set. Re-send every 2 s for the first
@@ -1290,7 +1749,26 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 			/* One-shot report: after 10 s of retrying, either the key is wrong for
 			 * this product or the receiver never answered. Say so instead of
 			 * letting the cold start run the remaining 50 s in silence.
+			 *
+			 * If the link was raised by the fast-link profile, the useful action is
+			 * the revert, not the warning: the receiver kept streaming at the rate
+			 * it knows, so dropping the host back to the boot rate restores it.
+			 * Without this the link would stay dead until the next power cycle -
+			 * and a CONFIG_LGPS_GNSS_ALWAYS_ON build never gets one.
 			 */
+			if (!nav_pvt_rate_verified && (elapsed >= 10000U) &&
+			    (current_baud != LGPS_GNSS_BAUD_DEFAULT) && !baud_revert_done) {
+				baud_revert_done = true;
+				LOG_WRN("no NAV-PVT answer at %u baud, dropping the link back to %u",
+					current_baud, LGPS_GNSS_BAUD_DEFAULT);
+				(void)gnss_uart_set_baud(LGPS_GNSS_BAUD_DEFAULT);
+				baud_probe_base_bytes = rx_bytes_total();
+				/* Restart the window so the retry block above runs again. */
+				set_state(LGPS_GNSS_STATE_COLD_START,
+					  LGPS_GNSS_COLD_START_TIMEOUT_MS);
+				break;
+			}
+
 			if (!nav_pvt_rate_verified && (elapsed >= 10000U) &&
 			    !nav_pvt_rate_failure_logged) {
 				nav_pvt_rate_failure_logged = true;
@@ -1299,24 +1777,59 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 					ubx_frames, (uint32_t)atomic_get(&isr_nmea_starts));
 			}
 
-			if ((elapsed >= LGPS_GNSS_COLD_START_TIMEOUT_MS) && !gnss_debug_hold_power()) {
-				LOG_WRN("no 3D fix within %u s, cutting the GNSS rail",
-					LGPS_GNSS_COLD_START_TIMEOUT_MS / 1000U);
-				gnss_power_down();
-				set_state(LGPS_GNSS_STATE_BACKOFF, backoff_ms);
-				backoff_ms = backoff_next_ms(backoff_ms);
+			if (elapsed >= LGPS_GNSS_COLD_START_TIMEOUT_MS) {
+				if (gnss_may_cut_power()) {
+					LOG_WRN("no 3D fix within %u s, cutting the GNSS rail",
+						LGPS_GNSS_COLD_START_TIMEOUT_MS / 1000U);
+					gnss_power_down();
+					set_state(LGPS_GNSS_STATE_BACKOFF, backoff_ms);
+					backoff_ms = backoff_next_ms(backoff_ms);
+				} else if (!policy_hold_logged) {
+					/* Logging every 20 ms would bury the very fix this line is
+					 * waiting for, hence the one-shot.
+					 */
+					policy_hold_logged = true;
+					LOG_INF("cold-start window over, rail stays on (%s)",
+						IS_ENABLED(CONFIG_LGPS_GNSS_ALWAYS_ON)
+							? "CONFIG_LGPS_GNSS_ALWAYS_ON"
+							: "debug session holds power");
+				}
 			}
 			break;
 		}
 
-		case LGPS_GNSS_STATE_FIXED:
+		case LGPS_GNSS_STATE_FIXED: {
 			/* A solution resets the escalation: the next cut is a fresh 120 s. */
 			backoff_ms = LGPS_GNSS_BACKOFF_STEP1_MS;
-			set_state(LGPS_GNSS_STATE_EPHEMERIS_HOLD, LGPS_GNSS_EPHEMERIS_HOLD_MS);
+
+			/*
+			 * With the policy disabled this state is terminal, so nothing else would
+			 * notice a receiver that stopped talking: re-arm the one-shot
+			 * configuration and start over. last_pvt_uptime_ms is set by every
+			 * decoded NAV-PVT, valid or not, so this catches a silent link and not
+			 * an indoor fix loss.
+			 */
+			if ((uint32_t)(lgps_diag_uptime_ms() - current_fix.last_pvt_uptime_ms) >
+			    GNSS_PVT_LOST_MS) {
+				LOG_WRN("no NAV-PVT for %u ms, re-arming the receiver configuration",
+					GNSS_PVT_LOST_MS);
+				nav_pvt_rate_verified = false;
+				nav_pvt_rate_failure_logged = false;
+				next_reconfig_ms = 0U;
+				set_state(LGPS_GNSS_STATE_COLD_START,
+					  LGPS_GNSS_COLD_START_TIMEOUT_MS);
+				break;
+			}
+
+			if (gnss_may_cut_power()) {
+				set_state(LGPS_GNSS_STATE_EPHEMERIS_HOLD,
+					  LGPS_GNSS_EPHEMERIS_HOLD_MS);
+			}
 			break;
+		}
 
 		case LGPS_GNSS_STATE_EPHEMERIS_HOLD:
-			if ((elapsed >= LGPS_GNSS_EPHEMERIS_HOLD_MS) && !gnss_debug_hold_power()) {
+			if ((elapsed >= LGPS_GNSS_EPHEMERIS_HOLD_MS) && gnss_may_cut_power()) {
 				LOG_INF("ephemeris hold done, powering the GNSS rail down");
 				gnss_power_down();
 				set_state(LGPS_GNSS_STATE_BACKOFF, backoff_ms);

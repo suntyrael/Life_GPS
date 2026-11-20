@@ -604,7 +604,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
                 val decoded = body?.let { GnssCodec.decodeCfg(it) }
                 val value = when {
                     result == null -> GnssCfgValue(key.key, key.len, 0, "链路未就绪或超时")
-                    result.status != 0 -> GnssCfgValue(key.key, key.len, 0, describeStatus(result.status))
+                    result.status != 0 -> GnssCfgValue(key.key, key.len, 0, describeGnssCfgStatus(result.status))
                     decoded == null -> GnssCfgValue(key.key, key.len, 0, "响应无法解析")
                     else -> decoded
                 }
@@ -619,12 +619,13 @@ class BleDebugRepository(context: Context) : DebugRepository {
             val result = request(
                 Opcode.GNSS_CFG,
                 GnssCodec.encodeCfgSet(key, value, desc.len, persistToFlash),
+                GNSS_CFG_TIMEOUT_MS,
             )
             val body = result?.payload
             val decoded = body?.let { GnssCodec.decodeCfg(it) }
             val store = when {
                 result == null -> GnssCfgValue(key, desc.len, 0, "链路未就绪或超时")
-                result.status != 0 -> GnssCfgValue(key, desc.len, 0, describeStatus(result.status))
+                result.status != 0 -> GnssCfgValue(key, desc.len, 0, describeGnssCfgStatus(result.status))
                 decoded == null -> GnssCfgValue(key, desc.len, 0, "响应无法解析")
                 else -> decoded
             }
@@ -640,6 +641,17 @@ class BleDebugRepository(context: Context) : DebugRepository {
         0x04 -> "忙：GNSS 模组当前未上电或未应答"
         0x06 -> "需要先 DEBUG_UNLOCK"
         else -> "状态 0x%02X".format(status)
+    }
+
+    /**
+     * The same codes for the GNSS configuration path, where `0x03` has a precise
+     * meaning: the firmware only returns -ENOTSUP after the receiver answered
+     * UBX-ACK-NAK, and `0x04` also covers the power-up profile occupying the UART.
+     */
+    private fun describeGnssCfgStatus(status: Int): String = when (status) {
+        0x03 -> "接收机 NAK：键或星座组合被拒（见 §6.6）"
+        0x04 -> "忙：模组未上电 / 未应答 / 上电画像进行中"
+        else -> describeStatus(status)
     }
 
     /**
@@ -2041,6 +2053,14 @@ class BleDebugRepository(context: Context) : DebugRepository {
 
     private companion object {
         const val COMMAND_TIMEOUT_MS = 2_000L
+
+        /**
+         * A GNSS_CFG (0x35) write is ACK + the CFG-SIGNAL restart margin (0.5 s)
+         * + a readback that a 1 Hz receiver only sends at its next epoch, so the
+         * flat 2 s command budget is too tight. The firmware itself waits up to
+         * 2.4 s (`GNSS_CFG_SET_WAIT_MS` in `src/gnss/gnss.c`).
+         */
+        const val GNSS_CFG_TIMEOUT_MS = 4_000L
 
         /** QUERY cadence while a capture runs; 26 Hz sampling needs ~2.5 Hz of polling. */
         const val CALIB_POLL_PERIOD_MS = 400L

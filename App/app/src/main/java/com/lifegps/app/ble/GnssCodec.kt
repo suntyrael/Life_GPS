@@ -147,9 +147,15 @@ object GnssCfgKeys {
     val SIGNAL_GPS = GnssCfgKey(0x1031001FL, 1, "GPS 星座", 0, 1)
     val SIGNAL_GAL = GnssCfgKey(0x10310021L, 1, "Galileo 星座", 0, 1)
     val SIGNAL_BDS = GnssCfgKey(0x10310022L, 1, "北斗星座", 0, 1)
+    val SIGNAL_BDS_B1 = GnssCfgKey(0x1031000DL, 1, "北斗 B1I 信号", 0, 1)
+    val SIGNAL_BDS_B1C = GnssCfgKey(0x1031000FL, 1, "北斗 B1C 信号", 0, 1)
     val SIGNAL_GLO = GnssCfgKey(0x10310025L, 1, "GLONASS 星座", 0, 1)
+    val SIGNAL_GLO_L1 = GnssCfgKey(0x10310018L, 1, "GLONASS L1 信号", 0, 1)
     val MINELEV = GnssCfgKey(
         key = 0x201100A4L, len = 1, label = "最小仰角", min = 0, max = 90, unit = "°",
+    )
+    val MINCNO = GnssCfgKey(
+        key = 0x201100A3L, len = 1, label = "最小 C/N0", min = 0, max = 60, unit = "dBHz",
     )
     val PDOP = GnssCfgKey(
         key = 0x301100B1L, len = 2, label = "pDOP 门限", min = 1, max = 9999, unit = "×0.1",
@@ -157,12 +163,41 @@ object GnssCfgKeys {
     val RATE_MEAS = GnssCfgKey(
         key = 0x30210001L, len = 2, label = "导航频率", min = 25, max = 1000, unit = "ms",
     )
+    val RATE_NAV = GnssCfgKey(
+        key = 0x30210002L, len = 2, label = "测量/解算比", min = 1, max = 127, unit = "次",
+    )
+    val PM_OPERATEMODE = GnssCfgKey(
+        key = 0x20D00001L, len = 1, label = "功耗模式", min = 0, max = 2,
+        choices = listOf(0 to "FULL", 1 to "PSMOO", 2 to "PSMCT"),
+    )
+    val PM_POSUPDATEPERIOD = GnssCfgKey(
+        key = 0x40D00002L, len = 4, label = "PSMOO 定位周期", min = 5, max = 604800, unit = "s",
+    )
+    val PM_ACQPERIOD = GnssCfgKey(
+        key = 0x40D00003L, len = 4, label = "PSMOO 搜星周期", min = 0, max = 604800, unit = "s",
+    )
+    val PM_ONTIME = GnssCfgKey(
+        key = 0x30D00005L, len = 2, label = "PSMOO 跟踪时长", min = 0, max = 65535, unit = "s",
+    )
+    val PM_DONOTENTEROFF = GnssCfgKey(0x10D00008L, 1, "搜星失败时保持搜索", 0, 1)
+    val MOT_GNSSSPEED_THRS = GnssCfgKey(
+        key = 0x20250038L, len = 1, label = "静止判定速度", min = 0, max = 255, unit = "×0.01 m/s",
+    )
+    val MOT_GNSSDIST_THRS = GnssCfgKey(
+        key = 0x3025003BL, len = 2, label = "静止判定距离", min = 0, max = 65535, unit = "m",
+    )
 
-    val SIGNALS = listOf(SIGNAL_GPS, SIGNAL_GAL, SIGNAL_BDS, SIGNAL_GLO)
+    val SIGNALS = listOf(
+        SIGNAL_GPS, SIGNAL_GAL, SIGNAL_BDS, SIGNAL_BDS_B1, SIGNAL_BDS_B1C,
+        SIGNAL_GLO, SIGNAL_GLO_L1,
+    )
 
     val ALL = listOf(
-        DYNMODEL, MINELEV, PDOP, RATE_MEAS,
-        SIGNAL_GPS, SIGNAL_GAL, SIGNAL_BDS, SIGNAL_GLO,
+        DYNMODEL, MINELEV, MINCNO, PDOP, RATE_MEAS, RATE_NAV,
+        SIGNAL_GPS, SIGNAL_GAL, SIGNAL_BDS, SIGNAL_BDS_B1, SIGNAL_BDS_B1C,
+        SIGNAL_GLO, SIGNAL_GLO_L1,
+        PM_OPERATEMODE, PM_POSUPDATEPERIOD, PM_ACQPERIOD, PM_ONTIME, PM_DONOTENTEROFF,
+        MOT_GNSSSPEED_THRS, MOT_GNSSDIST_THRS,
         ANA_USE, ANA_ORBMAXERR,
     )
 

@@ -378,7 +378,13 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
 - `action=2` 额外写 **Flash** 层，消耗一次擦写，必须由用户显式选择。
 - 状态码：`0x01` 键不在白名单或值超范围，`0x03` 接收机 NAK 该键，`0x04` 模组当前未上电 /
   未应答（等一个电源周期后重试），`0x00` 成功。
-- 命令会阻塞到接收机应答或约 800 ms 超时（请求与答案共用导航串口）。
+- 一次写是**四步**，不是一帧：`CFG-VALSET` → 等 `UBX-ACK` → 若 key 属于 `CFG-SIGNAL`
+  （组 id `0x31`）再等 **0.5 s** → `CFG-VALGET` 回读。集成手册 §2.1.3 与接口说明书 §4.9.21：
+  "Any change to the signal configuration items triggers a restart of the GNSS subsystem …
+  wait for message acknowledgement and a margin of 0.5 seconds prior to sending any further
+  commands"。旧实现把 VALSET 和 VALGET 背靠背发出，VALGET 落在重启窗口里，回读要么收不到
+  要么被 NAK——App 因此把健康的写入显示成「不支持」。
+- 因此命令最坏会阻塞到 ~2.4 s（`GNSS_CFG_SET_WAIT_MS`），App 侧对应 4 s 预算。
 
 白名单（固件 `Firmware/src/gnss/gnss.c` 与 App `GnssCfgKeys` 必须一致）：
 
@@ -389,14 +395,55 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
 | `0x20110021` | CFG-NAVSPG-DYNMODEL | E1 | 0..10 | 动态模型 0 便携 / 2 静止 / 3 步行 / 4 车载 … |
 | `0x1031001f` | CFG-SIGNAL-GPS_ENA | L | 0..1 | GPS 星座 |
 | `0x10310021` | CFG-SIGNAL-GAL_ENA | L | 0..1 | Galileo |
-| `0x10310022` | CFG-SIGNAL-BDS_ENA | L | 0..1 | 北斗 |
-| `0x10310025` | CFG-SIGNAL-GLO_ENA | L | 0..1 | GLONASS |
+| `0x10310022` | CFG-SIGNAL-BDS_ENA | L | 0..1 | 北斗星座 |
+| `0x1031000d` | CFG-SIGNAL-BDS_B1_ENA | L | 0..1 | 北斗 B1I 信号 |
+| `0x1031000f` | CFG-SIGNAL-BDS_B1C_ENA | L | 0..1 | 北斗 B1C 信号 |
+| `0x10310025` | CFG-SIGNAL-GLO_ENA | L | 0..1 | GLONASS 星座 |
+| `0x10310018` | CFG-SIGNAL-GLO_L1_ENA | L | 0..1 | GLONASS L1OF 信号 |
 | `0x201100a4` | CFG-NAVSPG-INFIL_MINELEV | I1 | 0..90 | 最小仰角，度 |
+| `0x201100a3` | CFG-NAVSPG-INFIL_MINCNO | U1 | 0..60 | 参与解算的最小 C/N0，dBHz |
 | `0x301100b1` | CFG-NAVSPG-OUTFIL_PDOP | U2 | 1..9999 | pDOP 门限 ×0.1 |
 | `0x30210001` | CFG-RATE-MEAS | U2 | 25..1000 | 导航频率，ms |
+| `0x30210002` | CFG-RATE-NAV | U2 | 1..127 | 测量次数 / 解算次数 |
+| `0x20d00001` | CFG-PM-OPERATEMODE | E1 | 0..2 | 0 FULL / 1 PSMOO / 2 PSMCT |
+| `0x40d00002` | CFG-PM-POSUPDATEPERIOD | U4 | 5..604800 | PSMOO 定位周期，s |
+| `0x40d00003` | CFG-PM-ACQPERIOD | U4 | 0..604800 | 搜星周期，s |
+| `0x30d00005` | CFG-PM-ONTIME | U2 | 0..65535 | 跟踪时长，s |
+| `0x10d00008` | CFG-PM-DONOTENTEROFF | L | 0..1 | 搜星失败时不进入 Inactive |
+| `0x20250038` | CFG-MOT-GNSSSPEED_THRS | U1 | 0..255 | 静止判定速度 ×0.01 m/s（0 = 出厂默认） |
+| `0x3025003b` | CFG-MOT-GNSSDIST_THRS | U2 | 0..65535 | 静止判定距离，m（0 = 出厂默认） |
+
+**星座组合是有约束的**，不是七个独立开关（数据手册 §1.3、集成手册 §2.1.3）：
+MAX-M10S 出厂为 GPS + Galileo + 北斗 B1I；`B1I` 不能与 `B1C` 或 `GLONASS L1OF` 同时开启，
+非法组合直接回 `UBX-ACK-NAK`（同时发 `UBX-INF` / NMEA-TXT 警告 `inv sig cfg`）。
+所以开 GLONASS 必须按序：`BDS_B1_ENA=0` → `BDS_B1C_ENA=1` → `GLO_ENA=1` / `GLO_L1_ENA=1`。
+合法的四星座组合是 GPS + GAL + 北斗 B1C + GLONASS（B1C 与 GPS L1 同频）。
 
 `CFG-UART1-BAUDRATE`、`CFG-UART1OUTPROT-*` 等**不在白名单**：写错会让链路失联，
-调试功能不允许具备这种能力。
+调试功能不允许具备这种能力。固件自己在 `CONFIG_LGPS_GNSS_FAST_LINK` 下写这两项（见 §6.8），
+并且波特率只写 RAM 层，所以下一个电源周期仍然从 38400 起步。
+
+### 6.8 链路速率与 10 Hz 画像（固件侧，无报文）
+
+每次上电两侧都从 **38400 8N1** 起步（设备树 `current-speed` = `LGPS_GNSS_BAUD_DEFAULT`）。
+`CONFIG_LGPS_GNSS_FAST_LINK=y` 时，链路在回读确认之后按“一次一帧、逐条等 ACK”的画像抬升：
+
+1. `CFG-UART1OUTPROT-NMEA = 0`（RAM）：出厂 NMEA 集每历元约 1.25 kB，10 Hz 下 12 kB/s
+2. `CFG-RATE-MEAS = CONFIG_LGPS_GNSS_RATE_MS`（RAM+BBR，默认 100 ms）
+3. `CFG-UART1-BAUDRATE = 460800`（仅 RAM）→ 等 100 ms → MCU 侧切到 460800
+
+依据：MAX-M10S 集成手册表 16 列出 460800；nRF54L15 UARTE 数据手册 §11.24 给出普通实例
+`fUARTE` 上限 1000 kbps，`BAUDRATE=0x07400000` 在 16 MHz PCLK 下实际 457143 bit/s（-0.8 %）。
+若接收机在新速率下不回话，固件在 10 s 后自动退回 38400 并重启窗口。
+
+带宽预算（8N1 = 10 bit/字节，460800 ≈ 46 kB/s）：
+
+| 10 Hz 输出 | 每历元 | 每秒 |
+| :--- | ---: | ---: |
+| NAV-PVT | 100 B | 1.0 kB/s |
+| + NAV-SAT(32) | 400 B | 5.0 kB/s |
+| + NAV-SIG(40 信号) | 656 B | 11.6 kB/s |
+| + 出厂 NMEA 集 | 1250 B | 24 kB/s（**只在 460800 下可行**；38400 上限 3.84 kB/s）|
 
 ### 6.7 GNSS_DEBUG（`0x36`）请求 / 响应
 
@@ -409,9 +456,12 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
 | :--- | :--- |
 | bit0 | `HOLD_POWER`：会话期间跳过冷启动 60 s 超时断电与星历保持 35 s 断电 |
 | bit1 | `NAV_SAT`：把接收机 NAV-SAT 输出打开（1 Hz，RAM 层），供 `0x09` 遥测 |
-| bit2 | `NMEA`：把原始 NMEA 语句通过 `0x08` 遥测转发 |
+| bit2 | `NMEA`：把原始 NMEA 语句通过 `0x08` 遥测转发（若 `CONFIG_LGPS_GNSS_FAST_LINK` 已把
+NMEA 输出关掉，会话期间会临时重新打开，会话结束再关掉） |
 
-- 会话一定有寿命上限（默认 300 s，最大 3600 s）：本固件没有任何路径能让 GNSS 轨道无限期上电。
+- 会话一定有寿命上限（默认 300 s，最大 3600 s）：没有任何 BLE 命令能让 GNSS 轨道无限期上电。
+  唯一的例外是编译期开关 `CONFIG_LGPS_GNSS_ALWAYS_ON`（`boards/lifegps/lifegps/Kconfig.lifegps`，
+  默认 `n`），开了之后整条超时断电策略被整段跳过——那是台架调试用的构建选项，HTTP/蓝牙侧无法触及。
 - `NAV_SAT` 只写 RAM 层，断电即失效；`flags=0` 立即恢复常规省电策略。
 - 写入响应回显**请求的** flags/ttl（GNSS 线程在一个循环周期内应用），
   约 100 ms 后再查询一次即可读到真实剩余时间。
