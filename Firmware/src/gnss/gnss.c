@@ -37,6 +37,9 @@ LOG_MODULE_REGISTER(lgps_gnss, LOG_LEVEL_INF);
  */
 #define GNSS_PVT_LOST_MS 10000U
 
+/* Wait before retrying after a forced power cycle that repairs a split link. */
+#define GNSS_LINK_RECOVERY_MS 500U
+
 /*
  * Configuration path: UBX-CFG-VALSET / UBX-CFG-VALGET.
  *
@@ -62,10 +65,6 @@ static uint32_t last_pvt_log_ms;
 static uint32_t next_reconfig_ms;
 static uint32_t current_baud = LGPS_GNSS_BAUD_DEFAULT;
 static bool baud_fallback_done;
-/* The fast-link profile raised the line rate and the receiver never answered at
- * it; the revert runs once per power cycle.
- */
-static bool baud_revert_done;
 
 /*
  * True once CFG-VALGET read the NAV-PVT output rate back as non-zero.
@@ -206,6 +205,16 @@ static uint8_t ack_owner;
  * so step 1 removes NMEA and step 3 opens the 460800 link. That rate carries
  * ~46 kB/s, i.e. 12 k nav-PVT + 4 k NAV-SAT + 6.6 k NAV-SIG at 10 Hz (about 50 %
  * of the line).
+ *
+ * The line rate step is the only one that is NOT confirmed by an ACK: the receiver
+ * applies CFG-UART1-BAUDRATE as it builds the answer, so that ACK may already be
+ * transmitted at the new rate and is then invisible to a host still listening at
+ * 38400. Integration manual section 2.1.4 only says to "allow a short time delay
+ * of typically 100 ms between sending a baud rate change message and providing
+ * input data at the new rate". Waiting for an ACK there is what leaves the two
+ * sides split - the receiver at 460800, the host at 38400 - so the step is sent
+ * fire-and-forget, the host switches after the 100 ms margin, and the NAV-PVT
+ * readback at the new rate is what proves it worked.
  */
 struct gnss_bringup_step {
 	uint32_t key;
@@ -214,18 +223,19 @@ struct gnss_bringup_step {
 	uint8_t layers;
 	uint16_t gap_ms;
 	bool switch_baud;
+	bool wait_ack;
 };
 
 #if IS_ENABLED(CONFIG_LGPS_GNSS_FAST_LINK)
 static const struct gnss_bringup_step bringup_profile[] = {
 	/* NMEA off: one key for the whole protocol on UART1 (section 4.9.29). */
-	{ LGPS_UBX_CFG_KEY_UART1OUTPROT_NMEA, 0U, 1U, LGPS_UBX_LAYER_RAM, 0U, false },
+	{ LGPS_UBX_CFG_KEY_UART1OUTPROT_NMEA, 0U, 1U, LGPS_UBX_LAYER_RAM, 0U, false, true },
 	/* Measurement period; BBR so it survives the standby request. */
 	{ LGPS_UBX_CFG_KEY_RATE_MEAS, CONFIG_LGPS_GNSS_RATE_MS, 2U,
-	  LGPS_UBX_LAYER_RAM | LGPS_UBX_LAYER_BBR, 0U, false },
-	/* Line rate last, RAM layer only (see ubx.h). */
+	  LGPS_UBX_LAYER_RAM | LGPS_UBX_LAYER_BBR, 0U, false, true },
+	/* Line rate last, RAM layer only, no ACK expected (see above). */
 	{ LGPS_UBX_CFG_KEY_UART1_BAUDRATE, LGPS_GNSS_BAUD_FAST, 4U, LGPS_UBX_LAYER_RAM,
-	  LGPS_GNSS_BAUD_SETTLE_MS, true },
+	  LGPS_GNSS_BAUD_SETTLE_MS, true, false },
 };
 #endif
 
@@ -256,6 +266,22 @@ static bool bringup_nak;
  * the baud rate change would arm the profile again, forever.
  */
 static bool bringup_armed;
+
+/*
+ * The receiver has been told to change its line rate at least once this power
+ * cycle. From that moment on the two sides may disagree, and every verification
+ * failure has to be repaired by a power cycle - the receiver's RAM layer holds
+ * the new rate and cannot be talked out of it from a host at the old one.
+ */
+static bool fast_link_attempted;
+
+/* The attempt failed once: stay at the boot rate until the next reboot instead of
+ * flapping between the two rates every 10 s.
+ */
+static bool fast_link_broken;
+
+/* Set by the profile or by the cold-start state, consumed by the thread loop. */
+static bool recovery_needed;
 
 /* True while a profile step is in flight; the BLE path then waits its turn. */
 static bool gnss_bringup_active(void)
@@ -748,9 +774,10 @@ static void gnss_debug_apply_outputs(void)
 {
 	uint8_t wanted = gnss_debug_active() ? debug_flags : 0U;
 
-	if ((wanted & LGPS_GNSS_DEBUG_NAV_SAT) != (debug_applied_flags & LGPS_GNSS_DEBUG_NAV_SAT)) {
-		gnss_apply_nav_sat_rate((wanted & LGPS_GNSS_DEBUG_NAV_SAT) != 0U);
-	}
+	/* LGPS_GNSS_DEBUG_NAV_SAT is deliberately not applied any more: NAV-SAT is on
+	 * for as long as the receiver is powered (gnss_power_up). The flag stays in
+	 * the wire format so old App builds keep working, it just has nothing to do.
+	 */
 
 	if ((wanted & LGPS_GNSS_DEBUG_NMEA) != (debug_applied_flags & LGPS_GNSS_DEBUG_NMEA)) {
 		gnss_apply_nmea_out((wanted & LGPS_GNSS_DEBUG_NMEA) != 0U);
@@ -1230,10 +1257,26 @@ static void gnss_bringup_service(void)
 
 	switch (bringup_phase) {
 	case BRINGUP_PHASE_SEND:
+		if (step->switch_baud && fast_link_broken) {
+			LOG_WRN("line rate stayed at %u: the fast link failed earlier in this boot",
+				LGPS_GNSS_BAUD_DEFAULT);
+			bringup_index++;
+			return;
+		}
+
 		if (gnss_send_cfg_item(step->key, step->value, step->len, step->layers) == 0U) {
 			LOG_WRN("bring-up step %u (key 0x%08x) not sent, skipping",
 				bringup_index, step->key);
 			bringup_index++;
+			return;
+		}
+
+		if (!step->wait_ack) {
+			/* The ACK for a line rate change may already be sent at the new
+			 * rate, so waiting for it would split the two sides for good.
+			 */
+			bringup_deadline_ms = now_ms + step->gap_ms;
+			bringup_phase = BRINGUP_PHASE_SETTLE;
 			return;
 		}
 
@@ -1275,16 +1318,30 @@ static void gnss_bringup_service(void)
 		}
 
 		if (step->switch_baud) {
-			if (gnss_uart_set_baud(step->value) == 0) {
-				LOG_INF("GNSS link raised to %u 8N1", step->value);
-				/* Prove the new rate instead of assuming it: the NAV-PVT
-				 * readback is the same test that validated the old one.
-				 */
-				baud_probe_base_bytes = rx_bytes_total();
-				nav_pvt_rate_verified = false;
-				next_reconfig_ms = 0U;
-				(void)gnss_request_rate_readback();
+			/* From here on the receiver is at the new rate whether or not the
+			 * host manages to follow.
+			 */
+			fast_link_attempted = true;
+
+			if (gnss_uart_set_baud(step->value) != 0) {
+				LOG_ERR("host UART cannot follow to %u: the receiver is already there, "
+					"so the link is dead until it is power-cycled",
+					step->value);
+				fast_link_broken = true;
+				recovery_needed = true;
+				bringup_index++;
+				bringup_phase = BRINGUP_PHASE_SEND;
+				return;
 			}
+
+			LOG_INF("GNSS link raised to %u 8N1", step->value);
+			/* Prove the new rate instead of assuming it: the NAV-PVT readback is
+			 * the same test that validated the old one.
+			 */
+			baud_probe_base_bytes = rx_bytes_total();
+			nav_pvt_rate_verified = false;
+			next_reconfig_ms = 0U;
+			(void)gnss_request_rate_readback();
 		}
 
 		bringup_index++;
@@ -1578,7 +1635,8 @@ static void gnss_power_up(void)
 	 * disagree on the first byte.
 	 */
 	(void)gnss_uart_set_baud(LGPS_GNSS_BAUD_DEFAULT);
-	baud_revert_done = false;
+	fast_link_attempted = false;
+	recovery_needed = false;
 
 	ret = lgps_gnss_rail_set(true);
 	if (ret < 0) {
@@ -1625,6 +1683,15 @@ static void gnss_power_up(void)
 	next_reconfig_ms = 0U;
 	baud_probe_base_bytes = rx_bytes_total();
 	(void)gnss_enable_nav_pvt();
+	/*
+	 * NAV-SAT runs for the whole time the receiver is powered, not only inside a
+	 * debug session: the satellite table is the one view that says whether an
+	 * antenna, a constellation switch or a sky view is the problem, and asking the
+	 * user to start a session first just hides it. 16 + 12*n bytes per epoch is
+	 * 400 bytes at 32 satellites, i.e. 400 B/s at 1 Hz and 4 kB/s in the 10 Hz
+	 * profile - about 9 % of the 460800 link.
+	 */
+	gnss_apply_nav_sat_rate(true);
 	(void)gnss_request_rate_readback();
 	/* The bandwidth profile (NMEA off / rate / line rate) stays disarmed until a
 	 * NAV-PVT readback proves the receiver answers at the boot rate; the cold-start
@@ -1679,6 +1746,22 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 
 	for (;;) {
 		uint32_t dropped;
+
+		/*
+		 * Repair a link the two sides disagree about: the receiver accepted a line
+		 * rate the host could not follow, or nothing answered after both sides were
+		 * switched. Only dropping the rail clears the RAM layer that holds the new
+		 * rate, so this is the one recovery that always works.
+		 */
+		if (recovery_needed) {
+			recovery_needed = false;
+			LOG_WRN("recovering the GNSS link: power-cycling the receiver so both sides "
+				"return to %u 8N1",
+				LGPS_GNSS_BAUD_DEFAULT);
+			gnss_power_down();
+			backoff_ms = GNSS_LINK_RECOVERY_MS;
+			set_state(LGPS_GNSS_STATE_BACKOFF, GNSS_LINK_RECOVERY_MS);
+		}
 
 		gnss_service_debug();
 		gnss_service_cfg();
@@ -1743,6 +1826,10 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 			    (lgps_diag_uptime_ms() >= next_reconfig_ms)) {
 				next_reconfig_ms = lgps_diag_uptime_ms() + 2000U;
 				(void)gnss_enable_nav_pvt();
+				/* Re-asserted with the same retry: the first VALSET goes out 100 ms
+				 * after the rail, which can be before the module is listening.
+				 */
+				gnss_apply_nav_sat_rate(true);
 				(void)gnss_request_rate_readback();
 			}
 
@@ -1750,22 +1837,18 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 			 * this product or the receiver never answered. Say so instead of
 			 * letting the cold start run the remaining 50 s in silence.
 			 *
-			 * If the link was raised by the fast-link profile, the useful action is
-			 * the revert, not the warning: the receiver kept streaming at the rate
-			 * it knows, so dropping the host back to the boot rate restores it.
-			 * Without this the link would stay dead until the next power cycle -
-			 * and a CONFIG_LGPS_GNSS_ALWAYS_ON build never gets one.
+			 * If the line rate was changed this power cycle, the only repair is a power
+			 * cycle of the receiver: the new rate lives in its RAM layer, so a host that
+			 * simply goes back to the boot rate is still talking to a receiver that does
+			 * not answer it. Dropping the rail clears that RAM, which is exactly what
+			 * the recovery below does - a CONFIG_LGPS_GNSS_ALWAYS_ON build never gets such
+			 * a power cycle on its own.
 			 */
-			if (!nav_pvt_rate_verified && (elapsed >= 10000U) &&
-			    (current_baud != LGPS_GNSS_BAUD_DEFAULT) && !baud_revert_done) {
-				baud_revert_done = true;
-				LOG_WRN("no NAV-PVT answer at %u baud, dropping the link back to %u",
-					current_baud, LGPS_GNSS_BAUD_DEFAULT);
-				(void)gnss_uart_set_baud(LGPS_GNSS_BAUD_DEFAULT);
-				baud_probe_base_bytes = rx_bytes_total();
-				/* Restart the window so the retry block above runs again. */
-				set_state(LGPS_GNSS_STATE_COLD_START,
-					  LGPS_GNSS_COLD_START_TIMEOUT_MS);
+			if (!nav_pvt_rate_verified && (elapsed >= 10000U) && fast_link_attempted) {
+				LOG_WRN("no NAV-PVT answer at %u baud although both sides were switched",
+					current_baud);
+				fast_link_broken = true;
+				recovery_needed = true;
 				break;
 			}
 

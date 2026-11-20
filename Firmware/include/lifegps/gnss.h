@@ -45,6 +45,15 @@
 #define LGPS_GNSS_BAUD_FALLBACK 9600U
 #define LGPS_GNSS_BAUD_FAST 460800U
 
+/*
+ * The rate change is fire-and-forget on purpose: the receiver applies
+ * CFG-UART1-BAUDRATE while it builds the ACK, so the ACK may already be sent at
+ * the new rate and is invisible to a host still at the old one. The host switches
+ * after LGPS_GNSS_BAUD_SETTLE_MS and then proves the rate with a NAV-PVT readback.
+ * A failed proof is repaired by power-cycling the receiver, because the new rate
+ * lives in its RAM layer and only RXM-PMREQ standby or a rail drop clears that.
+ */
+
 #define LGPS_GNSS_COLD_START_TIMEOUT_MS 60000U
 #define LGPS_GNSS_EPHEMERIS_HOLD_MS 35000U
 #define LGPS_GNSS_BACKOFF_STEP1_MS 120000U
@@ -64,8 +73,12 @@ enum lgps_gnss_state {
  *
  * The normal power policy cuts the rail 35 s after the first fix and retries
  * minutes later, which makes the receiver impossible to watch. A debug session
- * suspends that policy for a bounded time and can switch the extra outputs on:
- * NAV-SAT for the satellite table, and the raw NMEA stream.
+ * suspends that policy for a bounded time and can switch the raw NMEA stream on.
+ *
+ * LGPS_GNSS_DEBUG_NAV_SAT is kept in the wire format but does nothing since 0.3.0:
+ * NAV-SAT is an output of the receiver for as long as it is powered, because the
+ * satellite table is what tells an antenna problem from a sky-view problem and
+ * should not need a session to exist first.
  */
 #define LGPS_GNSS_DEBUG_HOLD_POWER 0x01U
 #define LGPS_GNSS_DEBUG_NAV_SAT 0x02U

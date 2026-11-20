@@ -93,8 +93,8 @@ fun GnssStatusScreen(
                     MetricRow("定位", if (gnss.fix) "YES" else "NO", fixColor)
                     MetricRow("有效卫星", "${gnss.sats}", if (gnss.sats >= 8) Green else Amber)
                     ValueBar("HDOP", gnss.hdop.toFloat(), 5f, hdopColor, fmtOne(gnss.hdop))
-                    MetricRow("参与解算", if (gnss.satellites.isEmpty()) "需要调试会话" else "$used / ${gnss.satellites.size}")
-                    MetricRow("平均 C/N0", if (gnss.satellites.isEmpty()) "需要调试会话" else "$avgCno dB-Hz")
+                    MetricRow("参与解算", if (gnss.satellites.isEmpty()) "等待 NAV-SAT" else "$used / ${gnss.satellites.size}")
+                    MetricRow("平均 C/N0", if (gnss.satellites.isEmpty()) "等待 NAV-SAT" else "$avgCno dB-Hz")
                     MetricRow("TTFF", gnss.ttff)
                     MetricRow("UTC 时间", gnss.utcTime)
                     MetricRow("设备", device.name)
@@ -141,11 +141,9 @@ fun GnssStatusScreen(
                 CardBlock {
                     if (gnss.satellites.isEmpty()) {
                         Text(
-                            if (debug.navSat) {
-                                "调试会话已请求 NAV-SAT，但接收机还没有报告任何卫星（室内或天线未接时就是这样）。"
-                            } else {
-                                "单星信息来自 UBX-NAV-SAT，只在调试会话期间采集。请在下方开启调试会话。"
-                            },
+                            "单星信息来自 UBX-NAV-SAT，接收机上电后一直以 1 Hz 采集，不需要开调试会话。" +
+                                "这里为空只有三种可能：模组当前未上电（退避中）、还没有周视卫星（室内 / 天线未接），" +
+                                "或者接收机拒绝了 NAV-SAT 输出率（看串口日志里的 ACK-NAK）。",
                             color = TextDim,
                             fontSize = 12.sp,
                         )
@@ -172,7 +170,7 @@ fun GnssStatusScreen(
                         if (debug.flags != 0) Green else TextDim,
                     )
                     MetricRow("保持上电", if (debug.holdPower) "是" else "否")
-                    MetricRow("单星 NAV-SAT", if (debug.navSat) "是" else "否")
+                    MetricRow("单星 NAV-SAT", "常开 1 Hz（bit1 已无作用）")
                     MetricRow("NMEA 直通", if (debug.nmea) "是" else "否")
                     debug.error?.let { message ->
                         Text(message, color = Red, fontSize = 12.sp)

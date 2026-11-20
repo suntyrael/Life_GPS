@@ -44,8 +44,11 @@ config LGPS_GNSS_ALWAYS_ON
 # i.e. -0.8 %, inside the UART tolerance, but it does depend on HFCLK coming from
 # the 32 MHz crystal.
 #
-# If the receiver never answers at the new rate, the firmware drops the link back
-# to 38400 by itself after 10 s (gnss.c, cold-start state).
+# The line rate step is not confirmed by an ACK: the receiver applies the setting
+# as it builds the answer, so that answer may already go out at 460800 and a host
+# still at 38400 would never see it. If the switch cannot be verified afterwards,
+# the firmware power-cycles the receiver once - that clears the RAM layer, so both
+# sides come back at 38400 - and then stays there until the next reboot.
 config LGPS_GNSS_FAST_LINK
 	bool "Raise the GNSS link to 460800 and sample at the configured rate"
 	default n

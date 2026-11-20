@@ -425,16 +425,29 @@ MAX-M10S 出厂为 GPS + Galileo + 北斗 B1I；`B1I` 不能与 `B1C` 或 `GLONA
 
 ### 6.8 链路速率与 10 Hz 画像（固件侧，无报文）
 
-每次上电两侧都从 **38400 8N1** 起步（设备树 `current-speed` = `LGPS_GNSS_BAUD_DEFAULT`）。
-`CONFIG_LGPS_GNSS_FAST_LINK=y` 时，链路在回读确认之后按“一次一帧、逐条等 ACK”的画像抬升：
+每次上电两侧都从 **38400 8N1** 起步（设备树 `current-speed` = `LGPS_GNSS_BAUD_DEFAULT`），
+并且 **NAV-SAT 一直开着**（1 Hz，RAM 层，每次上电重写），卫星表不再依赖调试会话。
+`CONFIG_LGPS_GNSS_FAST_LINK=y` 时，链路在 NAV-PVT 回读确认之后按画像抬升，`CFG-RATE-MEAS`
+与 `CFG-UART1OUTPROT-NMEA` 两条都等 ACK，**只有波特率那一条不等**：
 
-1. `CFG-UART1OUTPROT-NMEA = 0`（RAM）：出厂 NMEA 集每历元约 1.25 kB，10 Hz 下 12 kB/s
-2. `CFG-RATE-MEAS = CONFIG_LGPS_GNSS_RATE_MS`（RAM+BBR，默认 100 ms）
-3. `CFG-UART1-BAUDRATE = 460800`（仅 RAM）→ 等 100 ms → MCU 侧切到 460800
+1. `CFG-UART1OUTPROT-NMEA = 0`（RAM）：出厂 NMEA 集每历元约 1.25 kB，10 Hz 下 12 kB/s（等 ACK）
+2. `CFG-RATE-MEAS = CONFIG_LGPS_GNSS_RATE_MS`（RAM+BBR，默认 100 ms，等 ACK）
+3. `CFG-UART1-BAUDRATE = 460800`（仅 RAM）→ **不等 ACK** → 等 100 ms → MCU 侧切到 460800
+
+第 3 条不等 ACK 是故意的：接收机把这条设置在生成答复的同时就生效了，那个 ACK 可能已经是按
+新速率发出来的，对一个还在 38400 上监听的主机是永远等不到的。集成手册 §2.1.4 只要求“发完
+改速率的消息后等约 100 ms 再按新速率发数据”。旧写法把这一条也放在 ACK 等待里，结果就是
+**接收机已经在 460800、主机还停在 38400**——两边各说各话。现在改成发完即走，切换后用
+NAV-PVT 回读验证新速率。
+
+失败处理只有一条路：**给接收机断电重启**。新速率在它的 RAM 层，主机单方面退回 38400 仍然
+还是对着一个不应答的接收机；而 `RXM-PMREQ` 待机会清 RAM，所以断电重上电后它必然回到 38400。
+触发条件有两个：主机一侧 `uart_configure(460800)` 失败（此时接收机已经切过去了），或切换后
+10 s 内收不到 NAV-PVT 回读。修完之后本次开机不再尝试快链路（`fast_link_broken` 锁存），
+以免在 38400/460800 之间反复抖动。
 
 依据：MAX-M10S 集成手册表 16 列出 460800；nRF54L15 UARTE 数据手册 §11.24 给出普通实例
 `fUARTE` 上限 1000 kbps，`BAUDRATE=0x07400000` 在 16 MHz PCLK 下实际 457143 bit/s（-0.8 %）。
-若接收机在新速率下不回话，固件在 10 s 后自动退回 38400 并重启窗口。
 
 带宽预算（8N1 = 10 bit/字节，460800 ≈ 46 kB/s）：
 
@@ -455,14 +468,17 @@ MAX-M10S 出厂为 GPS + Galileo + 北斗 B1I；`B1I` 不能与 `B1C` 或 `GLONA
 | flags 位 | 含义 |
 | :--- | :--- |
 | bit0 | `HOLD_POWER`：会话期间跳过冷启动 60 s 超时断电与星历保持 35 s 断电 |
-| bit1 | `NAV_SAT`：把接收机 NAV-SAT 输出打开（1 Hz，RAM 层），供 `0x09` 遥测 |
+| bit1 | `NAV_SAT`：**0.3.0 起无作用**。NAV-SAT 现在是接收机上电后的常开输出（1 Hz，RAM 层，
+每次上电重新打开），不再是会话专属。位仍接受，以便旧版 App 不改也能用 |
 | bit2 | `NMEA`：把原始 NMEA 语句通过 `0x08` 遥测转发（若 `CONFIG_LGPS_GNSS_FAST_LINK` 已把
 NMEA 输出关掉，会话期间会临时重新打开，会话结束再关掉） |
 
 - 会话一定有寿命上限（默认 300 s，最大 3600 s）：没有任何 BLE 命令能让 GNSS 轨道无限期上电。
   唯一的例外是编译期开关 `CONFIG_LGPS_GNSS_ALWAYS_ON`（`boards/lifegps/lifegps/Kconfig.lifegps`，
-  默认 `n`），开了之后整条超时断电策略被整段跳过——那是台架调试用的构建选项，HTTP/蓝牙侧无法触及。
-- `NAV_SAT` 只写 RAM 层，断电即失效；`flags=0` 立即恢复常规省电策略。
+  默认 `n`），开了之后整条超时断电策略被整段跳过——那是台架调试用的构建选项，蓝牙侧无法触及。
+- 卫星表不再需要会话：`publish_sat()` 一直在发 `0x09`，只要接收机上电就有数据；表为空只可能是
+  模组未上电、周视无星，或接收机 NAK 了 NAV-SAT 输出率。
+- `NMEA` 只写 RAM 层，断电即失效；`flags=0` 立即恢复常规省电策略。
 - 写入响应回显**请求的** flags/ttl（GNSS 线程在一个循环周期内应用），
   约 100 ms 后再查询一次即可读到真实剩余时间。
 
