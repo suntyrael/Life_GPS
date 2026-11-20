@@ -333,7 +333,9 @@ int lgps_ble_telem_baro_encode(uint16_t seq, const struct lgps_ble_telem_baro *b
 
 	/* Offsets are frozen in Doc/Software/BLE_Wire_v1.md section 5.1: the two
 	 * 32-bit values, the temperature, the flag byte (plus one reserved byte that
-	 * keeps the baseline 32-bit aligned), then the baseline itself.
+	 * keeps the reference 32-bit aligned), the reference pressure, then - appended,
+	 * so a host that decodes the first 16 bytes keeps working - the absolute
+	 * altitude.
 	 */
 	put_u32(&payload[0], baro->press_pa);
 	put_i32(&payload[4], baro->rel_alt_mm);
@@ -341,6 +343,7 @@ int lgps_ble_telem_baro_encode(uint16_t seq, const struct lgps_ble_telem_baro *b
 	payload[10] = baro->flags;
 	payload[11] = 0U;
 	put_u32(&payload[12], baro->baseline_pa_q4);
+	put_i32(&payload[16], baro->alt_msl_mm);
 
 	return lgps_ble_telem_encode((uint8_t)LGPS_BLE_TELEM_BARO, seq, payload, sizeof(payload), out,
 				     out_size);

@@ -419,13 +419,17 @@ object GnssTelemetryOffset {
 }
 
 /**
- * BMP388 barometer telemetry (`BLE_Wire_v1.md` §5.1, telemetry id 0x04, 16 bytes).
+ * BMP388 barometer telemetry (`BLE_Wire_v1.md` §5.1, telemetry id 0x04, 20 bytes).
  *
  * Every value is already compensated on the device: [pressPa] is a real pressure in
  * pascals and [relAltMm] is the height above the baseline the firmware holds, both 0
  * when the matching validity flag is clear. The App deliberately does not turn the
  * uncompensated `baro_press_raw` / `baro_temp_raw` of the Status frame into hPa —
  * without the TPG coefficients that would be a plausible-looking wrong number.
+ *
+ * The payload was extended from 16 to 20 bytes by appending `alt_msl_mm` at offset
+ * 16; offsets 0..15 are unchanged. Firmware that predates the append sends 16 bytes
+ * and never sets [mslValid], so the field stays 0 there.
  */
 data class BaroTelemetry(
     val pressPa: Long,
@@ -433,6 +437,8 @@ data class BaroTelemetry(
     val tempCc: Int,
     val flags: Int,
     val baselinePaQ4: Long,
+    val altMslMm: Int,
+    val mslValid: Boolean,
 ) {
     val pressValid: Boolean get() = flags and BaroTelemetryOffset.FLAG_PRESS_VALID != 0
     val tempValid: Boolean get() = flags and BaroTelemetryOffset.FLAG_TEMP_VALID != 0
@@ -443,11 +449,20 @@ data class BaroTelemetry(
     val temperatureC: Float get() = tempCc / 100f
     val relAltM: Float get() = relAltMm / 1000f
 
+    /** Absolute altitude above mean sea level; only meaningful while [mslValid]. */
+    val altMslM: Float get() = altMslMm / 1000f
+
     /** `baseline_pa_q4` is Pa × 16 (`BLE_Wire_v1.md` §6.5), i.e. 1/1600 hPa per count. */
     val baselineHpa: Float get() = baselinePaQ4 / 16f / 100f
 }
 
-/** Offsets of the `0x04` BARO telemetry payload (`BLE_Wire_v1.md` §5.1). */
+/**
+ * Offsets of the `0x04` BARO telemetry payload (`BLE_Wire_v1.md` §5.1, 20 bytes).
+ *
+ * [MSL] / [ALT_MSL_MM] are the appended field: firmware older than that append
+ * sends only the first 16 bytes ([LEGACY_SIZE]) and the parser keeps the MSL field
+ * at 0 with `mslValid = false`.
+ */
 object BaroTelemetryOffset {
     const val PRESS_PA = 0
     const val REL_ALT_MM = 4
@@ -455,12 +470,18 @@ object BaroTelemetryOffset {
     const val FLAGS = 10
     const val RESERVED = 11
     const val BASELINE_PA_Q4 = 12
-    const val SIZE = 16
+    const val MSL = 16
+    const val ALT_MSL_MM = 16
+    const val SIZE = 20
+
+    /** Length of the payload before `alt_msl_mm` was appended. */
+    const val LEGACY_SIZE = 16
 
     const val FLAG_PRESS_VALID = 0x01
     const val FLAG_TEMP_VALID = 0x02
     const val FLAG_BASELINE_VALID = 0x04
     const val FLAG_BASELINE_AUTO = 0x08
+    const val FLAG_MSL_VALID = 0x10
 }
 
 /** Decoded Log notification (`BLE_Wire_v1.md` §5). */
@@ -672,15 +693,24 @@ object BleFrame {
         )
     }
 
-    /** BARO telemetry payload, 16 bytes (see [BaroTelemetryOffset]). */
+    /**
+     * BARO telemetry payload: 20 bytes, or 16 on firmware that predates the appended
+     * `alt_msl_mm` (see [BaroTelemetryOffset]). The MSL field is only read when the
+     * payload is long enough, and `mslValid` additionally requires that it was sent,
+     * so a truncated packet cannot report a valid-looking 0 m altitude.
+     */
     fun parseBaroTelemetry(payload: ByteArray): BaroTelemetry? {
-        if (payload.size < BaroTelemetryOffset.SIZE) return null
+        if (payload.size < BaroTelemetryOffset.LEGACY_SIZE) return null
+        val hasMsl = payload.size >= BaroTelemetryOffset.SIZE
+        val flags = u8(payload, BaroTelemetryOffset.FLAGS)
         return BaroTelemetry(
             pressPa = u32(payload, BaroTelemetryOffset.PRESS_PA),
             relAltMm = i32(payload, BaroTelemetryOffset.REL_ALT_MM),
             tempCc = i16(payload, BaroTelemetryOffset.TEMP_CC),
-            flags = u8(payload, BaroTelemetryOffset.FLAGS),
+            flags = flags,
             baselinePaQ4 = u32(payload, BaroTelemetryOffset.BASELINE_PA_Q4),
+            altMslMm = if (hasMsl) i32(payload, BaroTelemetryOffset.ALT_MSL_MM) else 0,
+            mslValid = hasMsl && flags and BaroTelemetryOffset.FLAG_MSL_VALID != 0,
         )
     }
 

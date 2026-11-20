@@ -65,6 +65,7 @@ fun CalibrationScreen(
     val imu by repo.imu.collectAsStateWithLifecycle()
     val mag by repo.mag.collectAsStateWithLifecycle()
     val baro by repo.baro.collectAsStateWithLifecycle()
+    val gnss by repo.gnss.collectAsStateWithLifecycle()
     val view = LocalView.current
     var confirmLeave by remember { mutableStateOf(false) }
 
@@ -171,8 +172,10 @@ fun CalibrationScreen(
             item {
                 BaroBaselineCard(
                     baro = baro,
+                    gnss = gnss,
                     onTakeCurrent = repo::takeBaroBaseline,
                     onSetManual = repo::setBaroBaselineManual,
+                    onCalibrateFromGnss = repo::calibrateBaroFromGnss,
                 )
             }
 
@@ -464,12 +467,19 @@ private fun MagCalCard(
  * you measure right now" - so the live state comes from the `0x04` telemetry packet
  * and the buttons are disabled while there is no valid pressure or while the
  * firmware answered NOT_SUPPORTED (no BMP388 / no TPG compensation).
+ *
+ * Action 2 replaces the "relative to where the button was pressed" reference with a
+ * sea-level pressure derived from the device's own GNSS height: after it the
+ * barometer keeps reporting an absolute altitude through a GNSS outage, while
+ * `rel_alt_mm` still starts at 0 at the calibration point.
  */
 @Composable
 private fun BaroBaselineCard(
     baro: BaroStatus,
+    gnss: GnssStatus,
     onTakeCurrent: suspend () -> BaroBaselineResult,
     onSetManual: suspend (Long) -> BaroBaselineResult,
+    onCalibrateFromGnss: suspend () -> BaroBaselineResult,
 ) {
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
@@ -486,6 +496,14 @@ private fun BaroBaselineCard(
     }
 
     val canOperate = baro.valid && !unsupported && !busy
+
+    // Client-side guard only, mirroring the conditions the wire document lists for
+    // action 2 (fix, ≥ 8 satellites, pDOP ≤ 2.0, speed < 0.3 m/s = 1.08 km/h). The
+    // device is still the authority and adds the vertical accuracy it knows.
+    val gnssUsable = gnss.fix &&
+        gnss.sats >= 8 &&
+        gnss.hdop <= 2.0 &&
+        gnss.speedKmh < 1.08
 
     CardBlock(
         title = "气压基准 · BARO_BASELINE",
@@ -545,6 +563,37 @@ private fun BaroBaselineCard(
             MetricRow("基准来源", "—", TextDim)
         }
 
+        Spacer(Modifier.height(6.dp))
+        MetricRow(
+            "GNSS 海拔",
+            if (gnss.fix) {
+                String.format(Locale.US, "%.1f m（%d 星）", gnss.altitudeM, gnss.sats)
+            } else {
+                "— 无固定"
+            },
+            if (gnss.fix) Cyan else TextDim,
+        )
+        MetricRow(
+            "气压海拔（MSL）",
+            if (baro.mslValid) String.format(Locale.US, "%.1f m", baro.altMslM) else "—",
+            if (baro.mslValid) Cyan else TextDim,
+        )
+        if (baro.mslValid) {
+            MetricRow(
+                "差值（气压 − GNSS）",
+                if (gnss.fix) {
+                    String.format(Locale.US, "%+.1f m", baro.altMslM - gnss.altitudeM.toFloat())
+                } else {
+                    "— 无固定"
+                },
+                if (gnss.fix && abs(baro.altMslM - gnss.altitudeM.toFloat()) <= MSL_AGREE_M) {
+                    Green
+                } else {
+                    Amber
+                },
+            )
+        }
+
         if (message.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
             Text(
@@ -573,6 +622,14 @@ private fun BaroBaselineCard(
                 color = Amber,
                 fontSize = 11.sp,
             )
+        } else if (!gnssUsable) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "没有可用的 GNSS 高度（需要 fix、卫星 ≥ 8、pDOP ≤ 2.0、地速 < 0.3 m/s，" +
+                    "固件还会检查垂直精度），“用 GNSS 海拔校准”因此保持禁用。",
+                color = Amber,
+                fontSize = 11.sp,
+            )
         }
 
         Spacer(Modifier.height(8.dp))
@@ -587,10 +644,28 @@ private fun BaroBaselineCard(
         ) { Text("取当前为基准") }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(
+            onClick = {
+                busy = true
+                message = ""
+                scope.launch { applyResult(onCalibrateFromGnss()) }
+            },
+            enabled = canOperate && gnssUsable,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("用 GNSS 海拔校准") }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
             onClick = { manualDialog = true },
             enabled = canOperate,
             modifier = Modifier.fillMaxWidth(),
         ) { Text("手动输入基准气压…") }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "用 GNSS 海拔校准后，基准是按当前 GNSS 高度换算出的海平面气压，" +
+                "之后即使 GNSS 中断，气压计仍给出绝对海拔（海拔 MSL）；" +
+                "相对高度（rel_alt）仍然从校准这一刻的 0 起算。",
+            color = TextDim,
+            fontSize = 11.sp,
+        )
     }
 
     if (manualDialog) {
@@ -799,3 +874,10 @@ private fun gravityVectorText(gravityG: List<Float>): String = String.format(
  */
 private const val BARO_BASELINE_HPA_MIN = 300f
 private const val BARO_BASELINE_HPA_MAX = 1250f
+
+/**
+ * Baro-vs-GNSS height difference the card paints green. GNSS vertical accuracy is
+ * metres, so this is a sanity band for "the calibration did something plausible",
+ * not a pass/fail gate.
+ */
+private const val MSL_AGREE_M = 15f

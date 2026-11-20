@@ -339,6 +339,12 @@ static struct lgps_telemetry_snapshot *build_snapshot(uint32_t now_ms,
 	 */
 	snap.baro_alt_valid = snap.baro_comp_valid && lgps_baro_baseline_set();
 	snap.baro_rel_alt_mm = snap.baro_alt_valid ? lgps_baro_rel_alt_mm() : 0;
+
+	/* Absolute altitude only exists after a GNSS height calibration (MSL
+	 * reference); without it rel_alt_mm is all the barometer can claim.
+	 */
+	snap.baro_msl_valid = lgps_baro_msl_valid();
+	snap.baro_msl_alt_mm = snap.baro_msl_valid ? lgps_baro_msl_altitude_mm() : 0;
 	(void)lgps_charger_charging(&charging);
 	snap.charging = charging;
 	snap.key_levels = lgps_keys_levels();

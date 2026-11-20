@@ -58,17 +58,21 @@ package com.lifegps.app.ble
  *
  * BARO_BASELINE request (5 B)
  *   [0] u8  action            0 = take the current pressure as baseline,
- *                             1 = manual set (the value below is then used)
+ *                             1 = manual set (the value below is then used),
+ *                             2 = derive the sea-level pressure from the GNSS height
+ *                                 the device fixes itself (the value below is ignored)
  *   [1] u32 baseline_pa_q4    Pa × 16
  *
  * BARO_BASELINE response body (8 B)
  *   [0] u32 baseline_pa_q4    Pa × 16, 0 when the device has no baseline
  *   [4] i32 rel_alt_mm        altitude relative to that baseline, millimetres
  *
- * `0x42` status codes: `0x00` OK, `0x01` INVALID_ARGUMENT (unknown action or a
- * pressure outside 30000..125000 Pa), `0x03` NOT_SUPPORTED (BMP388 absent or TPG
- * compensation not available). The App validates the range client-side as well so
- * an obvious typo never reaches the device.
+ * `0x42` status codes: `0x00` OK, `0x01` INVALID_ARGUMENT (unknown action, a
+ * pressure outside 30000..125000 Pa, or - for action 2 - a GNSS fix that cannot
+ * carry a height: vertical accuracy, satellite count, pDOP, speed or an impossible
+ * sea-level pressure), `0x03` NOT_SUPPORTED (BMP388 absent or TPG compensation not
+ * available). The App validates the range client-side as well so an obvious typo
+ * never reaches the device.
  *
  * Biases are stored in engineering units (µg, LSB) rather than in the sensor's
  * `X/Y/Z_OFS_USR` register units on purpose: that register is an int8 in units of
@@ -120,13 +124,18 @@ object CalibCodec {
 
     /**
      * BARO_BASELINE request. [baselinePaQ4] is only read for
-     * [BaroBaselineAction.MANUAL]; the take-current variant carries 0.
+     * [BaroBaselineAction.MANUAL]; [BaroBaselineAction.TAKE_CURRENT] and
+     * [BaroBaselineAction.GNSS] carry 0.
      */
     fun encodeBaroBaseline(
         action: BaroBaselineAction,
         baselinePaQ4: Long = 0L,
     ): ByteArray {
-        require(action == BaroBaselineAction.TAKE_CURRENT || baselinePaQ4 >= 0L) {
+        require(
+            action == BaroBaselineAction.TAKE_CURRENT ||
+                action == BaroBaselineAction.GNSS ||
+                baselinePaQ4 >= 0L,
+        ) {
             "baselinePaQ4 $baselinePaQ4 is negative"
         }
         val out = ByteArray(BARO_REQ_SIZE)
@@ -240,11 +249,14 @@ enum class CalibAction(val code: Int) {
 /**
  * `BARO_BASELINE` action byte (`BLE_Wire_v1.md` §6.5). `TAKE_CURRENT` freezes the
  * pressure the device measures right now; `MANUAL` uses the value the App sends,
- * which is how a known sea-level/station pressure gets in.
+ * which is how a known sea-level/station pressure gets in; `GNSS` lets the device
+ * derive the sea-level pressure from its own GNSS height, which makes `rel_alt` and
+ * `alt_msl` absolute instead of just "relative to where the button was pressed".
  */
 enum class BaroBaselineAction(val code: Int) {
     TAKE_CURRENT(0),
     MANUAL(1),
+    GNSS(2),
 }
 
 /** `calib_state` byte: what the firmware is currently doing. */

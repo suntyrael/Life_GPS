@@ -156,12 +156,16 @@ enum lgps_ble_status_code {
  * 10 Hz Status frame. press_pa / rel_alt_mm / temp_cc are 0 when the matching
  * valid flag is clear.
  */
-#define LGPS_BLE_TELEM_BARO_PAYLOAD 16U
+#define LGPS_BLE_TELEM_BARO_PAYLOAD 20U
 #define LGPS_BLE_TELEM_BARO_SIZE (LGPS_BLE_TELEM_HEADER_SIZE + LGPS_BLE_TELEM_BARO_PAYLOAD)
 #define LGPS_BLE_BARO_FLAG_PRESS_VALID 0x01U
 #define LGPS_BLE_BARO_FLAG_TEMP_VALID 0x02U
 #define LGPS_BLE_BARO_FLAG_BASELINE_VALID 0x04U
 #define LGPS_BLE_BARO_FLAG_BASELINE_AUTO 0x08U
+/* The reference is a sea-level pressure from a GNSS height, so alt_msl_mm is an
+ * absolute altitude. Without it the height is relative to where it was set.
+ */
+#define LGPS_BLE_BARO_FLAG_MSL_VALID 0x10U
 
 /* Telemetry ids, mirroring protocol/lifegps_protocol.yaml `telemetry:`. */
 enum lgps_ble_telem_id {
@@ -222,8 +226,9 @@ struct lgps_ble_telem_gnss {
 	uint32_t baud;
 };
 
-/* Barometer snapshot: compensated pressure, height relative to the baseline, the
- * die temperature and the baseline itself (Pa x 16, 0 = none yet).
+/* Barometer snapshot: compensated pressure, height relative to the reference, the
+ * die temperature, the reference itself (Pa x 16, 0 = none yet) and - when the
+ * reference came from a GNSS height - the absolute altitude above mean sea level.
  */
 struct lgps_ble_telem_baro {
 	uint32_t press_pa;
@@ -231,6 +236,7 @@ struct lgps_ble_telem_baro {
 	int16_t temp_cc;
 	uint8_t flags;
 	uint32_t baseline_pa_q4;
+	int32_t alt_msl_mm;
 };
 
 /* Status snapshot, field semantics in Doc/Software/BLE_Wire_v1.md section 4. */
@@ -334,6 +340,7 @@ struct lgps_ble_accel_cal_req {
 enum lgps_ble_baro_action {
 	LGPS_BLE_BARO_ACTION_CURRENT = 0, /* take the current pressure as baseline */
 	LGPS_BLE_BARO_ACTION_MANUAL = 1,  /* use baseline_pa_q4 from the request */
+	LGPS_BLE_BARO_ACTION_GNSS = 2,    /* derive QNH from the current GNSS height */
 };
 
 struct lgps_ble_baro_baseline_req {

@@ -125,7 +125,7 @@ CONFIG_MCUMGR_GRP_IMG=y
 
 | 属性 | 值 |
 | :--- | :--- |
-| 记录大小 | 20 字节（`LGPS_BARO_RECORD_SIZE`：magic `LBAR` / version / flags / `baseline_pa_q4` / unix_s / CRC-16） |
+| 记录大小 | 20 字节（`LGPS_BARO_RECORD_SIZE`，v2：magic `LBAR` / `u8 version=2` / `u8 flags`（bit0 自动、bit1 海平面基准）/ `baseline_pa_q4` / `reference_alt_mm` / unix_s / CRC-16；v1 记录仍可读，按“局地基准、无高度”解码） |
 | 每扇区槽位 | 204（`4096 / 20`） |
 | 写策略 | append-only；新的基准才写（`u32` 值变化 > 1 hPa 或手动设定） |
 | 读取 | 取最后一条 CRC 通过的记录（槽号大的更新） |

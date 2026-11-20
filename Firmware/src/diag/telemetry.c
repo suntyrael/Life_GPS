@@ -185,6 +185,7 @@ void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 
 	if (snap->baro_valid) {
 		char alt_txt[16];
+		char msl_txt[16];
 
 		if (snap->baro_alt_valid) {
 			(void)snprintk(alt_txt, sizeof(alt_txt), "%d", snap->baro_rel_alt_mm);
@@ -192,20 +193,26 @@ void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 			(void)snprintk(alt_txt, sizeof(alt_txt), "---");
 		}
 
+		if (snap->baro_msl_valid) {
+			(void)snprintk(msl_txt, sizeof(msl_txt), "%d", snap->baro_msl_alt_mm);
+		} else {
+			(void)snprintk(msl_txt, sizeof(msl_txt), "---");
+		}
+
 		if (snap->baro_comp_valid) {
-			LOG_INF("BARO press_pa=%d temp_C=%s rel_alt_mm=%s press_raw=%u temp_raw=%u "
-				"(TPG compensated, BMP388 9.2/9.3)", snap->baro_press_pa,
+			LOG_INF("BARO press_pa=%d temp_C=%s rel_alt_mm=%s alt_msl_mm=%s press_raw=%u "
+				"temp_raw=%u (TPG compensated, BMP388 9.2/9.3)", snap->baro_press_pa,
 				fmt_cc(baro_txt, sizeof(baro_txt), snap->baro_temp_cc,
 				       snap->baro_temp_valid),
-				alt_txt, snap->baro_press_raw, snap->baro_temp_raw);
+				alt_txt, msl_txt, snap->baro_press_raw, snap->baro_temp_raw);
 		} else {
-			LOG_INF("BARO press_pa=--- temp_C=--- rel_alt_mm=--- press_raw=%u "
-				"temp_raw=%u (raw counts: no TPG coefficients)",
+			LOG_INF("BARO press_pa=--- temp_C=--- rel_alt_mm=--- alt_msl_mm=--- "
+				"press_raw=%u temp_raw=%u (raw counts: no TPG coefficients)",
 				snap->baro_press_raw, snap->baro_temp_raw);
 		}
 	} else {
-		LOG_INF("BARO press_pa=--- temp_C=--- rel_alt_mm=--- press_raw=--- temp_raw=--- "
-			"(BMP388 never acknowledged its identification read)");
+		LOG_INF("BARO press_pa=--- temp_C=--- rel_alt_mm=--- alt_msl_mm=--- press_raw=--- "
+			"temp_raw=--- (BMP388 never acknowledged its identification read)");
 	}
 
 	if (snap->bat_valid) {

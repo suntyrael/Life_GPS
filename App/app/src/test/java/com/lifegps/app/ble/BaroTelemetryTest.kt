@@ -39,25 +39,38 @@ class BaroTelemetryTest {
         assertEquals(10, BaroTelemetryOffset.FLAGS)
         assertEquals(11, BaroTelemetryOffset.RESERVED)
         assertEquals(12, BaroTelemetryOffset.BASELINE_PA_Q4)
-        assertEquals(16, BaroTelemetryOffset.SIZE)
+        // Appended field: offsets 0..15 keep their meaning, the payload grows to 20.
+        assertEquals(16, BaroTelemetryOffset.MSL)
+        assertEquals(16, BaroTelemetryOffset.ALT_MSL_MM)
+        assertEquals(20, BaroTelemetryOffset.SIZE)
+        assertEquals(16, BaroTelemetryOffset.LEGACY_SIZE)
 
         assertEquals(0x01, BaroTelemetryOffset.FLAG_PRESS_VALID)
         assertEquals(0x02, BaroTelemetryOffset.FLAG_TEMP_VALID)
         assertEquals(0x04, BaroTelemetryOffset.FLAG_BASELINE_VALID)
         assertEquals(0x08, BaroTelemetryOffset.FLAG_BASELINE_AUTO)
+        assertEquals(0x10, BaroTelemetryOffset.FLAG_MSL_VALID)
     }
 
-    /** 1013.25 hPa, -1000 mm relative altitude, -25.00 °C, 1013.25 hPa baseline. */
+    /**
+     * 1013.25 hPa, -1000 mm relative altitude, -25.00 °C, 1013.25 hPa baseline and
+     * -12.5 m above mean sea level (e.g. at the Dead Sea), all flags set.
+     */
     private fun baroPayload(): ByteArray {
         val payload = ByteArray(BaroTelemetryOffset.SIZE)
         writeU32(payload, BaroTelemetryOffset.PRESS_PA, 101_325L)
         writeU32(payload, BaroTelemetryOffset.REL_ALT_MM, 0xFFFFFC18L) // -1000
         writeU16(payload, BaroTelemetryOffset.TEMP_CC, 0xF63C)         // -2500
-        payload[BaroTelemetryOffset.FLAGS] = 0x0F
+        payload[BaroTelemetryOffset.FLAGS] = 0x1F
         payload[BaroTelemetryOffset.RESERVED] = 0
         writeU32(payload, BaroTelemetryOffset.BASELINE_PA_Q4, 1_621_200L) // 101325 Pa × 16
+        writeU32(payload, BaroTelemetryOffset.ALT_MSL_MM, 0xFFFFCF2CL) // -12500
         return payload
     }
+
+    /** The same packet as older firmware sends it: 16 bytes, no `alt_msl_mm`. */
+    private fun legacyBaroPayload(): ByteArray =
+        baroPayload().copyOf(BaroTelemetryOffset.LEGACY_SIZE)
 
     // --- telemetry parser -----------------------------------------------------
 
@@ -66,7 +79,7 @@ class BaroTelemetryTest {
         val payload = baroPayload()
 
         // Byte-for-byte golden: little endian u32/i32/i16 at 0/4/8, flags at 10,
-        // reserved at 11, baseline_pa_q4 at 12.
+        // reserved at 11, baseline_pa_q4 at 12, alt_msl_mm at 16.
         // press_pa = 101325 = 0x00018BCD, little endian.
         assertEquals(0xCD, payload[0].toInt() and 0xFF)
         assertEquals(0x8B, payload[1].toInt() and 0xFF)
@@ -78,12 +91,17 @@ class BaroTelemetryTest {
         assertEquals(0xFF, payload[7].toInt() and 0xFF)
         assertEquals(0x3C, payload[8].toInt() and 0xFF)
         assertEquals(0xF6, payload[9].toInt() and 0xFF)
-        assertEquals(0x0F, payload[10].toInt() and 0xFF)
+        assertEquals(0x1F, payload[10].toInt() and 0xFF)
         assertEquals(0x00, payload[11].toInt() and 0xFF)
         assertEquals(0xD0, payload[12].toInt() and 0xFF)
         assertEquals(0xBC, payload[13].toInt() and 0xFF)
         assertEquals(0x18, payload[14].toInt() and 0xFF)
         assertEquals(0x00, payload[15].toInt() and 0xFF)
+        // alt_msl_mm = -12500 = 0xFFFFCF2C, little endian.
+        assertEquals(0x2C, payload[16].toInt() and 0xFF)
+        assertEquals(0xCF, payload[17].toInt() and 0xFF)
+        assertEquals(0xFF, payload[18].toInt() and 0xFF)
+        assertEquals(0xFF, payload[19].toInt() and 0xFF)
 
         val baro = BleFrame.parseBaroTelemetry(payload)
         assertNotNull(baro)
@@ -91,18 +109,46 @@ class BaroTelemetryTest {
         assertEquals(101_325L, baro.pressPa)
         assertEquals(-1000, baro.relAltMm)
         assertEquals(-2500, baro.tempCc)
-        assertEquals(0x0F, baro.flags)
+        assertEquals(0x1F, baro.flags)
         assertEquals(1_621_200L, baro.baselinePaQ4)
+        assertEquals(-12500, baro.altMslMm)
 
         assertEquals(1013.25f, baro.pressureHpa, 0.01f)
         assertEquals(-25.0f, baro.temperatureC, 0.01f)
         assertEquals(-1.0f, baro.relAltM, 1e-6f)
         assertEquals(1013.25f, baro.baselineHpa, 0.01f)
+        assertEquals(-12.5f, baro.altMslM, 1e-6f)
 
         assertTrue(baro.pressValid)
         assertTrue(baro.tempValid)
         assertTrue(baro.baselineValid)
         assertTrue(baro.baselineAuto)
+        assertTrue(baro.mslValid)
+    }
+
+    /**
+     * Older firmware sends 16 bytes and has no MSL reference at all: the packet must
+     * still parse, with `mslValid = false` / `altMslMm = 0`. The flag byte is forced to
+     * 0x10 here so the test proves the *length* decides, not the flag alone.
+     */
+    @Test
+    fun legacySixteenBytePayloadParsesWithMslInvalid() {
+        val payload = legacyBaroPayload()
+        assertEquals(16, payload.size)
+        payload[BaroTelemetryOffset.FLAGS] = 0x1F
+
+        val baro = BleFrame.parseBaroTelemetry(payload)
+        assertNotNull(baro)
+        baro!!
+        assertEquals(101_325L, baro.pressPa)
+        assertEquals(-1000, baro.relAltMm)
+        assertEquals(1_621_200L, baro.baselinePaQ4)
+        assertEquals(0, baro.altMslMm)
+        assertEquals(0f, baro.altMslM, 0f)
+        assertFalse(baro.mslValid)
+        // Everything the 16-byte packet does carry still decodes.
+        assertTrue(baro.pressValid)
+        assertTrue(baro.baselineValid)
     }
 
     @Test
@@ -110,9 +156,16 @@ class BaroTelemetryTest {
         val payload = baroPayload()
         assertNull(BleFrame.parseBaroTelemetry(ByteArray(0)))
         assertNull(BleFrame.parseBaroTelemetry(payload.copyOf(11)))
-        assertNull(BleFrame.parseBaroTelemetry(payload.copyOf(BaroTelemetryOffset.SIZE - 1)))
+        // 15 bytes is shorter than the historical packet; 16 is the legacy contract.
+        assertNull(BleFrame.parseBaroTelemetry(payload.copyOf(BaroTelemetryOffset.LEGACY_SIZE - 1)))
+        assertNotNull(BleFrame.parseBaroTelemetry(payload.copyOf(BaroTelemetryOffset.LEGACY_SIZE)))
+        // 19 bytes: the MSL field is cut in half, so it must not be read as valid.
+        val truncatedMsl = payload.copyOf(BaroTelemetryOffset.SIZE - 1)
+        assertNotNull(BleFrame.parseBaroTelemetry(truncatedMsl))
+        assertEquals(0, BleFrame.parseBaroTelemetry(truncatedMsl)!!.altMslMm)
+        assertFalse(BleFrame.parseBaroTelemetry(truncatedMsl)!!.mslValid)
         assertNotNull(BleFrame.parseBaroTelemetry(payload))
-        // A longer payload is not a truncation: the first 16 bytes stay the contract.
+        // A longer payload is not a truncation: the first 20 bytes stay the contract.
         assertNotNull(BleFrame.parseBaroTelemetry(payload + ByteArray(4)))
     }
 
@@ -128,6 +181,7 @@ class BaroTelemetryTest {
         assertFalse(none.tempValid)
         assertFalse(none.baselineValid)
         assertFalse(none.baselineAuto)
+        assertFalse(none.mslValid)
 
         payload[BaroTelemetryOffset.FLAGS] = BaroTelemetryOffset.FLAG_PRESS_VALID.toByte()
         val pressOnly = BleFrame.parseBaroTelemetry(payload)
@@ -151,6 +205,15 @@ class BaroTelemetryTest {
         assertTrue(autoBaseline!!.baselineValid)
         assertTrue(autoBaseline.baselineAuto)
         assertFalse(autoBaseline.pressValid)
+        assertFalse(autoBaseline.mslValid)
+
+        payload[BaroTelemetryOffset.FLAGS] = BaroTelemetryOffset.FLAG_MSL_VALID.toByte()
+        val mslOnly = BleFrame.parseBaroTelemetry(payload)
+        assertNotNull(mslOnly)
+        assertTrue(mslOnly!!.mslValid)
+        assertEquals(-12500, mslOnly.altMslMm)
+        assertFalse(mslOnly.pressValid)
+        assertFalse(mslOnly.baselineValid)
     }
 
     @Test
@@ -214,6 +277,30 @@ class BaroTelemetryTest {
             listOf<Byte>(0x01, 0xD0.toByte(), 0xBC.toByte(), 0x18, 0x00),
             manual.toList(),
         )
+    }
+
+    /**
+     * `0x42` action 2: "derive the sea-level pressure from the GNSS height". The
+     * layout does not change, the firmware ignores `baseline_pa_q4`, so it is sent as 0.
+     */
+    @Test
+    fun baroBaselineGnssActionIsTwoWithAZeroValue() {
+        assertEquals(2, BaroBaselineAction.GNSS.code)
+        assertEquals(3, BaroBaselineAction.entries.size)
+
+        val gnss = CalibCodec.encodeBaroBaseline(BaroBaselineAction.GNSS)
+        assertEquals(CalibCodec.BARO_REQ_SIZE, gnss.size)
+        assertEquals(
+            listOf<Byte>(0x02, 0x00, 0x00, 0x00, 0x00),
+            gnss.toList(),
+        )
+        assertEquals(
+            gnss.toList(),
+            CalibCodec.encodeBaroBaseline(BaroBaselineAction.GNSS, 0L).toList(),
+        )
+        // The action byte stays distinct from the other two.
+        assertEquals(0, BaroBaselineAction.TAKE_CURRENT.code)
+        assertEquals(1, BaroBaselineAction.MANUAL.code)
     }
 
     @Test(expected = IllegalArgumentException::class)

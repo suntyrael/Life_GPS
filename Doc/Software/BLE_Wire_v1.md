@@ -80,7 +80,7 @@ off  size  field
 | 14 | u16 | `reserved1` | 0 |
 | 16 | i32 | `lat_e7` | 1e-7°，无效时为 0 |
 | 20 | i32 | `lon_e7` | 1e-7°，无效时为 0 |
-| 24 | i32 | `hmsl_mm` | 海拔（椭球高）mm |
+| 24 | i32 | `hmsl_mm` | 海拔 mm，**平均海平面**（UBX-NAV-PVT `hMSL`，偏移 36），不是椭球高；`0x42 action=2` 用的就是它 |
 | 28 | i32 | `bat_mv` | 电池 mV，无效时为 -1 |
 | 32 | u32 | `utc_epoch_s` | Life_GPS 2020 epoch 秒，0 = 未知 |
 | 36 | u32 | `uptime_ms` | 开机毫秒 |
@@ -141,7 +141,7 @@ off type  field
 | :--- | :--- | :--- | :--- |
 | `0x01` GNSS | 34 B（整包 38 B） | 见下方字段表 | 1 Hz |
 | `0x02` IMU | 20 B（整包 24 B） | `i16 acc_lsb[3]`、`i16 gyro_lsb[3]`、`i16 quat_q15[4]`（w,x,y,z，32767 = 1.0） | 26 Hz（仅订阅时） |
-| `0x04` BARO | 16 B（整包 20 B） | 见下方字段表 | 1 Hz（仅订阅时） |
+| `0x04` BARO | 20 B（整包 24 B） | 见下方字段表 | 1 Hz（仅订阅时） |
 | `0x05` PDR | 12 B（整包 16 B） | `i32 x_mm`（东）、`i32 y_mm`（北）、`i16 heading_ddeg`、`u16 steps` | 每完成一步 + 1 Hz 心跳 |
 | `0x08` NMEA | 1 B + 文本（整包 ≤ 133 B） | `u8 len`、`char text[len]`（ASCII，`$...*hh`，不含 CR/LF） | 每句一包，仅调试会话开启 NMEA 直通时 |
 | `0x09` SAT | 4 B + 5 B×N（整包 ≤ 168 B） | 见下方字段表 | 1 Hz，仅调试会话开启单星采集时 |
@@ -153,13 +153,20 @@ off type  field
 | 0 | u32 | `press_pa` | BMP388 TPG 补偿后的气压，Pa；`press_valid` 为 0 时字段为 0 |
 | 4 | i32 | `rel_alt_mm` | 相对基准的高度，mm（ISA：`h = 44330·(1−(p/p0)^0.1902632)`）；无基准时为 0 |
 | 8 | i16 | `temp_cc` | 裸片温度，0.01 °C；`temp_valid` 为 0 时字段为 0 |
-| 10 | u8 | `flags` | bit0 `press_valid`、bit1 `temp_valid`、bit2 `baseline_valid`、bit3 `baseline_auto` |
+| 10 | u8 | `flags` | bit0 `press_valid`、bit1 `temp_valid`、bit2 `baseline_valid`、bit3 `baseline_auto`、**bit4 `msl_valid`** |
 | 11 | u8 | 保留 | 0 |
 | 12 | u32 | `baseline_pa_q4` | 基准气压，Pa × 16；无基准时为 0 |
+| 16 | i32 | `alt_msl_mm` | **0.2.0 追加**：海拔（平均海平面），mm；只有 `msl_valid` = 1 时有效，否则为 0 |
 
-`rel_alt_mm` 是**相对基准**的高度，不是椭球高也不是海拔：没有基准（`baseline_valid` = 0）时
-它是 0，主机不得把它当成“海拔 0 m”。气压基准由 `BARO_BASELINE`（§6.5）设立，或在 GNSS 条件
-满足后自动设立。
+`rel_alt_mm` 是**相对基准**的高度（校准那一刻为 0），不是椭球高也不是海拔；没有基准
+（`baseline_valid` = 0）时它是 0，主机不得把它当成“海拔 0 m”。
+
+`alt_msl_mm` 才是海拔：当基准是**海平面气压 QNH**（`msl_valid` = 1，来自 §6.5 的 `action=2`
+或固件自动校准）时，同一套公式直接给出海拔，GNSS 丢失后仍然可用。主机必须按 `msl_valid` 判断，
+不得用 `rel_alt_mm` 冒充海拔。
+
+**兼容性**：`0x04` 的载荷从 16 字节追加到 20 字节，前 16 字节偏移不变；只解 16 字节的旧主机
+照常工作（拿不到海拔）。
 
 **`0x01` GNSS 是接收链路诊断，不是定位结果**：定位结果仍在 Status 帧（§4），这里只回答
 「模块到底有没有在说话」。payload 布局（小端，固件侧 `LGPS_BLE_TELEM_GNSS_PAYLOAD` 与
@@ -219,7 +226,7 @@ yaw（并顺带学习磁力计偏置），否则用磁力计按该偏置维持 y
 | `0x12` | POI_MARK | — | `u8 written`（1 = 已写入轨迹环） |
 | `0x30` | LOG_SUBSCRIBE | `u8 level`（0=off 1=ERR 2=WRN 3=INF 4=DBG） | — |
 | `0x41` | MAG_CAL | `u8 action`（6.3） | 见 6.3 |
-| `0x42` | BARO_BASELINE | `u8 action` + `u32 baseline_pa_q4`（6.5） | 见 6.5（BMP388 不可用/未补偿时返 `0x03`） |
+| `0x42` | BARO_BASELINE | `u8 action` + `u32 baseline_pa_q4`（6.5） | 见 6.5（action 0 取当前 / 1 手动 / 2 GNSS 海拔；BMP388 无气压时返 `0x03`） |
 | `0x43` | ACCEL_CAL | `u8 action` + `u8 position`（6.4） | 见 6.4 |
 | `0x35` | GNSS_CFG | `u8 action` + `u32 key` (+ value)（6.6） | 见 6.6 |
 | `0x36` | GNSS_DEBUG | `u8 flags` + `u16 ttl_s`（6.7） | 见 6.7 |
@@ -326,7 +333,7 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
 
 | off | type | 字段 |
 | :--- | :--- | :--- |
-| 0 | u8 | `action`：0 = 取当前气压为基准，1 = 手动设置 |
+| 0 | u8 | `action`：0 = 取当前气压为基准，1 = 手动设置，**2 = 用当前 GNSS 海拔校准**（`u32` 忽略，填 0） |
 | 1 | u32 | `baseline_pa_q4`（Pa × 16，仅 `action=1` 时有效） |
 
 响应 8 字节：`u32 baseline_pa_q4`、`i32 rel_alt_mm`。
@@ -343,10 +350,21 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
    已知 pDOP ≤ 2.0、地速 < 0.3 m/s，连续 30 s 且该窗口气压标准差 < 0.3 hPa；已有基准时
    只有差 > 1 hPa 才重设（防抖）。
 
+**基准有两种含义**（这决定了 `0x04` 的 `msl_valid`）：
+
+| 方式 | 存进去的压力 | 高度含义 |
+| :--- | :--- | :--- |
+| `action=0/1` | 你站的地方的气压 | **相对**：校准点是 0，只有 `rel_alt_mm` |
+| `action=2` | 由气压 + GNSS 高度反算的**海平面气压 QNH** | **绝对**：`alt_msl_mm` 是海拔，`rel_alt_mm` 是相对校准点 |
+
+`action=2` 的条件（固件判定，不满足返 `0x01` INVALID_ARGUMENT）：`fixType ≥ 3`、`numSV ≥ 8`、
+已知 pDOP ≤ 2.0、地速 < 0.3 m/s，且 NAV-PVT `vAcc` ≤ 20 m —— 一条 ±30 m 的高度没法校准一台
+分辨率 0.8 m 的气压计，固件宁可拒绝。计算用最近约 10 s 的平均气压（单点噪声 1 Pa ≈ 8 cm）。
+
 基准**掉电不丢**：存在外部 NOR 的独立扇区（`CONFIG_LGPS_BARO_SECTOR_INDEX`，默认 17，
-`Firmware/src/nav/baro_store.c`，20 字节记录 + CRC-16），与标定记录扇区 16 分开，
-所以“清除校准”不会连带丢掉气压基准。`0x04` 遥测的 `baseline_auto` 位告诉 App 这个基准是
-自动还是手设置；没有“清除基准”命令，要清就是重新设一个新基准。
+`Firmware/src/nav/baro_store.c`，20 字节记录 + CRC-16，含记录版本与 `kind` 位），与标定记录
+扇区 16 分开，所以“清除校准”不会连带丢掉气压基准。`0x04` 遥测的 `baseline_auto` 位告诉 App
+这个基准是自动还是手设置；没有“清除基准”命令，要清就是重新设一个新基准。
 
 ### 6.6 GNSS_CFG（`0x35`）请求 / 响应
 

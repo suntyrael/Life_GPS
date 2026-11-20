@@ -928,6 +928,7 @@ static void handle_nav_pvt(const struct lgps_nav_pvt *pvt)
 	current_fix.lat_e7 = pvt->lat_e7;
 	current_fix.lon_e7 = pvt->lon_e7;
 	current_fix.hmsl_mm = pvt->hmsl_mm;
+	current_fix.v_acc_mm = pvt->vacc_mm;
 	current_fix.speed_cms = (uint16_t)(pvt->gspeed_mms / 10);
 	/*
 	 * headMot is 1e-5 deg in [-180, +180]; heading_ddeg wants 1e-2 deg in

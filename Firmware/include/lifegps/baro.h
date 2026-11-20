@@ -69,12 +69,48 @@
  */
 #define LGPS_BARO_AUTO_REBASE_MIN_PA 100U
 
-/* ICAO standard atmosphere (README 7.4). */
+/* ICAO standard atmosphere (README 7.4):
+ *   h = 44330 m * (1 - (p/p0)^0.1902632)
+ * The exponent is R*L/(g*M) = 0.1902632, so its reciprocal 5.25588 is what the
+ * inverted form needs (p/p0 = (1 - h/44330)^5.25588).
+ */
 #define LGPS_BARO_ALT_SCALE_M 44330.0F
 #define LGPS_BARO_ALT_EXPONENT 0.1902632F
+#define LGPS_BARO_ISA_EXPONENT 5.25588F
 
 /* Relative height clamp, keeps the int32 wire field and the App slider sane. */
 #define LGPS_BARO_ALT_LIMIT_MM 10000000 /* +/- 10000 m */
+
+/*
+ * What the stored pressure ("reference") refers to. This is the difference
+ * between a relative and an absolute altimeter:
+ *
+ *   LOCAL  the pressure measured at the reference point. Height 0 is that point,
+ *          so the instrument reports how far you moved since it was set.
+ *   MSL    the sea-level pressure QNH derived from a GNSS height. Height 0 is
+ *          mean sea level, so the same pressure formula now reports an absolute
+ *          altitude that stays valid after the GNSS link is lost.
+ *
+ * MSL mode is what makes the barometer useful for indoor floors: the reference
+ * survives in NOR, the GNSS height is only needed once, at calibration time.
+ */
+enum lgps_baro_reference {
+	LGPS_BARO_REF_LOCAL = 0,
+	LGPS_BARO_REF_MSL = 1,
+};
+
+/*
+ * Gate for a GNSS height calibration. A GNSS height is only as good as its
+ * vertical accuracy: the BMP388 resolve about 0.1 hPa (0.8 m), while a marginal
+ * 3D fix easily sits at +/-20 m. Calibrating with such a height would make the
+ * absolute altitude look precise while being 20 m off, so the firmware refuses
+ * instead of pretending.
+ */
+#define LGPS_BARO_GNSS_MIN_FIX_TYPE 3U
+#define LGPS_BARO_GNSS_MIN_SATELLITES 8U
+#define LGPS_BARO_GNSS_MAX_PDOP_1E2 200U  /* pDOP <= 2.00 */
+#define LGPS_BARO_GNSS_MAX_SPEED_CMS 30U  /* 0.3 m/s */
+#define LGPS_BARO_GNSS_MAX_VACC_MM 20000U /* vAcc <= 20 m */
 
 /*
  * State machine init. lgps_baro_load() additionally restores the baseline from
@@ -99,6 +135,18 @@ bool lgps_baro_feed(bool pressure_valid, float pressure_pa, const struct lgps_gn
 /* Relative height above the baseline in mm; 0 when no baseline or no pressure. */
 int32_t lgps_baro_rel_alt_mm(void);
 
+/*
+ * Absolute (mean sea level) altitude in mm, i.e. reference height plus relative
+ * height. Only meaningful in LGPS_BARO_REF_MSL mode; lgps_baro_msl_valid() says
+ * whether it is.
+ */
+int32_t lgps_baro_msl_altitude_mm(void);
+bool lgps_baro_msl_valid(void);
+
+/* What the stored reference means (LOCAL or MSL) and the height it sits at. */
+enum lgps_baro_reference lgps_baro_reference_kind(void);
+int32_t lgps_baro_reference_height_mm(void);
+
 /* Last accepted pressure in Pa; false when the sensor has not reported yet. */
 bool lgps_baro_pressure(float *pressure_pa);
 
@@ -107,6 +155,18 @@ int lgps_baro_take_current(void);
 
 /* BARO_BASELINE action 1: set a given baseline (Pa x 16). -EINVAL out of range. */
 int lgps_baro_set_baseline(uint32_t pa_q4, bool automatic);
+
+/*
+ * BARO_BASELINE action 2: calibrate against the GNSS height of @p fix.
+ *
+ * Computes the sea-level pressure QNH from the averaged station pressure and the
+ * fix's hMSL (NAV-PVT offset 36, the orthometric height, not the ellipsoid one),
+ * stores it as an MSL reference and persists it. Returns 0 on success, -ENODATA
+ * when there is no pressure to calibrate, -EINVAL when the fix is not good
+ * enough (see LGPS_BARO_GNSS_*) or the resulting sea-level pressure is outside
+ * the sensor range.
+ */
+int lgps_baro_calibrate_from_gnss(const struct lgps_gnss_fix *fix);
 
 uint32_t lgps_baro_baseline_pa_q4(void);
 bool lgps_baro_baseline_set(void);
@@ -118,5 +178,12 @@ bool lgps_baro_baseline_auto(void);
  * either value is outside the accepted range.
  */
 int32_t lgps_baro_altitude_mm(float pressure_pa, uint32_t baseline_pa_q4);
+
+/*
+ * Inverse of the same formula: the sea-level pressure that puts @p height_mm at
+ * @p pressure_pa. Returns 0 when either argument is unusable; the caller checks
+ * the result against LGPS_BARO_BASELINE_MIN_PA / _MAX_PA.
+ */
+float lgps_baro_sealevel_pressure_pa(float pressure_pa, int32_t height_mm);
 
 #endif /* LIFEGPS_BARO_H_ */

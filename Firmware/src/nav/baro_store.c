@@ -77,51 +77,87 @@ static bool slot_is_erased(const uint8_t record[LGPS_BARO_RECORD_SIZE])
 	return (record[0] == 0xFFU) && (record[1] == 0xFFU);
 }
 
-/* magic / version / flags / baseline / unix / CRC-16 over the first 16 bytes. */
-static int record_encode(uint32_t pa_q4, bool automatic, uint32_t unix_s,
-			 uint8_t out[LGPS_BARO_RECORD_SIZE])
+/*
+ * Version 2: magic / u8 version / u8 flags / reference_pa_q4 / reference_alt_mm /
+ * unix_s / CRC-16 over the first 18 bytes (see lifegps/baro_store.h).
+ */
+static int record_encode(uint32_t pa_q4, bool automatic, enum lgps_baro_reference kind,
+			 int32_t ref_alt_mm, uint32_t unix_s, uint8_t out[LGPS_BARO_RECORD_SIZE])
 {
+	uint8_t flags = 0U;
+
+	if (automatic) {
+		flags |= 0x01U;
+	}
+
+	if (kind == LGPS_BARO_REF_MSL) {
+		flags |= 0x02U;
+	}
+
 	memset(out, 0, LGPS_BARO_RECORD_SIZE);
 	put_u32(&out[0], LGPS_BARO_RECORD_MAGIC);
-	put_u16(&out[4], (uint16_t)LGPS_BARO_RECORD_VERSION);
-	put_u16(&out[6], automatic ? 1U : 0U);
-	put_u32(&out[8], pa_q4);
-	put_u32(&out[12], unix_s);
-	put_u16(&out[16], lgps_crc16_ccitt_false(out, 16U));
+	out[4] = (uint8_t)LGPS_BARO_RECORD_VERSION;
+	out[5] = flags;
+	put_u32(&out[6], pa_q4);
+	put_u32(&out[10], (uint32_t)ref_alt_mm);
+	put_u32(&out[14], unix_s);
+	put_u16(&out[18], lgps_crc16_ccitt_false(out, 18U));
 
 	return 0;
 }
 
 static int record_decode(const uint8_t in[LGPS_BARO_RECORD_SIZE], uint32_t *pa_q4,
-			 bool *automatic, uint32_t *unix_s)
+			 bool *automatic, enum lgps_baro_reference *kind, int32_t *ref_alt_mm,
+			 uint32_t *unix_s)
 {
 	if (get_u32(&in[0]) != LGPS_BARO_RECORD_MAGIC) {
 		return -EBADMSG;
 	}
 
-	if (get_u16(&in[4]) != (uint16_t)LGPS_BARO_RECORD_VERSION) {
+	/* Byte 4 is the version in both layouts: v1 wrote it as u16 LE, so its low
+	 * byte is 1 and the high byte (flags bit 8) is always 0.
+	 */
+	if (in[4] == 1U) {
+		if (get_u16(&in[16]) != lgps_crc16_ccitt_false(in, 16U)) {
+			return -EBADMSG;
+		}
+
+		*pa_q4 = get_u32(&in[8]);
+		*automatic = (get_u16(&in[6]) & 0x01U) != 0U;
+		*kind = LGPS_BARO_REF_LOCAL;
+		*ref_alt_mm = 0;
+		*unix_s = get_u32(&in[12]);
+
+		return 0;
+	}
+
+	if (in[4] != (uint8_t)LGPS_BARO_RECORD_VERSION) {
 		return -EBADMSG;
 	}
 
-	if (get_u16(&in[16]) != lgps_crc16_ccitt_false(in, 16U)) {
+	if (get_u16(&in[18]) != lgps_crc16_ccitt_false(in, 18U)) {
 		return -EBADMSG;
 	}
 
-	*pa_q4 = get_u32(&in[8]);
-	*automatic = (get_u16(&in[6]) & 0x01U) != 0U;
-	*unix_s = get_u32(&in[12]);
+	*pa_q4 = get_u32(&in[6]);
+	*automatic = (in[5] & 0x01U) != 0U;
+	*kind = ((in[5] & 0x02U) != 0U) ? LGPS_BARO_REF_MSL : LGPS_BARO_REF_LOCAL;
+	*ref_alt_mm = (int32_t)get_u32(&in[10]);
+	*unix_s = get_u32(&in[14]);
 
 	return 0;
 }
 
-int lgps_baro_store_load(uint32_t *pa_q4, bool *automatic, uint32_t *unix_s)
+int lgps_baro_store_load(uint32_t *pa_q4, bool *automatic, enum lgps_baro_reference *kind,
+			 int32_t *ref_alt_mm, uint32_t *unix_s)
 {
 	uint8_t record[LGPS_BARO_RECORD_SIZE];
 	bool found = false;
 	uint32_t index;
 	int ret = 0;
 
-	if ((pa_q4 == NULL) || (automatic == NULL) || (unix_s == NULL)) {
+	if ((pa_q4 == NULL) || (automatic == NULL) || (kind == NULL) || (ref_alt_mm == NULL) ||
+	    (unix_s == NULL)) {
 		return -EINVAL;
 	}
 
@@ -135,7 +171,9 @@ int lgps_baro_store_load(uint32_t *pa_q4, bool *automatic, uint32_t *unix_s)
 	for (index = 0U; index < LGPS_BARO_SLOT_COUNT; index++) {
 		uint32_t slot_pa_q4 = 0U;
 		uint32_t slot_unix = 0U;
+		int32_t slot_ref_alt_mm = 0;
 		bool slot_auto = false;
+		enum lgps_baro_reference slot_kind = LGPS_BARO_REF_LOCAL;
 		int read_ret = flash_read(nor, slot_offset(index), record, sizeof(record));
 
 		if (read_ret < 0) {
@@ -151,12 +189,15 @@ int lgps_baro_store_load(uint32_t *pa_q4, bool *automatic, uint32_t *unix_s)
 		/* A half-written or corrupted slot is not an error: the previous record
 		 * is still intact, which is the point of the append-only layout.
 		 */
-		if (record_decode(record, &slot_pa_q4, &slot_auto, &slot_unix) != 0) {
+		if (record_decode(record, &slot_pa_q4, &slot_auto, &slot_kind, &slot_ref_alt_mm,
+				  &slot_unix) != 0) {
 			continue;
 		}
 
 		*pa_q4 = slot_pa_q4;
 		*automatic = slot_auto;
+		*kind = slot_kind;
+		*ref_alt_mm = slot_ref_alt_mm;
 		*unix_s = slot_unix;
 		found = true;
 	}
@@ -169,7 +210,8 @@ out:
 	return ret;
 }
 
-int lgps_baro_store_save(uint32_t pa_q4, bool automatic, uint32_t unix_s)
+int lgps_baro_store_save(uint32_t pa_q4, bool automatic, enum lgps_baro_reference kind,
+			 int32_t ref_alt_mm, uint32_t unix_s)
 {
 	uint8_t record[LGPS_BARO_RECORD_SIZE];
 	uint8_t probe[LGPS_BARO_RECORD_SIZE];
@@ -211,7 +253,7 @@ int lgps_baro_store_save(uint32_t pa_q4, bool automatic, uint32_t unix_s)
 		slot = 0;
 	}
 
-	ret = record_encode(pa_q4, automatic, unix_s, record);
+	ret = record_encode(pa_q4, automatic, kind, ref_alt_mm, unix_s, record);
 	if (ret < 0) {
 		goto out;
 	}
@@ -222,8 +264,9 @@ int lgps_baro_store_save(uint32_t pa_q4, bool automatic, uint32_t unix_s)
 		goto out;
 	}
 
-	LOG_INF("baseline record saved in slot %d (%s)", (int)slot,
-		automatic ? "automatic" : "manual");
+	LOG_INF("reference record saved in slot %d (%s, %s, %d mm)", (int)slot,
+		automatic ? "automatic" : "manual",
+		(kind == LGPS_BARO_REF_MSL) ? "sea level" : "local", ref_alt_mm);
 
 out:
 	k_mutex_unlock(&store_lock);

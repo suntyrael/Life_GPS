@@ -141,6 +141,15 @@ fun SensorStatusScreen(
                         if (baro.baselineValid) Cyan else TextDim,
                     )
                     MetricRow(
+                        "海拔（MSL）",
+                        if (baro.mslValid) {
+                            String.format(Locale.US, "%.1f m", baro.altMslM)
+                        } else {
+                            "—"
+                        },
+                        if (baro.mslValid) Cyan else TextDim,
+                    )
+                    MetricRow(
                         "基准气压",
                         if (baro.baselineValid) {
                             String.format(Locale.US, "%.1f hPa", baro.baselineHpa)
@@ -162,7 +171,9 @@ fun SensorStatusScreen(
                     Spacer(Modifier.height(4.dp))
                     Text(
                         "数值来自 Telemetry 0x04（BMP388，1 Hz，固件已做 TPG 温度/压力补偿）；" +
-                            "Status 帧里的未补偿原始值不参与换算。楼层没有固件来源，不提供。",
+                            "相对高度从设置基准那一刻起算为 0，海拔（MSL）只有在用 GNSS 高度" +
+                            "校准过基准后才有效。Status 帧里的未补偿原始值不参与换算。" +
+                            "楼层没有固件来源，不提供。",
                         color = TextDim,
                         fontSize = 11.sp,
                     )
@@ -219,7 +230,8 @@ fun SensorStatusScreen(
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "气压基准（0x42）在向导里可设置：取当前气压或手动输入 hPa；" +
+                        "气压基准（0x42）在向导里可设置：取当前气压、手动输入 hPa，" +
+                            "或用 GNSS 海拔校准（之后气压计给出绝对海拔）；" +
                             "固件返回 03 NOT_SUPPORTED 时按钮保持禁用。",
                         color = TextDim,
                         fontSize = 11.sp,

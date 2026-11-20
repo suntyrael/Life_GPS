@@ -143,6 +143,15 @@ interface DebugRepository {
     /** Sets the baseline to [paQ4] (Pa × 16), validated against 30000..125000 Pa. */
     suspend fun setBaroBaselineManual(paQ4: Long): BaroBaselineResult
 
+    /**
+     * `0x42` action 2: derives the sea-level pressure from the GNSS height the device
+     * fixes itself, so the barometer reports an absolute altitude afterwards. The
+     * device refuses with `0x01` INVALID_ARGUMENT when the fix cannot carry a height
+     * (vertical accuracy / satellites / pDOP / speed) instead of storing a bad
+     * reference.
+     */
+    suspend fun calibrateBaroFromGnss(): BaroBaselineResult
+
     fun clearLogs()
     fun clearConsole()
     fun exportLogs()

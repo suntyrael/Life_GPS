@@ -547,6 +547,8 @@ class BleDebugRepository(context: Context) : DebugRepository {
             baselineAuto = hasBaseline && telemetry.baselineAuto,
             relAltM = if (hasBaseline) telemetry.relAltM else 0f,
             baselineValid = hasBaseline,
+            altMslM = if (telemetry.mslValid) telemetry.altMslM else 0f,
+            mslValid = telemetry.mslValid,
         )
     }
 
@@ -1433,23 +1435,40 @@ class BleDebugRepository(context: Context) : DebugRepository {
         return sendBaroBaseline(BaroBaselineAction.MANUAL, paQ4, "手动设置基准")
     }
 
+    /**
+     * `0x42` action 2: the device reads its own GNSS fix and derives the sea-level
+     * pressure from that height, which turns `alt_msl_mm` into an absolute altitude
+     * that survives a later GNSS outage. The value field of the request is ignored
+     * by the firmware, so 0 is sent.
+     */
+    override suspend fun calibrateBaroFromGnss(): BaroBaselineResult =
+        sendBaroBaseline(
+            BaroBaselineAction.GNSS,
+            0L,
+            "用 GNSS 海拔校准",
+            invalidArgumentHint = "GNSS 垂直精度不足 / 卫星少 / 在移动，" +
+                "或算不出合理的海平面气压",
+        )
+
     /** One BARO_BASELINE round trip; the response is the new firmware state. */
     private suspend fun sendBaroBaseline(
         action: BaroBaselineAction,
         paQ4: Long,
         what: String,
+        invalidArgumentHint: String = "当前气压不在 30000..125000 Pa",
     ): BaroBaselineResult {
         if (transport.state.value != LinkState.READY) {
             addLog(LogLevel.WARN, LogSource.BLE, "BARO", "链路未就绪，$what 未发送")
             return BaroBaselineResult(ok = false, supported = true, message = "链路未就绪，命令未发送")
         }
         val result = request(Opcode.BARO_BASELINE, CalibCodec.encodeBaroBaseline(action, paQ4))
-        return applyBaroBaselineResult(result, what)
+        return applyBaroBaselineResult(result, what, invalidArgumentHint)
     }
 
     private fun applyBaroBaselineResult(
         result: CommandResult?,
         what: String,
+        invalidArgumentHint: String = "当前气压不在 30000..125000 Pa",
     ): BaroBaselineResult {
         if (result == null) {
             addLog(LogLevel.WARN, LogSource.BLE, "BARO", "$what：2 s 内没有响应")
@@ -1472,7 +1491,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
             )
         }
         if (result.status != StatusCode.OK.code) {
-            val text = "$what 失败：${StatusCode.labelOf(result.status)}（当前气压不在 30000..125000 Pa）"
+            val text = "$what 失败：${StatusCode.labelOf(result.status)}（$invalidArgumentHint）"
             addLog(LogLevel.WARN, LogSource.BLE, "BARO", text)
             return BaroBaselineResult(ok = false, supported = true, message = text)
         }

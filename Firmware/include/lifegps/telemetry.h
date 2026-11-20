@@ -16,9 +16,10 @@
  *   BODY gravity_g=a,b,c linear_g=a,b,c |gravity|=a |linear|=a (1.000 = 1 g)
  *   TEMP imu_C=a mag_C=a baro_C=a (die temperatures)
  *   MAG  sensor: lsb=a,b,c ut=a,b,c |B|=a
- *   BARO press_pa=<n|---> temp_C=<a|---> rel_alt_mm=<n|---> press_raw=<n|--->
- *        temp_raw=<n|---> (BMP388, TPG compensated per datasheet 9.2/9.3;
- *        rel_alt_mm is metres above the stored baseline, see lifegps/baro.h)
+ *   BARO press_pa=<n|---> temp_C=<a|---> rel_alt_mm=<n|---> alt_msl_mm=<n|--->
+ *        press_raw=<n|---> temp_raw=<n|---> (BMP388, TPG compensated per datasheet
+ *        9.2/9.3; rel_alt_mm is metres above the reference, alt_msl_mm is above
+ *        mean sea level and only exists after a GNSS height calibration)
  *   SYS  bat_mv=<n|---> chg=<0|1> keys=<k1>,<k2> zupt=<locked|move> var_mg2=<n>
  *        steps=<n> ring_seq=<n> ring_rec=<n>
  *
@@ -86,8 +87,10 @@ struct lgps_telemetry_snapshot {
 	uint32_t baro_temp_raw;
 	int32_t baro_press_pa;
 	int32_t baro_rel_alt_mm;
+	int32_t baro_msl_alt_mm; /* absolute altitude, only with an MSL reference */
 	bool baro_comp_valid;
 	bool baro_alt_valid; /* a baseline exists, so rel_alt_mm means something */
+	bool baro_msl_valid;
 
 	/* System */
 	bool bat_valid;

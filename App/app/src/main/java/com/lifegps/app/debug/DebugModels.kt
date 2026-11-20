@@ -145,6 +145,10 @@ data class MagStatus(
  * the packet makes explicit. [valid] / [tempValid] / [baselineValid] mirror the
  * packet flags, so a zero [pressureHpa] means "no compensated pressure yet" and
  * is drawn as "—" instead of 0.0 hPa. `floor` has no firmware source and stays 0.
+ *
+ * [relAltM] is the height since the reference was set (0 at that moment);
+ * [altMslM] is the absolute altitude above mean sea level and is only meaningful
+ * while [mslValid], i.e. after the reference was derived from a GNSS height.
  */
 data class BaroStatus(
     val pressureHpa: Float,
@@ -157,6 +161,8 @@ data class BaroStatus(
     val baselineAuto: Boolean = false,
     val relAltM: Float = 0f,
     val baselineValid: Boolean = false,
+    val altMslM: Float = 0f,
+    val mslValid: Boolean = false,
 )
 
 /**

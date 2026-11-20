@@ -2,8 +2,16 @@
 /*
  * Copyright (c) 2026 Life_GPS contributors
  *
- * Barometric baseline and relative altitude. See lifegps/baro.h for the contract
- * and for the datasheet / README references behind the numbers.
+ * Barometric reference and altitude. See lifegps/baro.h for the contract and for
+ * the README / datasheet references behind the numbers.
+ *
+ * Two reference kinds share one stored pressure:
+ *
+ *   LOCAL  the pressure at the point where the reference was taken, so the
+ *          instrument reports height *since then* ("relative altitude").
+ *   MSL    the sea-level pressure QNH derived from a GNSS height, so the same
+ *          formula reports an absolute altitude that still works indoors and
+ *          after the GNSS link is gone.
  *
  * Two threads touch this module: the main loop feeds it once per second, and the
  * Bluetooth RX thread runs BARO_BASELINE (0x42) through it. Every read of the
@@ -23,16 +31,30 @@
 
 LOG_MODULE_REGISTER(lgps_baro, LOG_LEVEL_INF);
 
+/* Averaging window for the pressure used by a GNSS calibration: ~10 s at 1 Hz.
+ * One sample carries several Pa of noise, and at sea level 1 Pa is 8 cm, so an
+ * unaveraged calibration would throw away most of the sensor's resolution.
+ */
+#define PRESSURE_AVG_ALPHA 0.1F
+
 static K_MUTEX_DEFINE(baro_lock);
 
 static struct {
 	uint32_t baseline_pa_q4;
 	bool baseline_set;
 	bool baseline_auto;
+	/* What the reference means, and the height it sits at (0 for LOCAL). */
+	enum lgps_baro_reference ref_kind;
+	int32_t ref_alt_mm;
 	float pressure_pa;
 	bool pressure_valid;
+	/* Height since the reference was set, and (MSL mode only) the absolute one. */
 	int32_t rel_alt_mm;
-	/* Automatic-baseline window (Welford, so the variance does not cancel). */
+	int32_t abs_alt_mm;
+	/* Slow average of the compensated pressure, for GNSS calibration. */
+	float pressure_avg;
+	bool pressure_avg_valid;
+	/* Automatic-reference window (Welford, so the variance does not cancel). */
 	uint8_t window_samples;
 	float window_mean;
 	float window_m2;
@@ -92,13 +114,76 @@ int32_t lgps_baro_altitude_mm(float pressure_pa, uint32_t baseline_pa_q4)
 	return (int32_t)altitude_mm;
 }
 
-static void refresh_rel_alt_locked(void)
+/* Sea-level pressure QNH from a station pressure and a height: the inverse of the
+ * ISA height formula, i.e. "what would this sensor read at mean sea level".
+ * Returns 0 when the inputs cannot produce a pressure.
+ */
+float lgps_baro_sealevel_pressure_pa(float pressure_pa, int32_t height_mm)
 {
-	if (baro.pressure_valid && baro.baseline_set) {
-		baro.rel_alt_mm = lgps_baro_altitude_mm(baro.pressure_pa, baro.baseline_pa_q4);
-	} else {
-		baro.rel_alt_mm = 0;
+	const float height_m = (float)height_mm / 1000.0F;
+	const float ratio = 1.0F - (height_m / LGPS_BARO_ALT_SCALE_M);
+	float sea_level_pa;
+
+	if (!(pressure_pa > 0.0F)) {
+		return 0.0F;
 	}
+
+	/* The base of the power must stay positive. A real station is at most a few
+	 * km up, so anything near 44 km is a corrupt height, not a measurement.
+	 */
+	if (!(ratio > 0.05F)) {
+		return 0.0F;
+	}
+
+	/* p/p0 = (1 - h/44330)^5.25588, so p0 = p / that. Using the 0.1902632
+	 * exponent itself here would answer "pressure at 5 km", not sea level.
+	 */
+	sea_level_pa = pressure_pa / powf(ratio, LGPS_BARO_ISA_EXPONENT);
+
+	if (!(sea_level_pa > 0.0F)) {
+		return 0.0F;
+	}
+
+	return sea_level_pa;
+}
+
+/*
+ * Caller holds baro_lock.
+ *
+ * The stored pressure is what the height formula is anchored on, and both kinds
+ * differ in what that anchor means: in LOCAL mode it is the pressure where the
+ * user stood, so the formula yields the height since then; in MSL mode it is the
+ * sea-level pressure, so the *formula itself* already yields an absolute altitude
+ * and the height since calibration is the difference to the height it was
+ * calibrated at. Doing it the other way round (storing the station pressure and
+ * adding the GNSS height) would double-count the reference height.
+ */
+static void refresh_alt_locked(void)
+{
+	const int32_t above_reference_mm =
+		(baro.pressure_valid && baro.baseline_set)
+			? lgps_baro_altitude_mm(baro.pressure_pa, baro.baseline_pa_q4)
+			: 0;
+
+	if (baro.pressure_valid && baro.baseline_set && (baro.ref_kind == LGPS_BARO_REF_MSL)) {
+		baro.abs_alt_mm = above_reference_mm;
+		baro.rel_alt_mm = above_reference_mm - baro.ref_alt_mm;
+	} else {
+		baro.abs_alt_mm = 0;
+		baro.rel_alt_mm = above_reference_mm;
+	}
+}
+
+/* Caller holds baro_lock. */
+static void apply_reference_locked(uint32_t pa_q4, enum lgps_baro_reference kind, int32_t ref_alt_mm,
+				   bool automatic)
+{
+	baro.baseline_pa_q4 = pa_q4;
+	baro.baseline_set = true;
+	baro.baseline_auto = automatic;
+	baro.ref_kind = kind;
+	baro.ref_alt_mm = (kind == LGPS_BARO_REF_MSL) ? ref_alt_mm : 0;
+	refresh_alt_locked();
 }
 
 void lgps_baro_note_utc(uint32_t utc_epoch_s)
@@ -117,40 +202,40 @@ int lgps_baro_load(void)
 {
 	uint32_t pa_q4 = LGPS_BARO_BASELINE_UNSET;
 	uint32_t unix_s = 0U;
+	int32_t ref_alt_mm = 0;
 	bool automatic = false;
-	int ret = lgps_baro_store_load(&pa_q4, &automatic, &unix_s);
+	enum lgps_baro_reference kind = LGPS_BARO_REF_LOCAL;
+	int ret = lgps_baro_store_load(&pa_q4, &automatic, &kind, &ref_alt_mm, &unix_s);
 
 	if (ret < 0) {
 		return ret;
 	}
 
 	if (!pa_q4_in_range(pa_q4)) {
-		LOG_WRN("stored baseline %u Pa*16 is out of range, ignoring it",
+		LOG_WRN("stored reference %u Pa*16 is out of range, ignoring it",
 			(unsigned int)pa_q4);
 		return -ERANGE;
 	}
 
 	k_mutex_lock(&baro_lock, K_FOREVER);
-	baro.baseline_pa_q4 = pa_q4;
-	baro.baseline_set = true;
-	baro.baseline_auto = automatic;
-	refresh_rel_alt_locked();
+	apply_reference_locked(pa_q4, kind, ref_alt_mm, automatic);
 	k_mutex_unlock(&baro_lock);
 
-	LOG_INF("barometric baseline restored: %u Pa*16 (%s, record dated %u)",
-		(unsigned int)pa_q4, automatic ? "automatic" : "manual",
+	LOG_INF("barometric reference restored: %u Pa*16 (%s, %s, dated %u)", (unsigned int)pa_q4,
+		(kind == LGPS_BARO_REF_MSL) ? "sea level" : "local", automatic ? "automatic" : "manual",
 		(unsigned int)unix_s);
 
 	return 0;
 }
 
-/* Persists the baseline that was just set. Called without baro_lock held. */
-static void persist(uint32_t pa_q4, bool automatic)
+/* Persists the reference that was just set. Called without baro_lock held. */
+static void persist(uint32_t pa_q4, bool automatic, enum lgps_baro_reference kind,
+		    int32_t ref_alt_mm)
 {
-	int ret = lgps_baro_store_save(pa_q4, automatic, baro.utc_epoch_s);
+	int ret = lgps_baro_store_save(pa_q4, automatic, kind, ref_alt_mm, baro.utc_epoch_s);
 
 	if (ret < 0) {
-		LOG_WRN("baseline record not saved (%d); it survives only until reboot", ret);
+		LOG_WRN("reference record not saved (%d); it survives only until reboot", ret);
 	}
 }
 
@@ -161,16 +246,17 @@ int lgps_baro_set_baseline(uint32_t pa_q4, bool automatic)
 	}
 
 	k_mutex_lock(&baro_lock, K_FOREVER);
-	baro.baseline_pa_q4 = pa_q4;
-	baro.baseline_set = true;
-	baro.baseline_auto = automatic;
-	refresh_rel_alt_locked();
+	/* A reference taken by hand is the pressure where the user stood, so the
+	 * height it defines is 0 there: relative mode, never an absolute claim.
+	 */
+	apply_reference_locked(pa_q4, LGPS_BARO_REF_LOCAL, 0, automatic);
 	k_mutex_unlock(&baro_lock);
 
-	LOG_INF("barometric baseline set: %u Pa (%u Pa*16, %s)", (unsigned int)(pa_q4 / 16U),
-		(unsigned int)pa_q4, automatic ? "automatic" : "manual");
+	LOG_INF("barometric baseline set: %u Pa (%u Pa*16, %s, local reference)",
+		(unsigned int)(pa_q4 / 16U), (unsigned int)pa_q4,
+		automatic ? "automatic" : "manual");
 
-	persist(pa_q4, automatic);
+	persist(pa_q4, automatic, LGPS_BARO_REF_LOCAL, 0);
 
 	return 0;
 }
@@ -192,6 +278,74 @@ int lgps_baro_take_current(void)
 	return lgps_baro_set_baseline(pa_q4, false);
 }
 
+static bool gnss_height_usable(const struct lgps_gnss_fix *fix)
+{
+	if (fix == NULL) {
+		return false;
+	}
+
+	if (!fix->valid || (fix->fix_type < LGPS_BARO_GNSS_MIN_FIX_TYPE)) {
+		return false;
+	}
+
+	if (fix->satellites < LGPS_BARO_GNSS_MIN_SATELLITES) {
+		return false;
+	}
+
+	/* pDOP = 0 means "not reported", which is not the same as a perfect 0. */
+	if ((fix->pdop_1e2 == 0U) || (fix->pdop_1e2 > LGPS_BARO_GNSS_MAX_PDOP_1E2)) {
+		return false;
+	}
+
+	if (fix->speed_cms > LGPS_BARO_GNSS_MAX_SPEED_CMS) {
+		return false;
+	}
+
+	/* vAcc is the receiver's own 1-sigma vertical estimate. A height that is
+	 * worse than 20 m cannot calibrate an altimeter that resolves 0.8 m.
+	 */
+	return (fix->v_acc_mm != 0U) && (fix->v_acc_mm <= LGPS_BARO_GNSS_MAX_VACC_MM);
+}
+
+int lgps_baro_calibrate_from_gnss(const struct lgps_gnss_fix *fix)
+{
+	float station_pa;
+	float sea_level_pa;
+	uint32_t pa_q4;
+
+	if (!gnss_height_usable(fix)) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&baro_lock, K_FOREVER);
+	if (!baro.pressure_valid) {
+		k_mutex_unlock(&baro_lock);
+		return -ENODATA;
+	}
+
+	station_pa = baro.pressure_avg_valid ? baro.pressure_avg : baro.pressure_pa;
+	k_mutex_unlock(&baro_lock);
+
+	sea_level_pa = lgps_baro_sealevel_pressure_pa(station_pa, fix->hmsl_mm);
+	pa_q4 = pa_q4_from_pa(sea_level_pa);
+	if (!pa_q4_in_range(pa_q4)) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&baro_lock, K_FOREVER);
+	apply_reference_locked(pa_q4, LGPS_BARO_REF_MSL, fix->hmsl_mm, false);
+	k_mutex_unlock(&baro_lock);
+
+	LOG_INF("barometer calibrated from GNSS: hMSL %d mm (vAcc %u mm), station %u Pa -> "
+		"sea level %u Pa",
+		fix->hmsl_mm, (unsigned int)fix->v_acc_mm, (unsigned int)(station_pa + 0.5F),
+		(unsigned int)(pa_q4 / 16U));
+
+	persist(pa_q4, false, LGPS_BARO_REF_MSL, fix->hmsl_mm);
+
+	return 0;
+}
+
 int32_t lgps_baro_rel_alt_mm(void)
 {
 	int32_t rel_alt_mm;
@@ -201,6 +355,52 @@ int32_t lgps_baro_rel_alt_mm(void)
 	k_mutex_unlock(&baro_lock);
 
 	return rel_alt_mm;
+}
+
+int32_t lgps_baro_msl_altitude_mm(void)
+{
+	int32_t altitude_mm = 0;
+
+	k_mutex_lock(&baro_lock, K_FOREVER);
+	if ((baro.ref_kind == LGPS_BARO_REF_MSL) && baro.baseline_set && baro.pressure_valid) {
+		altitude_mm = baro.abs_alt_mm;
+	}
+	k_mutex_unlock(&baro_lock);
+
+	return altitude_mm;
+}
+
+bool lgps_baro_msl_valid(void)
+{
+	bool valid;
+
+	k_mutex_lock(&baro_lock, K_FOREVER);
+	valid = (baro.ref_kind == LGPS_BARO_REF_MSL) && baro.baseline_set && baro.pressure_valid;
+	k_mutex_unlock(&baro_lock);
+
+	return valid;
+}
+
+enum lgps_baro_reference lgps_baro_reference_kind(void)
+{
+	enum lgps_baro_reference kind;
+
+	k_mutex_lock(&baro_lock, K_FOREVER);
+	kind = baro.ref_kind;
+	k_mutex_unlock(&baro_lock);
+
+	return kind;
+}
+
+int32_t lgps_baro_reference_height_mm(void)
+{
+	int32_t ref_alt_mm;
+
+	k_mutex_lock(&baro_lock, K_FOREVER);
+	ref_alt_mm = (baro.ref_kind == LGPS_BARO_REF_MSL) ? baro.ref_alt_mm : 0;
+	k_mutex_unlock(&baro_lock);
+
+	return ref_alt_mm;
 }
 
 bool lgps_baro_pressure(float *pressure_pa)
@@ -283,9 +483,21 @@ static void window_reset_locked(void)
 	baro.window_m2 = 0.0F;
 }
 
+/*
+ * The automatic reference. Two outcomes, decided by whether the receiver also
+ * reports a usable vertical accuracy:
+ *
+ *   vAcc usable  -> MSL reference: QNH from the window mean and the fix's hMSL,
+ *                   i.e. an absolute altimeter that keeps working without GNSS.
+ *   vAcc unusable -> LOCAL reference (what the module did before): relative
+ *                   height only, because an absolute claim from a +/-30 m height
+ *                   would be a lie.
+ */
 bool lgps_baro_feed(bool pressure_valid, float pressure_pa, const struct lgps_gnss_fix *fix)
 {
 	uint32_t candidate_q4 = LGPS_BARO_BASELINE_UNSET;
+	enum lgps_baro_reference candidate_kind = LGPS_BARO_REF_LOCAL;
+	int32_t candidate_alt_mm = 0;
 	float accepted_sigma = 0.0F;
 	bool changed = false;
 	bool open;
@@ -295,8 +507,15 @@ bool lgps_baro_feed(bool pressure_valid, float pressure_pa, const struct lgps_gn
 	baro.pressure_valid = pressure_valid;
 	if (pressure_valid) {
 		baro.pressure_pa = pressure_pa;
+
+		if (baro.pressure_avg_valid) {
+			baro.pressure_avg += PRESSURE_AVG_ALPHA * (pressure_pa - baro.pressure_avg);
+		} else {
+			baro.pressure_avg = pressure_pa;
+			baro.pressure_avg_valid = true;
+		}
 	}
-	refresh_rel_alt_locked();
+	refresh_alt_locked();
 
 	open = gate_open(fix, pressure_valid);
 	if (!open) {
@@ -322,21 +541,26 @@ bool lgps_baro_feed(bool pressure_valid, float pressure_pa, const struct lgps_gn
 		const float sigma = sqrtf((variance > 0.0F) ? variance : 0.0F);
 
 		if (sigma <= LGPS_BARO_AUTO_MAX_SIGMA_PA) {
-			const uint32_t mean_q4 = pa_q4_from_pa(baro.window_mean);
+			const bool msl = gnss_height_usable(fix);
+			const float reference_pa =
+				msl ? lgps_baro_sealevel_pressure_pa(baro.window_mean, fix->hmsl_mm)
+				    : baro.window_mean;
+			const uint32_t reference_q4 = pa_q4_from_pa(reference_pa);
 
 			/* Hysteresis: only move the reference when it really moved. */
-			const uint32_t diff = (mean_q4 > baro.baseline_pa_q4)
-						      ? (mean_q4 - baro.baseline_pa_q4)
-						      : (baro.baseline_pa_q4 - mean_q4);
+			const uint32_t diff = (reference_q4 > baro.baseline_pa_q4)
+						      ? (reference_q4 - baro.baseline_pa_q4)
+						      : (baro.baseline_pa_q4 - reference_q4);
 
-			if (pa_q4_in_range(mean_q4) &&
+			if (pa_q4_in_range(reference_q4) &&
 			    (!baro.baseline_set ||
 			     (diff > (LGPS_BARO_AUTO_REBASE_MIN_PA * 16U)))) {
-				baro.baseline_pa_q4 = mean_q4;
-				baro.baseline_set = true;
-				baro.baseline_auto = true;
-				refresh_rel_alt_locked();
-				candidate_q4 = mean_q4;
+				apply_reference_locked(reference_q4,
+						       msl ? LGPS_BARO_REF_MSL : LGPS_BARO_REF_LOCAL,
+						       msl ? fix->hmsl_mm : 0, true);
+				candidate_q4 = reference_q4;
+				candidate_kind = msl ? LGPS_BARO_REF_MSL : LGPS_BARO_REF_LOCAL;
+				candidate_alt_mm = msl ? fix->hmsl_mm : 0;
 				accepted_sigma = sigma;
 				changed = true;
 			}
@@ -348,11 +572,13 @@ bool lgps_baro_feed(bool pressure_valid, float pressure_pa, const struct lgps_gn
 	k_mutex_unlock(&baro_lock);
 
 	if (changed) {
-		LOG_INF("barometric baseline from GNSS gate: %u Pa (%u Pa*16, "
-			"%u samples, sigma %.1f Pa)",
+		LOG_INF("barometric reference from GNSS gate: %u Pa (%u Pa*16, %s, %u samples, "
+			"sigma %.1f Pa, hMSL %d mm)",
 			(unsigned int)(candidate_q4 / 16U), (unsigned int)candidate_q4,
-			(unsigned int)LGPS_BARO_AUTO_WINDOW_SAMPLES, (double)accepted_sigma);
-		persist(candidate_q4, true);
+			(candidate_kind == LGPS_BARO_REF_MSL) ? "sea level" : "local",
+			(unsigned int)LGPS_BARO_AUTO_WINDOW_SAMPLES, (double)accepted_sigma,
+			candidate_alt_mm);
+		persist(candidate_q4, true, candidate_kind, candidate_alt_mm);
 	}
 
 	return changed;

@@ -34,23 +34,31 @@
 static uint32_t save_calls;
 static uint32_t last_saved_q4;
 static bool last_saved_auto;
+static enum lgps_baro_reference last_saved_kind;
+static int32_t last_saved_ref_alt_mm;
 
-int lgps_baro_store_load(uint32_t *pa_q4, bool *automatic, uint32_t *unix_s)
+int lgps_baro_store_load(uint32_t *pa_q4, bool *automatic, enum lgps_baro_reference *kind,
+			 int32_t *ref_alt_mm, uint32_t *unix_s)
 {
 	(void)pa_q4;
 	(void)automatic;
+	(void)kind;
+	(void)ref_alt_mm;
 	(void)unix_s;
 
 	return -ENOENT; /* a factory-fresh unit has no record */
 }
 
-int lgps_baro_store_save(uint32_t pa_q4, bool automatic, uint32_t unix_s)
+int lgps_baro_store_save(uint32_t pa_q4, bool automatic, enum lgps_baro_reference kind,
+			 int32_t ref_alt_mm, uint32_t unix_s)
 {
 	(void)unix_s;
 
 	save_calls++;
 	last_saved_q4 = pa_q4;
 	last_saved_auto = automatic;
+	last_saved_kind = kind;
+	last_saved_ref_alt_mm = ref_alt_mm;
 
 	return 0;
 }
@@ -66,6 +74,8 @@ static struct lgps_gnss_fix good_fix(uint16_t speed_cms)
 		.satellites = 12,
 		.pdop_1e2 = 120, /* pDOP 1.20 */
 		.speed_cms = speed_cms,
+		.hmsl_mm = 0,
+		.v_acc_mm = 5000, /* 5 m, good enough to calibrate against */
 	};
 
 	return fix;
@@ -86,6 +96,8 @@ static void before_each(void *fixture)
 	save_calls = 0U;
 	last_saved_q4 = 0U;
 	last_saved_auto = false;
+	last_saved_kind = LGPS_BARO_REF_LOCAL;
+	last_saved_ref_alt_mm = 0;
 }
 
 /* --- altitude formula ----------------------------------------------------- */
@@ -136,6 +148,8 @@ ZTEST(lifegps_baro, test_gate_sets_baseline_after_window)
 	zassert_true(lgps_baro_baseline_auto(), "the gate sets an automatic baseline");
 	zassert_equal(save_calls, 1U, "the new baseline must be persisted once");
 	zassert_true(last_saved_auto, "the record must be marked automatic");
+	zassert_equal(last_saved_kind, LGPS_BARO_REF_MSL,
+		      "vAcc 5 m promotes an automatic reference to sea level");
 	zassert_within((float)lgps_baro_baseline_pa_q4() / 16.0F, TEST_SEA_LEVEL_PA, 1.0F,
 		       "baseline = mean of the window");
 }
@@ -285,4 +299,143 @@ ZTEST(lifegps_baro, test_invalid_pressure_clears_height)
 }
 
 /* before_each is the per-test hook (4th argument), not the suite setup. */
+/* --- sea-level (GNSS) calibration ----------------------------------------- */
+
+/* A station 540.3 m above mean sea level on a 1013.25 hPa day reads 95000 Pa. */
+#define TEST_STATION_ALT_MM 540328
+#define TEST_STATION_PA 95000.0F
+#define TEST_SEA_LEVEL_QNH_PA 101325.0F
+
+ZTEST(lifegps_baro, test_sealevel_pressure_inverts_the_height_formula)
+{
+	const float qnh = lgps_baro_sealevel_pressure_pa(TEST_STATION_PA, TEST_STATION_ALT_MM);
+	const uint32_t qnh_q4 = (uint32_t)((qnh * 16.0F) + 0.5F);
+
+	zassert_within(qnh, TEST_SEA_LEVEL_QNH_PA, 2.0F, "QNH = %.1f Pa", (double)qnh);
+
+	/* Round trip: the forward formula must return the height it was solved for. */
+	zassert_within(lgps_baro_altitude_mm(TEST_STATION_PA, qnh_q4), TEST_STATION_ALT_MM, 5,
+		       "round trip must return the calibration height");
+
+	/* At sea level the station pressure *is* the sea-level pressure. */
+	zassert_within(lgps_baro_sealevel_pressure_pa(TEST_SEA_LEVEL_QNH_PA, 0), TEST_SEA_LEVEL_QNH_PA,
+		       0.5F, "h = 0 must leave the pressure untouched");
+
+	zassert_equal(lgps_baro_sealevel_pressure_pa(0.0F, 1000), 0.0F, "no pressure, no QNH");
+	/* 44 km up the power base collapses: that is a corrupt height, not a station. */
+	zassert_equal(lgps_baro_sealevel_pressure_pa(TEST_STATION_PA, 44000000), 0.0F,
+		      "a height above the ISA ceiling cannot produce a pressure");
+}
+
+ZTEST(lifegps_baro, test_gnss_calibration_makes_the_altitude_absolute)
+{
+	struct lgps_gnss_fix fix = good_fix(0U);
+
+	fix.hmsl_mm = TEST_STATION_ALT_MM;
+	(void)lgps_baro_feed(true, TEST_STATION_PA, &fix);
+
+	zassert_false(lgps_baro_msl_valid(), "without a reference there is no absolute altitude");
+
+	zassert_equal(lgps_baro_calibrate_from_gnss(&fix), 0, "a good fix must calibrate");
+	zassert_equal(lgps_baro_reference_kind(), LGPS_BARO_REF_MSL,
+		      "calibrating against GNSS sets an MSL reference");
+	zassert_true(lgps_baro_msl_valid(), "absolute altitude is available now");
+	zassert_within((float)lgps_baro_baseline_pa_q4() / 16.0F, TEST_SEA_LEVEL_QNH_PA, 2.0F,
+		       "the stored reference is the sea-level pressure");
+	zassert_within(lgps_baro_msl_altitude_mm(), TEST_STATION_ALT_MM, 10,
+		       "absolute altitude must match the GNSS height it was calibrated against");
+	zassert_within(lgps_baro_rel_alt_mm(), 0, 10, "height since calibration starts at zero");
+	zassert_equal(lgps_baro_reference_height_mm(), TEST_STATION_ALT_MM,
+		      "the reference height is recorded");
+	zassert_equal(save_calls, 1U, "the calibration is persisted");
+	zassert_equal(last_saved_kind, LGPS_BARO_REF_MSL, "the record carries the MSL kind");
+	zassert_equal(last_saved_ref_alt_mm, TEST_STATION_ALT_MM,
+		      "the record carries the GNSS height");
+
+	/* 9.7 m higher: 94890 Pa. Both heights must move by the same amount. */
+	(void)lgps_baro_feed(true, 94890.0F, &fix);
+	zassert_within(lgps_baro_rel_alt_mm(), 9675, 50, "height since calibration = %.1f m",
+		       (double)lgps_baro_rel_alt_mm() / 1000.0);
+	zassert_within(lgps_baro_msl_altitude_mm(), TEST_STATION_ALT_MM + 9675, 50,
+		       "absolute altitude follows the same change");
+}
+
+ZTEST(lifegps_baro, test_gnss_calibration_rejects_unusable_height)
+{
+	struct lgps_gnss_fix fix = good_fix(0U);
+
+	fix.hmsl_mm = TEST_STATION_ALT_MM;
+	(void)lgps_baro_feed(true, TEST_STATION_PA, &fix);
+
+	fix.v_acc_mm = LGPS_BARO_GNSS_MAX_VACC_MM + 1U;
+	zassert_equal(lgps_baro_calibrate_from_gnss(&fix), -EINVAL,
+		      "a vertical accuracy worse than 20 m must be refused");
+
+	fix.v_acc_mm = 0U;
+	zassert_equal(lgps_baro_calibrate_from_gnss(&fix), -EINVAL,
+		      "an unreported vertical accuracy must be refused");
+
+	fix = good_fix(0U);
+	fix.hmsl_mm = TEST_STATION_ALT_MM;
+	fix.satellites = LGPS_BARO_GNSS_MIN_SATELLITES - 1U;
+	zassert_equal(lgps_baro_calibrate_from_gnss(&fix), -EINVAL, "too few satellites");
+
+	fix = good_fix(0U);
+	fix.hmsl_mm = TEST_STATION_ALT_MM;
+	fix.speed_cms = LGPS_BARO_GNSS_MAX_SPEED_CMS + 1U;
+	zassert_equal(lgps_baro_calibrate_from_gnss(&fix), -EINVAL, "a moving unit");
+
+	fix = good_fix(0U);
+	fix.hmsl_mm = TEST_STATION_ALT_MM;
+	fix.pdop_1e2 = 0U;
+	zassert_equal(lgps_baro_calibrate_from_gnss(&fix), -EINVAL, "unknown pDOP");
+
+	zassert_false(lgps_baro_baseline_set(), "a refused calibration changes nothing");
+	zassert_equal(save_calls, 0U, "a refused calibration must not touch the flash");
+}
+
+ZTEST(lifegps_baro, test_gnss_calibration_needs_a_pressure)
+{
+	struct lgps_gnss_fix fix = good_fix(0U);
+
+	fix.hmsl_mm = TEST_STATION_ALT_MM;
+
+	zassert_equal(lgps_baro_calibrate_from_gnss(&fix), -ENODATA,
+		      "no pressure means no calibration (the command answers NOT_SUPPORTED)");
+	zassert_false(lgps_baro_baseline_set(), "nothing was set");
+}
+
+ZTEST(lifegps_baro, test_auto_gate_promotes_to_absolute)
+{
+	struct lgps_gnss_fix fix = good_fix(0U);
+
+	fix.hmsl_mm = TEST_STATION_ALT_MM;
+	feed_constant(TEST_STATION_PA, &fix, LGPS_BARO_AUTO_WINDOW_SAMPLES);
+
+	zassert_true(lgps_baro_baseline_set(), "the gate must define a reference");
+	zassert_equal(lgps_baro_reference_kind(), LGPS_BARO_REF_MSL,
+		      "a usable GNSS height promotes the reference to sea level");
+	zassert_true(last_saved_auto, "the record is marked automatic");
+	zassert_within((float)lgps_baro_baseline_pa_q4() / 16.0F, TEST_SEA_LEVEL_QNH_PA, 2.0F,
+		       "the stored reference is the sea-level pressure");
+	zassert_within(lgps_baro_msl_altitude_mm(), TEST_STATION_ALT_MM, 10,
+		       "absolute altitude matches the GNSS height of the window");
+}
+
+ZTEST(lifegps_baro, test_auto_gate_stays_relative_without_vertical_accuracy)
+{
+	struct lgps_gnss_fix fix = good_fix(0U);
+
+	fix.hmsl_mm = TEST_STATION_ALT_MM;
+	fix.v_acc_mm = LGPS_BARO_GNSS_MAX_VACC_MM + 1U;
+	feed_constant(TEST_STATION_PA, &fix, LGPS_BARO_AUTO_WINDOW_SAMPLES);
+
+	zassert_true(lgps_baro_baseline_set(), "the gate still defines a reference");
+	zassert_equal(lgps_baro_reference_kind(), LGPS_BARO_REF_LOCAL,
+		      "without a vertical accuracy estimate the reference stays local");
+	zassert_false(lgps_baro_msl_valid(), "no absolute altitude without an MSL reference");
+	zassert_within((float)lgps_baro_baseline_pa_q4() / 16.0F, TEST_STATION_PA, 1.0F,
+		       "a local reference is the station pressure itself");
+}
+
 ZTEST_SUITE(lifegps_baro, NULL, NULL, before_each, NULL, NULL);

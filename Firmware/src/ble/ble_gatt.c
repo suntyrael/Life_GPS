@@ -733,6 +733,21 @@ static uint8_t calib_result_status(int ret)
  * read, has no pressure at all and therefore answers NOT_SUPPORTED: the App then
  * keeps the read-only explanation instead of claiming a baseline was set.
  */
+/*
+ * BARO_BASELINE (0x42): the pressure the height is measured against.
+ *
+ * Action 0 installs the current compensated pressure (a LOCAL reference, height
+ * 0 where the user stands), action 1 installs the value carried in the request
+ * (also LOCAL, for a hand-entered station pressure), and action 2 calibrates
+ * against the GNSS height: the sea-level pressure QNH is derived from the averaged
+ * station pressure and NAV-PVT hMSL, which turns the same instrument into an
+ * absolute altimeter that keeps working indoors and after the fix is lost. All
+ * three persist the reference in the external NOR (lifegps/baro_store.h).
+ *
+ * A unit whose BMP388 does not answer, or whose TPG coefficients could not be
+ * read, has no pressure at all and therefore answers NOT_SUPPORTED: the App then
+ * keeps the read-only explanation instead of claiming a baseline was set.
+ */
 static uint8_t cmd_baro_baseline(const struct lgps_ble_cmd *cmd, uint8_t *payload,
 				 size_t capacity, size_t *out_len)
 {
@@ -757,6 +772,13 @@ static uint8_t cmd_baro_baseline(const struct lgps_ble_cmd *cmd, uint8_t *payloa
 	case LGPS_BLE_BARO_ACTION_MANUAL:
 		ret = lgps_baro_set_baseline(req.baseline_pa_q4, false);
 		break;
+	case LGPS_BLE_BARO_ACTION_GNSS: {
+		struct lgps_gnss_fix fix;
+
+		lgps_gnss_get_fix(&fix);
+		ret = lgps_baro_calibrate_from_gnss(&fix);
+		break;
+	}
 	default:
 		return LGPS_BLE_INVALID_ARGUMENT;
 	}
@@ -1496,6 +1518,12 @@ void lgps_ble_publish_baro(const struct lgps_telemetry_snapshot *snap)
 		}
 
 		baro.rel_alt_mm = lgps_baro_rel_alt_mm();
+	}
+
+	/* Absolute altitude only exists for an MSL reference (QNH from GNSS). */
+	if (lgps_baro_msl_valid()) {
+		baro.flags |= LGPS_BLE_BARO_FLAG_MSL_VALID;
+		baro.alt_msl_mm = lgps_baro_msl_altitude_mm();
 	}
 
 	len = lgps_ble_telem_baro_encode(telem_seq_baro, &baro, packet, sizeof(packet));

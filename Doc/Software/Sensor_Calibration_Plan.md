@@ -83,6 +83,9 @@ BARO_BASELINE req  {u8 action, u32 baseline_pa_q4}  action: 0=取当前为基准
 - [x] `BARO_BASELINE`（0x42）：手动输入 / 取当前，以及 GNSS 条件自动基准（`fixType≥3`、
       `numSV≥8`、pDOP≤2.0、地速<0.3 m/s，连续 30 s、窗口气压 σ<0.3 hPa，>1 hPa 才重设）。
 - [x] 相对高程：ISA 公式（`Firmware/src/nav/baro.c`），`0x42` 响应与 `0x04` 遥测包都有 `rel_alt_mm`。
+- [x] **GNSS 海拔校准**（0x42 action=2）：由平均气压 + NAV-PVT `hMSL` 反算海平面气压 QNH，之后
+      `alt_msl_mm` 为海拔、GNSS 丢失后仍可用；条件 `fixType≥3 / numSV≥8 / pDOP≤2 / 地速<0.3 m/s / vAcc≤20 m`，
+      自动基准在 vAcc 可用时也走这条路。
 - [x] 基准持久化：独立扇区 17（`Firmware/src/nav/baro_store.c`，20 B 记录 + CRC-16），与标定扇区 16 分开。
 - [x] App：`0x04` BARO 遥测解析 + 气压基准卡片（取当前 / 手动输入 / rel_alt 显示）。
 - [x] 把 `BARO raw: press=---` 那行换成了 `BARO press_pa=… temp_C=… rel_alt_mm=… press_raw=… temp_raw=…`。

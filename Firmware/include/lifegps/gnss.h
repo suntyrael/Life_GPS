@@ -90,6 +90,11 @@ struct lgps_gnss_fix {
 	int32_t lat_e7;
 	int32_t lon_e7;
 	int32_t hmsl_mm;
+	/* NAV-PVT vAcc: 1-sigma vertical accuracy estimate in mm. The barometric
+	 * calibration uses it to refuse a height that is noisier than the sensor it
+	 * is supposed to calibrate (see lifegps/baro.h).
+	 */
+	uint32_t v_acc_mm;
 	uint16_t speed_cms;
 	uint16_t heading_ddeg;
 	uint32_t utc_epoch_s; /* Life_GPS epoch, 0 when unknown */
