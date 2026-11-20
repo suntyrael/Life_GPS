@@ -387,6 +387,38 @@ int lgps_ubx_build_valget_item(uint8_t *buf, size_t buf_len_bytes, uint8_t layer
 			      payload, (uint16_t)sizeof(payload));
 }
 
+int lgps_ubx_build_valdel(uint8_t *buf, size_t buf_len_bytes, uint8_t layers, const uint32_t *keys,
+			  uint8_t count)
+{
+	uint8_t payload[LGPS_UBX_CFG_HEADER_LEN + (LGPS_UBX_CFG_VALDEL_MAX_KEYS * 4U)];
+
+	if ((buf == NULL) || ((keys == NULL) && (count != 0U))) {
+		return -EINVAL;
+	}
+
+	/* Section 3.10.3.1: only the BBR and Flash layers can be deleted from; a
+	 * mask without either is answered with UBX-ACK-NAK.
+	 */
+	if ((layers & (LGPS_UBX_LAYER_BBR | LGPS_UBX_LAYER_FLASH)) == 0U) {
+		return -EINVAL;
+	}
+
+	if (count > LGPS_UBX_CFG_VALDEL_MAX_KEYS) {
+		return -EINVAL;
+	}
+
+	memset(payload, 0, sizeof(payload));
+	payload[CFG_OFF_VERSION] = 0U;
+	payload[CFG_OFF_LAYERS] = (uint8_t)(layers & (LGPS_UBX_LAYER_BBR | LGPS_UBX_LAYER_FLASH));
+
+	for (uint8_t index = 0U; index < count; index++) {
+		put_le32(&payload[CFG_OFF_KEY + ((size_t)index * 4U)], keys[index]);
+	}
+
+	return lgps_ubx_build(buf, buf_len_bytes, LGPS_UBX_CLASS_CFG, LGPS_UBX_ID_CFG_VALDEL,
+			      payload, (uint16_t)((size_t)CFG_OFF_KEY + ((size_t)count * 4U)));
+}
+
 int lgps_ubx_decode_ack(const struct lgps_ubx_parser *parser, bool *accepted, uint8_t *msg_class,
 			uint8_t *msg_id)
 {

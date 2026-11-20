@@ -442,6 +442,8 @@ ZTEST(lifegps_ble, test_telemetry_gnss_packet_layout)
 		.nmea_starts = 0x42U,
 		.rx_dropped = 0U,
 		.baud = 38400U,
+		.ttff_ms = 0x0000ABCDU,
+		.power_off_ms = 0xDEADBEEFU,
 	};
 	uint8_t out[LGPS_BLE_TELEM_GNSS_SIZE];
 	int len;
@@ -449,7 +451,7 @@ ZTEST(lifegps_ble, test_telemetry_gnss_packet_layout)
 	len = lgps_ble_telem_gnss_encode(0x1234U, &gnss, out, sizeof(out));
 
 	zassert_equal(len, LGPS_BLE_TELEM_GNSS_SIZE, "GNSS telemetry packet length");
-	zassert_equal(LGPS_BLE_TELEM_GNSS_SIZE, 38, "GNSS telemetry packet stays 38 bytes");
+	zassert_equal(LGPS_BLE_TELEM_GNSS_SIZE, 46, "GNSS telemetry packet is 46 bytes in 0.3.0");
 	zassert_equal(out[0], 0x01U, "telemetry id GNSS");
 	zassert_equal(out[1], 0x01U, "telemetry version");
 	zassert_equal(out[2], 0x34U, "seq low byte");
@@ -471,6 +473,11 @@ ZTEST(lifegps_ble, test_telemetry_gnss_packet_layout)
 	zassert_equal(out[30], 0U, "rx_dropped");
 	zassert_equal(out[34], 0x00U, "baud byte 0");
 	zassert_equal(out[35], 0x96U, "baud byte 1 (38400)");
+	/* 0.3.0 appends TTFF and the previous power-off time after the 0.2.0 fields. */
+	zassert_equal(out[38], 0xCDU, "ttff_ms byte 0");
+	zassert_equal(out[41], 0x00U, "ttff_ms byte 3");
+	zassert_equal(out[42], 0xEFU, "power_off_ms byte 0");
+	zassert_equal(out[45], 0xDEU, "power_off_ms byte 3");
 
 	zassert_equal(lgps_ble_telem_gnss_encode(0U, NULL, out, sizeof(out)), -EINVAL,
 		      "NULL payload must be refused");

@@ -396,7 +396,15 @@ data class GnssTelemetry(
     val nmeaStarts: Long,
     val rxDropped: Long,
     val baud: Int,
-)
+    /** Time to first fix of the power cycle; 0 = no 3D fix yet (0.3.0 and later). */
+    val ttffMs: Long = 0L,
+    /** How long the rail was down before this cycle; [UINT32_MAX] = unknown. */
+    val powerOffMs: Long = UINT32_MAX,
+) {
+    companion object {
+        const val UINT32_MAX = 4_294_967_295L
+    }
+}
 
 /** Offsets of the `0x01` GNSS telemetry payload (`BLE_Wire_v1.md` §5.1). */
 object GnssTelemetryOffset {
@@ -412,7 +420,12 @@ object GnssTelemetryOffset {
     const val NMEA_STARTS = 22
     const val RX_DROPPED = 26
     const val BAUD = 30
-    const val SIZE = 34
+    /** Appended in 0.3.0; only read when the payload is long enough. */
+    const val TTFF_MS = 34
+    const val POWER_OFF_MS = 38
+    const val SIZE = 42
+    /** 0.2.0 length: a decoder that only knows this much is still correct. */
+    const val SIZE_V020 = 34
 
     const val FLAG_FIX_VALID = 0x01
     const val FLAG_UTC_VALID = 0x02
@@ -673,8 +686,13 @@ object BleFrame {
     }
 
     /** GNSS receive-path telemetry payload, 34 bytes (see [GnssTelemetryOffset]). */
+    /**
+     * GNSS telemetry payload. 0.3.0 appended TTFF and the previous power-off time,
+     * so the minimum is the 0.2.0 length and the new fields are read only when the
+     * packet is long enough - that keeps this parser working against both.
+     */
     fun parseGnssTelemetry(payload: ByteArray): GnssTelemetry? {
-        if (payload.size < GnssTelemetryOffset.SIZE) return null
+        if (payload.size < GnssTelemetryOffset.SIZE_V020) return null
         val flags = u8(payload, GnssTelemetryOffset.FLAGS)
         return GnssTelemetry(
             state = u8(payload, GnssTelemetryOffset.STATE),
@@ -690,6 +708,16 @@ object BleFrame {
             nmeaStarts = u32(payload, GnssTelemetryOffset.NMEA_STARTS),
             rxDropped = u32(payload, GnssTelemetryOffset.RX_DROPPED),
             baud = u32(payload, GnssTelemetryOffset.BAUD).toInt(),
+            ttffMs = if (payload.size >= GnssTelemetryOffset.SIZE) {
+                u32(payload, GnssTelemetryOffset.TTFF_MS)
+            } else {
+                0L
+            },
+            powerOffMs = if (payload.size >= GnssTelemetryOffset.SIZE) {
+                u32(payload, GnssTelemetryOffset.POWER_OFF_MS)
+            } else {
+                GnssTelemetry.UINT32_MAX
+            },
         )
     }
 

@@ -228,6 +228,25 @@ int lgps_gnss_cfg_set(uint32_t key, uint32_t value, bool persist_to_flash,
 /* Latest decoded solution (copy, safe to call from any thread). */
 void lgps_gnss_get_fix(struct lgps_gnss_fix *out);
 
+/*
+ * Time to first fix (TTFF) of the power cycle.
+ *
+ * Measured from the moment GPS_EN goes high to the first 3D fix the receiver
+ * reports with gnssFixOK set. @c ttff_ms stays 0 until that fix, so a caller can
+ * tell "still searching" from "locked in 4.2 s" without a second flag.
+ *
+ * @c power_off_ms says how long the rail was down before this cycle, which is what
+ * separates a hot start (V_BCKP kept the almanac, seconds) from a cold one
+ * (minutes). UINT32_MAX means unknown: the first cycle after reset, or the
+ * receiver was never powered down by this firmware.
+ */
+struct lgps_gnss_ttff {
+	uint32_t ttff_ms;
+	uint32_t power_off_ms;
+};
+
+void lgps_gnss_get_ttff(struct lgps_gnss_ttff *out);
+
 /* Line rate the UART is configured for right now (38400, or 9600 after the
  * one-shot fallback). The value is what the driver really reports, not a
  * constant, so the App can show a rate that is actually in effect.

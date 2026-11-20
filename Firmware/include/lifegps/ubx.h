@@ -76,6 +76,15 @@
 #define LGPS_UBX_CFG_VALUE_MAX_LEN 4U
 
 /*
+ * Keys one UBX-CFG-VALDEL frame can carry.
+ *
+ * The receiver accepts up to 64 (section 3.10.3.1), but nothing in this firmware
+ * deletes more than its own short rescue list, and the frame buffer is a stack
+ * array in a 2 KB GNSS thread: 8 keys is 36 bytes of payload instead of 260.
+ */
+#define LGPS_UBX_CFG_VALDEL_MAX_KEYS 8U
+
+/*
  * Configuration key: output rate of UBX-NAV-PVT on UART1.
  *
  * Section 4.9.11 (CFG-MSGOUT) lists the three transports per message as
@@ -297,6 +306,23 @@ int lgps_ubx_build_valset_item(uint8_t *buf, size_t buf_len_bytes, uint8_t layer
  * @p layer is one of LGPS_UBX_VALGET_LAYER_*.
  */
 int lgps_ubx_build_valget_item(uint8_t *buf, size_t buf_len_bytes, uint8_t layer, uint32_t key);
+
+/*
+ * Build UBX-CFG-VALDEL (version 0, section 3.10.3.1) deleting @p count keys from
+ * the BBR and/or Flash layer.
+ *
+ * This is the only way to undo a saved value that wedges the receiver: the BBR
+ * layer sits in V_BCKP-backed memory, so dropping the rail does not clear it, and a
+ * receiver that stopped answering cannot be asked to write a new value. Deleting
+ * the key makes the next configuration load fall back to the factory default.
+ * Only the BBR and Flash layers are addressable here (RAM is not a valid target for
+ * this message), and the effect appears after the next reset.
+ *
+ * Returns the number of bytes written, -EINVAL for a bad argument or -ENOSPC when
+ * @p buf_len_bytes is too small.
+ */
+int lgps_ubx_build_valdel(uint8_t *buf, size_t buf_len_bytes, uint8_t layers, const uint32_t *keys,
+			  uint8_t count);
 
 /*
  * Classify a UBX-ACK frame (section 3.9): @p accepted is true for ACK-ACK and

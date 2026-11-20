@@ -93,6 +93,9 @@ class BleDebugRepository(context: Context) : DebugRepository {
 
     // Latest telemetry: the firmware owns the attitude filter and the PDR, this
     // side only renders what it publishes.
+    /** TTFF as text, refreshed by telemetry 0x01 at 1 Hz and kept across Status frames. */
+    private var latestTtff = "--"
+
     private var latestQw = 1f
     private var latestQx = 0f
     private var latestQy = 0f
@@ -379,7 +382,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
             speedKmh = frame.speedCms * 0.036,
             headingDeg = frame.headingDdeg / 10.0,
             utcTime = formatUtc(frame.utcEpochS),
-            ttff = "--",
+            ttff = latestTtff,
             // BLE_Wire_v1 §4: the Status frame has no per-satellite data. It is
             // published 10x per second while the satellite table (telemetry 0x09)
             // arrives once per second, so the last known rows are kept instead of
@@ -469,6 +472,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
      * solution, and the two must never be mixed into one number on screen.
      */
     private fun onGnssTelemetry(telemetry: GnssTelemetry) {
+        latestTtff = formatTtff(telemetry)
         _gnssLink.value = GnssLinkInfo(
             received = true,
             state = BleFrame.gnssStateName(telemetry.state),
@@ -484,6 +488,30 @@ class BleDebugRepository(context: Context) : DebugRepository {
             rxDropped = telemetry.rxDropped,
             baud = telemetry.baud,
         )
+    }
+
+    /**
+     * TTFF as the log would read it. The power-off time is what turns a bare number
+     * into a diagnosis: a few seconds after a 3 minute break is a hot start (V_BCKP
+     * kept the almanac), 30 s after two hours away is as good as a cold start.
+     */
+    private fun formatTtff(telemetry: GnssTelemetry): String {
+        if (telemetry.ttffMs == 0L) return "等待首次定位"
+
+        val seconds = "%.1f s".format(telemetry.ttffMs / 1000.0)
+        val kind = when {
+            telemetry.powerOffMs == GnssTelemetry.UINT32_MAX -> "上电后首次"
+            telemetry.powerOffMs < 30 * 60_000L ->
+                "热启动，断电 ${formatSpan(telemetry.powerOffMs)}"
+            else -> "冷启动，断电 ${formatSpan(telemetry.powerOffMs)}"
+        }
+        return "$seconds（$kind）"
+    }
+
+    private fun formatSpan(ms: Long): String = when {
+        ms < 60_000L -> "${ms / 1000L} 秒"
+        ms < 3_600_000L -> "${ms / 60_000L} 分钟"
+        else -> "%.1f 小时".format(ms / 3_600_000.0)
     }
 
     /**

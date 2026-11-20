@@ -139,12 +139,12 @@ off type  field
 
 | id | payload | 字段 | 速率 |
 | :--- | :--- | :--- | :--- |
-| `0x01` GNSS | 34 B（整包 38 B） | 见下方字段表 | 1 Hz |
+| `0x01` GNSS | 42 B（整包 46 B；0.2.0 为 34 B） | 见下方字段表 | 1 Hz |
 | `0x02` IMU | 20 B（整包 24 B） | `i16 acc_lsb[3]`、`i16 gyro_lsb[3]`、`i16 quat_q15[4]`（w,x,y,z，32767 = 1.0） | 26 Hz（仅订阅时） |
 | `0x04` BARO | 20 B（整包 24 B） | 见下方字段表 | 1 Hz（仅订阅时） |
 | `0x05` PDR | 12 B（整包 16 B） | `i32 x_mm`（东）、`i32 y_mm`（北）、`i16 heading_ddeg`、`u16 steps` | 每完成一步 + 1 Hz 心跳 |
 | `0x08` NMEA | 1 B + 文本（整包 ≤ 133 B） | `u8 len`、`char text[len]`（ASCII，`$...*hh`，不含 CR/LF） | 每句一包，仅调试会话开启 NMEA 直通时 |
-| `0x09` SAT | 4 B + 5 B×N（整包 ≤ 168 B） | 见下方字段表 | 1 Hz，仅调试会话开启单星采集时 |
+| `0x09` SAT | 4 B + 5 B×N（整包 ≤ 168 B） | 见下方字段表 | 1 Hz，接收机上电即采集 |
 
 **`0x04` BARO 字段表**（`LGPS_BLE_TELEM_BARO_PAYLOAD` / `BaroTelemetryOffset`，小端）：
 
@@ -185,7 +185,15 @@ App 侧 `GnssTelemetryOffset` 必须一致）：
 | 18 | u32 | `ubx_bad_checksum` | 校验错误的帧数 |
 | 22 | u32 | `nmea_starts` | 收到的 `'$'` 个数（>0 且 `ubx_frames` 不上涨 = 只吐 NMEA） |
 | 26 | u32 | `rx_dropped` | ISR 因环形缓冲满而丢弃的字节 |
-| 30 | u32 | `baud` | UART 当前实际波特率（38400，或 9600 回退后） |
+| 30 | u32 | `baud` | UART 当前实际波特率（38400 起步，快链路下 460800） |
+| 34 | u32 | `ttff_ms` | **0.3.0 追加**：本次上电到首个 3D 定位的毫秒数，0 = 还没定上 |
+| 38 | u32 | `power_off_ms` | **0.3.0 追加**：本次上电前轨道断电多久；`0xFFFFFFFF` = 未知（复位后首次） |
+
+**兼容性**：`0x01` 的载荷从 34 字节追加到 42 字节，前 34 字节偏移不变；只解 34 字节的旧主机
+照常工作（拿不到 TTFF）。App 侧以 34 为最小长度、42 才读新字段。
+
+TTFF 从 `GPS_EN` 拉高那一刻起算，不是从收到第一帧 UBX 起算；`power_off_ms` 是把一个裸数字变成
+诊断信息的关键：断电 3 分钟后的 4 s 是热启动（V_BCKP 保住了历书），断电两小时后的 30 s 等于冷启动。
 
 **`0x09` SAT 字段表**（`u8 count`、`u8 total`、`u16 reserved`，随后每星 5 字节）：
 
@@ -423,7 +431,31 @@ MAX-M10S 出厂为 GPS + Galileo + 北斗 B1I；`B1I` 不能与 `B1C` 或 `GLONA
 调试功能不允许具备这种能力。固件自己在 `CONFIG_LGPS_GNSS_FAST_LINK` 下写这两项（见 §6.8），
 并且波特率只写 RAM 层，所以下一个电源周期仍然从 38400 起步。
 
-### 6.8 链路速率与 10 Hz 画像（固件侧，无报文）
+### 6.7 GNSS_DEBUG（`0x36`）请求 / 响应
+
+```
+请求  （空）= 查询 ；或 u8 flags · u16 ttl_s（小端，0 = 默认 300 s）
+响应  u8 status · u8 flags · u16 remaining_s
+```
+
+| flags 位 | 含义 |
+| :--- | :--- |
+| bit0 | `HOLD_POWER`：会话期间跳过冷启动 60 s 超时断电与星历保持 35 s 断电 |
+| bit1 | `NAV_SAT`：**0.3.0 起无作用**。NAV-SAT 现在是接收机上电后的常开输出（1 Hz，RAM 层，
+每次上电重新打开），不再是会话专属。位仍接受，以便旧版 App 不改也能用 |
+| bit2 | `NMEA`：把原始 NMEA 语句通过 `0x08` 遥测转发（若 `CONFIG_LGPS_GNSS_FAST_LINK` 已把
+NMEA 输出关掉，会话期间会临时重新打开，会话结束再关掉） |
+
+- 会话一定有寿命上限（默认 300 s，最大 3600 s）：没有任何 BLE 命令能让 GNSS 轨道无限期上电。
+  唯一的例外是编译期开关 `CONFIG_LGPS_GNSS_ALWAYS_ON`（`boards/lifegps/lifegps/Kconfig.lifegps`，
+  默认 `n`），开了之后整条超时断电策略被整段跳过——那是台架调试用的构建选项，蓝牙侧无法触及。
+- 卫星表不再需要会话：`publish_sat()` 一直在发 `0x09`，只要接收机上电就有数据；表为空只可能是
+  模组未上电、周视无星，或接收机 NAK 了 NAV-SAT 输出率。
+- `NMEA` 只写 RAM 层，断电即失效；`flags=0` 立即恢复常规省电策略。
+- 写入响应回显**请求的** flags/ttl（GNSS 线程在一个循环周期内应用），
+  约 100 ms 后再查询一次即可读到真实剩余时间。
+
+### 6.8 链路速率、10 Hz 画像与失联自救（固件侧，无报文）
 
 每次上电两侧都从 **38400 8N1** 起步（设备树 `current-speed` = `LGPS_GNSS_BAUD_DEFAULT`），
 并且 **NAV-SAT 一直开着**（1 Hz，RAM 层，每次上电重写），卫星表不再依赖调试会话。
@@ -458,29 +490,23 @@ NAV-PVT 回读验证新速率。
 | + NAV-SIG(40 信号) | 656 B | 11.6 kB/s |
 | + 出厂 NMEA 集 | 1250 B | 24 kB/s（**只在 460800 下可行**；38400 上限 3.84 kB/s）|
 
-### 6.7 GNSS_DEBUG（`0x36`）请求 / 响应
 
-```
-请求  （空）= 查询 ；或 u8 flags · u16 ttl_s（小端，0 = 默认 300 s）
-响应  u8 status · u8 flags · u16 remaining_s
-```
+#### 6.8.1 接收机失联自救
 
-| flags 位 | 含义 |
-| :--- | :--- |
-| bit0 | `HOLD_POWER`：会话期间跳过冷启动 60 s 超时断电与星历保持 35 s 断电 |
-| bit1 | `NAV_SAT`：**0.3.0 起无作用**。NAV-SAT 现在是接收机上电后的常开输出（1 Hz，RAM 层，
-每次上电重新打开），不再是会话专属。位仍接受，以便旧版 App 不改也能用 |
-| bit2 | `NMEA`：把原始 NMEA 语句通过 `0x08` 遥测转发（若 `CONFIG_LGPS_GNSS_FAST_LINK` 已把
-NMEA 输出关掉，会话期间会临时重新打开，会话结束再关掉） |
+有些设置会让接收机「安静」下来，而安静的形态很多：功耗模式在自己的休眠期关掉 UART、星座组合让
+GNSS 子系统反复重启、速率被接受但撑不住。它们的共同点就是**没有完整 UBX 帧**，所以固件看的就是这个：
 
-- 会话一定有寿命上限（默认 300 s，最大 3600 s）：没有任何 BLE 命令能让 GNSS 轨道无限期上电。
-  唯一的例外是编译期开关 `CONFIG_LGPS_GNSS_ALWAYS_ON`（`boards/lifegps/lifegps/Kconfig.lifegps`，
-  默认 `n`），开了之后整条超时断电策略被整段跳过——那是台架调试用的构建选项，蓝牙侧无法触及。
-- 卫星表不再需要会话：`publish_sat()` 一直在发 `0x09`，只要接收机上电就有数据；表为空只可能是
-  模组未上电、周视无星，或接收机 NAK 了 NAV-SAT 输出率。
-- `NMEA` 只写 RAM 层，断电即失效；`flags=0` 立即恢复常规省电策略。
-- 写入响应回显**请求的** flags/ttl（GNSS 线程在一个循环周期内应用），
-  约 100 ms 后再查询一次即可读到真实剩余时间。
+- 在 `CONFIG_LGPS_GNSS_ALWAYS_ON`（省电策略关闭，没有别的机制会把接收机拉回来）下，接收机应在上电
+  状态却连续 **20 s** 没有任何完整 UBX 帧 → 触发自救，最多 **3 次**；拿到一次有效 3D 定位就清零计数。
+- 自救的顺序是：打印最近 4 次 GNSS_CFG 写入（key / value / 返回值）→ 发 `UBX-CFG-VALDEL`
+  删除 7 个可能「存进 BBR 把模组锁死」的键（`CFG-PM-OPERATEMODE`、`CFG-PM-POSUPDATEPERIOD`、
+  `CFG-SIGNAL-GLO_ENA`、`GLO_L1_ENA`、`BDS_B1_ENA`、`BDS_B1C_ENA`、`CFG-RATE-MEAS`）→ 给接收机断电。
+- 为什么要 VALDEL：这些写入落在 **RAM + BBR** 层，而 BBR 由常供的 `V_BCKP` 保持，
+  **断电清不掉**。只有删除保存值，下一次配置加载才会回到出厂组合（接口说明书 §3.10.3.1：
+  CFG-VALDEL 不校验结果是否合法）。
+- 3 次仍不响 → 打一条 ERRO 后不再折腾，避免电池设备每 20 s 断一次电。
+- 已知功耗模式（`CFG-PM-OPERATEMODE != 0`）在本次开机内会关闭这条看门狗：PSMOO/PSMCT 的休眠期
+  本来就不发数据，不能当死机处理。
 
 ## 7. 版本策略
 

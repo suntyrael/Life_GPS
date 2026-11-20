@@ -64,7 +64,63 @@ static uint32_t state_since_ms;
 static uint32_t last_pvt_log_ms;
 static uint32_t next_reconfig_ms;
 static uint32_t current_baud = LGPS_GNSS_BAUD_DEFAULT;
-static bool baud_fallback_done;
+/* --- TTFF and receiver liveness -------------------------------------------- */
+
+/*
+ * Time to first fix, measured per power cycle. rail_on_ms is taken right after
+ * GPS_EN goes high; rail_off_ms is taken when the rail drops, so the next cycle can
+ * report how long the receiver was unpowered (that is what separates a hot start
+ * from a cold one, together with the V_BCKP-backed almanac).
+ */
+static uint32_t rail_on_ms;
+static uint32_t rail_off_ms;
+static struct lgps_gnss_ttff ttff = { .ttff_ms = 0U, .power_off_ms = UINT32_MAX };
+/* GNSS thread writes, main loop reads. */
+static struct k_spinlock ttff_lock;
+
+/*
+ * Receiver liveness.
+ *
+ * A configuration write can leave the receiver mute in ways this firmware cannot
+ * enumerate: a power save mode that switches the UART off between updates, a
+ * signal combination that restarts the GNSS subsystem in a loop, a rate the module
+ * accepted but cannot sustain. What they have in common is silence, so silence is
+ * what is watched. Only used when the power policy is disabled, because otherwise
+ * the policy itself already brings the receiver back.
+ */
+#define GNSS_LIVENESS_MS 20000U
+#define GNSS_MAX_RECOVERIES 3U
+static uint32_t ubx_last_rx_ms;
+static uint32_t recovery_count;
+static bool liveness_given_up;
+/* A UBX-CFG-PM write asked for a power save mode: silence is then by design. */
+static atomic_t psm_active;
+
+/*
+ * Last completed configuration writes, newest last. A wedge is almost always the
+ * write just before the silence, and the serial log is the only witness left once
+ * the link is gone.
+ */
+#define GNSS_CFG_TRAIL 4U
+static struct {
+	uint32_t key;
+	uint32_t value;
+	int status;
+} cfg_trail[GNSS_CFG_TRAIL];
+static uint8_t cfg_trail_next;
+static struct k_spinlock cfg_trail_lock;
+
+static void gnss_cfg_trail_record(uint32_t key, uint32_t value, int status)
+{
+	k_spinlock_key_t lock = k_spin_lock(&cfg_trail_lock);
+
+	cfg_trail[cfg_trail_next].key = key;
+	cfg_trail[cfg_trail_next].value = value;
+	cfg_trail[cfg_trail_next].status = status;
+	cfg_trail_next = (uint8_t)((cfg_trail_next + 1U) % GNSS_CFG_TRAIL);
+	k_spin_unlock(&cfg_trail_lock, lock);
+}
+
 
 /*
  * True once CFG-VALGET read the NAV-PVT output rate back as non-zero.
@@ -397,6 +453,19 @@ void lgps_gnss_get_fix(struct lgps_gnss_fix *out)
 	}
 
 	*out = current_fix;
+}
+
+void lgps_gnss_get_ttff(struct lgps_gnss_ttff *out)
+{
+	k_spinlock_key_t key;
+
+	if (out == NULL) {
+		return;
+	}
+
+	key = k_spin_lock(&ttff_lock);
+	*out = ttff;
+	k_spin_unlock(&ttff_lock, key);
 }
 
 enum lgps_gnss_state lgps_gnss_get_state(void)
@@ -1218,6 +1287,17 @@ int lgps_gnss_cfg_set(uint32_t key, uint32_t value, bool persist_to_flash,
 		LOG_WRN("%s: the receiver rejected the key", desc->name);
 	}
 
+	gnss_cfg_trail_record(key, value, ret);
+
+	/* A power save mode is asked to be silent between updates, so the liveness
+	 * watchdog must not read that as a dead receiver.
+	 */
+	if ((ret == 0) && (key == LGPS_UBX_CFG_KEY_PM_OPERATEMODE)) {
+		atomic_set(&psm_active, (value != 0U) ? 1 : 0);
+		LOG_INF("receiver power save mode -> %u (%s)", (unsigned int)value,
+			(value != 0U) ? "the UART is silent between updates" : "continuous");
+	}
+
 	k_mutex_unlock(&cfg_req_lock);
 
 	return (ret == -EAGAIN) ? -ETIMEDOUT : ret;
@@ -1414,6 +1494,18 @@ static void handle_nav_pvt(const struct lgps_nav_pvt *pvt)
 	current_fix.utc_epoch_s = epoch_s;
 	current_fix.last_pvt_uptime_ms = now_ms;
 
+	/* TTFF of this power cycle, and a receiver that answers is not wedged. */
+	if (fix_valid) {
+		recovery_count = 0U;
+
+		k_spinlock_key_t key = k_spin_lock(&ttff_lock);
+
+		if (ttff.ttff_ms == 0U) {
+			ttff.ttff_ms = now_ms - rail_on_ms;
+		}
+		k_spin_unlock(&ttff_lock, key);
+	}
+
 	/* The cold-start window must end on the first real 3D fix. */
 	if (fix_valid && gnss_state == LGPS_GNSS_STATE_COLD_START) {
 		set_state(LGPS_GNSS_STATE_FIXED, 0U);
@@ -1552,6 +1644,7 @@ static void gnss_process_rx(void)
 		}
 
 		ubx_frames++;
+		ubx_last_rx_ms = lgps_diag_uptime_ms();
 
 		if (parser.msg_class == LGPS_UBX_CLASS_NAV && parser.msg_id == LGPS_UBX_ID_NAV_PVT) {
 			struct lgps_nav_pvt pvt;
@@ -1620,6 +1713,8 @@ static void gnss_power_down(void)
 	 */
 	uart_irq_rx_disable(gnss_uart);
 
+	rail_off_ms = lgps_diag_uptime_ms();
+
 	(void)lgps_gnss_rail_set(false);
 }
 
@@ -1642,6 +1737,18 @@ static void gnss_power_up(void)
 	if (ret < 0) {
 		LOG_ERR("GNSS rail on failed (%d)", ret);
 		return;
+	}
+
+	/* TTFF is measured from this instant, not from the first byte we receive. */
+	rail_on_ms = lgps_diag_uptime_ms();
+	ubx_last_rx_ms = rail_on_ms;
+	{
+		k_spinlock_key_t key = k_spin_lock(&ttff_lock);
+
+		ttff.power_off_ms = (rail_off_ms == 0U) ? UINT32_MAX
+							: (rail_on_ms - rail_off_ms);
+		ttff.ttff_ms = 0U;
+		k_spin_unlock(&ttff_lock, key);
 	}
 
 	/* Module boot time before its UART answers: 100 ms is the value used by
@@ -1727,6 +1834,85 @@ static uint32_t backoff_next_ms(uint32_t current_ms)
 	return LGPS_GNSS_BACKOFF_STEP3_MS;
 }
 
+/* --- receiver rescue -------------------------------------------------------- */
+
+/*
+ * Keys this firmware can save into BBR/Flash and that can outlive a power cycle in
+ * a way that silences the receiver. Deleting them makes the next configuration load
+ * fall back to the factory default.
+ *
+ * The signal entries belong here because the factory profile (GPS + Galileo +
+ * BeiDou B1I) is a legal combination while a hand-built one may not be, and
+ * CFG-VALDEL does not validate the resulting configuration at all (interface
+ * description section 3.10.3.1). CFG-RATE-MEAS is deleted so a rate the receiver
+ * accepted but cannot sustain does not survive either; the power-up profile writes
+ * it again.
+ */
+static const uint32_t rescue_keys[] = {
+	LGPS_UBX_CFG_KEY_PM_OPERATEMODE,
+	LGPS_UBX_CFG_KEY_PM_POSUPDATEPERIOD,
+	LGPS_UBX_CFG_KEY_SIGNAL_GLO_ENA,
+	LGPS_UBX_CFG_KEY_SIGNAL_GLO_L1_ENA,
+	LGPS_UBX_CFG_KEY_SIGNAL_BDS_B1_ENA,
+	LGPS_UBX_CFG_KEY_SIGNAL_BDS_B1C_ENA,
+	LGPS_UBX_CFG_KEY_RATE_MEAS,
+};
+
+BUILD_ASSERT(ARRAY_SIZE(rescue_keys) <= LGPS_UBX_CFG_VALDEL_MAX_KEYS,
+	     "the rescue list must fit one UBX-CFG-VALDEL frame");
+
+/* Newest last, oldest first. Logging happens outside the lock on purpose. */
+static void gnss_log_cfg_trail(void)
+{
+	struct {
+		uint32_t key;
+		uint32_t value;
+		int status;
+	} copy[GNSS_CFG_TRAIL];
+	k_spinlock_key_t lock = k_spin_lock(&cfg_trail_lock);
+
+	memcpy(copy, cfg_trail, sizeof(copy));
+	k_spin_unlock(&cfg_trail_lock, lock);
+
+	for (uint8_t index = 0U; index < GNSS_CFG_TRAIL; index++) {
+		uint8_t slot = (uint8_t)((cfg_trail_next + index) % GNSS_CFG_TRAIL);
+
+		if (copy[slot].key == 0U) {
+			continue;
+		}
+
+		LOG_WRN("  recent cfg: key 0x%08x = %u -> %d", copy[slot].key,
+			(unsigned int)copy[slot].value, copy[slot].status);
+	}
+}
+
+/*
+ * Ask the receiver to forget the saved values that can silence it. Best effort: it
+ * is sent to a receiver that has already stopped answering, so it usually only
+ * takes effect once the receiver is alive enough to parse a frame - which is
+ * exactly the power save mode case, where the module listens during its ON window
+ * even though it emits nothing in between.
+ */
+static void gnss_clear_saved_config(void)
+{
+	uint8_t frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_CFG_HEADER_LEN +
+		     (LGPS_UBX_CFG_VALDEL_MAX_KEYS * 4U) + LGPS_UBX_TRAILER_LEN];
+	int ret;
+
+	ret = lgps_ubx_build_valdel(frame, sizeof(frame),
+				    LGPS_UBX_LAYER_BBR | LGPS_UBX_LAYER_FLASH, rescue_keys,
+				    (uint8_t)ARRAY_SIZE(rescue_keys));
+	if (ret < 0) {
+		LOG_ERR("UBX-CFG-VALDEL build failed (%d)", ret);
+		return;
+	}
+
+	(void)gnss_uart_send(frame, (size_t)ret);
+	LOG_WRN("sent UBX-CFG-VALDEL for %u saved key(s): the next configuration load uses "
+		"the factory defaults for them",
+		(unsigned int)ARRAY_SIZE(rescue_keys));
+}
+
 static void gnss_thread(void *arg1, void *arg2, void *arg3)
 {
 	ARG_UNUSED(arg1);
@@ -1755,9 +1941,11 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 		 */
 		if (recovery_needed) {
 			recovery_needed = false;
-			LOG_WRN("recovering the GNSS link: power-cycling the receiver so both sides "
-				"return to %u 8N1",
+			LOG_WRN("recovering the GNSS link: rescuing the receiver and power-cycling it "
+				"so both sides return to %u 8N1",
 				LGPS_GNSS_BAUD_DEFAULT);
+			gnss_log_cfg_trail();
+			gnss_clear_saved_config();
 			gnss_power_down();
 			backoff_ms = GNSS_LINK_RECOVERY_MS;
 			set_state(LGPS_GNSS_STATE_BACKOFF, GNSS_LINK_RECOVERY_MS);
@@ -1768,6 +1956,31 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 		gnss_bringup_service();
 		gnss_process_rx();
 		lgps_wdt_checkin(LGPS_WDT_TASK_GNSS);
+
+		/*
+		 * Liveness. Every failure mode this firmware cannot enumerate - a power save
+		 * mode that mutes the UART, a signal combination the receiver restarts on in
+		 * a loop, a rate it accepted but cannot sustain - ends in the same symptom:
+		 * no complete UBX frame. Only watched when the power policy is off, because
+		 * otherwise the policy itself brings the receiver back on its own.
+		 */
+		if (IS_ENABLED(CONFIG_LGPS_GNSS_ALWAYS_ON) && (atomic_get(&psm_active) == 0) &&
+		    !recovery_needed && (gnss_state != LGPS_GNSS_STATE_OFF) &&
+		    (gnss_state != LGPS_GNSS_STATE_BACKOFF) &&
+		    ((uint32_t)(lgps_diag_uptime_ms() - ubx_last_rx_ms) > GNSS_LIVENESS_MS)) {
+			if (recovery_count < GNSS_MAX_RECOVERIES) {
+				recovery_count++;
+				LOG_WRN("no UBX frame for %u ms in state %s: the receiver is not "
+					"answering, rescue %u/%u",
+					GNSS_LIVENESS_MS, lgps_gnss_state_name(gnss_state),
+					recovery_count, GNSS_MAX_RECOVERIES);
+				recovery_needed = true;
+			} else if (!liveness_given_up) {
+				liveness_given_up = true;
+				LOG_ERR("the receiver stayed silent through %u rescues; leaving it alone",
+					GNSS_MAX_RECOVERIES);
+			}
+		}
 
 		/* The ISR only counts ring overflows; reporting them here keeps the
 		 * ISR free of logging latency.

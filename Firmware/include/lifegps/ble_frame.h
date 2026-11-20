@@ -137,7 +137,11 @@ enum lgps_ble_status_code {
 #define LGPS_BLE_TELEM_IMU_SIZE (LGPS_BLE_TELEM_HEADER_SIZE + LGPS_BLE_TELEM_IMU_PAYLOAD)
 #define LGPS_BLE_TELEM_PDR_PAYLOAD 12U
 #define LGPS_BLE_TELEM_PDR_SIZE (LGPS_BLE_TELEM_HEADER_SIZE + LGPS_BLE_TELEM_PDR_PAYLOAD)
-#define LGPS_BLE_TELEM_GNSS_PAYLOAD 34U
+/*
+ * 34 bytes in 0.2.0; 0.3.0 appends the TTFF pair, so a decoder that only knows the
+ * old length keeps working on the shared prefix (BLE_Wire_v1.md section 5.1).
+ */
+#define LGPS_BLE_TELEM_GNSS_PAYLOAD 42U
 #define LGPS_BLE_TELEM_GNSS_SIZE (LGPS_BLE_TELEM_HEADER_SIZE + LGPS_BLE_TELEM_GNSS_PAYLOAD)
 
 /* Satellite table: 8-byte payload header, then 5 bytes per satellite. */
@@ -224,6 +228,11 @@ struct lgps_ble_telem_gnss {
 	uint32_t nmea_starts;
 	uint32_t rx_dropped;
 	uint32_t baud;
+	/* Time to first fix of this power cycle (0 = no 3D fix yet) and how long the
+	 * rail was down before it (UINT32_MAX = unknown).
+	 */
+	uint32_t ttff_ms;
+	uint32_t power_off_ms;
 };
 
 /* Barometer snapshot: compensated pressure, height relative to the reference, the

@@ -139,6 +139,14 @@ fun GnssConfigScreen(
                         color = TextDim,
                         fontSize = 11.sp,
                     )
+                    Text(
+                        "注意：把「功耗模式」改成 PSMOO / PSMCT 后，接收机在自己的休眠期完全不发数据，" +
+                            "界面上的接收计数和定位会停住，看起来像模组死了——这是它被要求的行为。" +
+                            "要回连续跟踪就改成 FULL；万一改完彻底联系不上，固件在连续 3 次失联后会清掉" +
+                            "BBR 里的这几个键（CFG-VALDEL），再断电重启一次即恢复出厂组合。",
+                        color = Amber,
+                        fontSize = 11.sp,
+                    )
                 }
             }
 

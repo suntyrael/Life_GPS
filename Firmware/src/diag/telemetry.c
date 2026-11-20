@@ -12,6 +12,7 @@
 #include <math.h>
 #include <stdint.h>
 
+#include <lifegps/gnss.h>
 #include <lifegps/telemetry.h>
 
 LOG_MODULE_REGISTER(lgps_tele, LOG_LEVEL_INF);
@@ -129,10 +130,29 @@ void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 		(void)snprintk(utc, sizeof(utc), "---");
 	}
 
+	char ttff_s[8];
+
+	/*
+	 * TTFF of the current power cycle: 0 until the first 3D fix, then the number
+	 * of milliseconds from GPS_EN going high. Printed next to the state so a
+	 * "seconds or minutes" question is answered without the App.
+	 */
+	{
+		struct lgps_gnss_ttff ttff;
+
+		lgps_gnss_get_ttff(&ttff);
+		if (ttff.ttff_ms == 0U) {
+			(void)snprintk(ttff_s, sizeof(ttff_s), "---");
+		} else {
+			(void)snprintk(ttff_s, sizeof(ttff_s), "%u.%u",
+				       ttff.ttff_ms / 1000U, (ttff.ttff_ms % 1000U) / 100U);
+		}
+	}
+
 	LOG_INF("GNSS st=%s fix=%u sats=%u pdop_e2=%s lat_e7=%s lon_e7=%s hmsl_mm=%s "
-		"spd_cms=%s hdg_ddeg=%s utc_s=%s age_ms=%u rx=%u ubx=%u ckerr=%u nmea=%u",
+		"spd_cms=%s hdg_ddeg=%s utc_s=%s age_ms=%u ttff_s=%s rx=%u ubx=%u ckerr=%u nmea=%u",
 		lgps_gnss_state_name(snap->gnss_state), snap->fix.fix_type, snap->fix.satellites,
-		pdop, lat, lon, hmsl, spd, hdg, utc, snap->gnss_age_ms,
+		pdop, lat, lon, hmsl, spd, hdg, utc, snap->gnss_age_ms, ttff_s,
 		snap->gnss_counters.rx_bytes, snap->gnss_counters.ubx_frames,
 		snap->gnss_counters.ubx_bad_checksum, snap->gnss_counters.nmea_starts);
 

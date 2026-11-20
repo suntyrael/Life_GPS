@@ -420,6 +420,11 @@ static void publish_gnss(const struct lgps_telemetry_snapshot *snap)
 		.rx_dropped = snap->gnss_counters.rx_dropped,
 		.baud = lgps_gnss_baud(),
 	};
+	struct lgps_gnss_ttff ttff;
+
+	lgps_gnss_get_ttff(&ttff);
+	gnss.ttff_ms = ttff.ttff_ms;
+	gnss.power_off_ms = ttff.power_off_ms;
 
 	if (snap->fix.valid) {
 		gnss.flags |= LGPS_BLE_TELEM_GNSS_FLAG_FIX_VALID;

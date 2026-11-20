@@ -422,6 +422,8 @@ int lgps_ble_telem_gnss_encode(uint16_t seq, const struct lgps_ble_telem_gnss *g
 	put_u32(&payload[22], gnss->nmea_starts);
 	put_u32(&payload[26], gnss->rx_dropped);
 	put_u32(&payload[30], gnss->baud);
+	put_u32(&payload[34], gnss->ttff_ms);
+	put_u32(&payload[38], gnss->power_off_ms);
 
 	return lgps_ble_telem_encode((uint8_t)LGPS_BLE_TELEM_GNSS, seq, payload, sizeof(payload), out,
 				     out_size);
