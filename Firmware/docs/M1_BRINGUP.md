@@ -118,6 +118,24 @@
 | FSM / MLC（第 14/15 章的 page 编程、`FSM_ENABLE(0x46)`、`MLC1..4_SRC(0x70..0x73)`） | 目的是把判断逻辑搬进传感器、让 MCU 睡；本项目 PDR 要求 MCU 常驻 30 Hz，收益不足 |
 | 自检 `ST_XL/ST_G`（`CTRL10(0x19)`） | 只在产测/RMA 有用，留到 F11 产测决定；App 的 `SELFTEST(0x40)` 目前仍回 `NOT_SUPPORTED` |
 
+**为什么 PDR 不搬进 FSM/MLC**
+
+PDR 需要四个量，缺一不可：姿态/航向（四元数，且要用地磁与 GNSS 航迹角对齐）、每一步的峰谷差
+`delta_a`、步长（Weinberg `L = K * delta_a^0.25`，K 还要用 GNSS 在线标定并跨掉电保存）、以及把
+它们积分成 x/y 并写进轨迹。FSM/MLC 的指令集是整数阈值、计数器和决策树：没有浮点、没有四元数、
+拿不到 GNSS 航迹角、也没有位置与存储；SFLP 能给的姿态没有磁力计 yaw，pedometer 只给累计步数
+（没有 `delta_a`）。所以"用 FSM/MLC 做 PDR"不是省电优化，而是做不到——`Firmware/src/nav/nav.c`
+与 `attitude.c` 实现的正是这四步。
+
+能搬进传感器的是**"要不要叫醒 MCU"** 这个判断：静止 → 唤醒门限（`WAKE_UP_THS`/`WAKE_UP_DUR`）
++ 连续越阈去抖（`INACT_DUR`），这就是下面的 M2 项。若要更聪明的"走 / 不走 / 甩动"分类，MLC 的
+活动识别才是它真正的位置，但它省的是唤醒次数，不是 PDR 运算。
+
+反过来，如果以后要在手机上显示**步数统计**，芯片 pedometer（`PEDO_EN` + `STEP_COUNTER_L/H`）
+是最省的一条路（3 个寄存器、零 MCU 运算），到那时再开；它替代不了 PDR 要的 `delta_a`。
+真要"把运算搬出 M33"，本板对应的硬件是 FLPR（RISC-V 协处理器），不是 FSM/MLC；当前
+`Kconfig.lifegps` 明确写了本版未使用 FLPR，属于另一次架构决定。
+
 **要做：长时间静止后的唤醒（M2）**
 
 1. 阈值：`WAKE_UP_THS(0x5B)` 的 `WK_THS[5:0]`；1 LSB 的重量由 `INACTIVITY_DUR(0x54)` 的
