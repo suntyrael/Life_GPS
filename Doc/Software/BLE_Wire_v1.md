@@ -93,7 +93,7 @@ off  size  field
 | 70 | u32 | `baro_temp_raw` | BMP388 未补偿原始温度 |
 | 74 | u32 | `ring_sector_seq` | 轨迹环当前扇区序号 |
 | 78 | u32 | `ring_records` | 轨迹环累计记录数 |
-| 82 | i16×3 | `gravity_mg[3]` | **体坐标系**重力方向 ×1000（1 g = 1000 mg），由姿态四元数算出，静止时与 `acc` 同向 |
+| 82 | i16×3 | `gravity_mg[3]` | **体坐标系**重力方向 ×1000（1 g = 1000 mg），由 SFLP 重力向量（首选，FIFO tag `0x17`）或固件姿态估计算出，静止时与 `acc` 同向 |
 | 88 | i16×3 | `linear_mg[3]` | **体坐标系**线性加速度 = `acc(body) − gravity`，单位 mg |
 | 94 | i16 | `imu_temp_cc` | IMU（LSM6DSV16X）裸片温度，0.01 °C（256 LSB/°C，+25 °C 偏置） |
 | 96 | i16 | `mag_temp_cc` | LIS2MDL 裸片温度，0.01 °C（8 LSB/°C，无偏置） |
