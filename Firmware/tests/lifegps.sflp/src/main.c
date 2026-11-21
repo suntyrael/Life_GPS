@@ -147,3 +147,5 @@ ZTEST(lifegps_sflp, test_quaternion_rejects_null)
 	lgps_sflp_game_quat(NULL, quat);
 	zassert_equal(quat[0], 9.0F, "output untouched");
 }
+
+ZTEST_SUITE(lifegps_sflp, NULL, NULL, NULL, NULL, NULL);
