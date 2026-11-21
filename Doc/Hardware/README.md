@@ -32,7 +32,7 @@
 | **板载双频 LNA** | **ATR2652（U5）** | 杭州中科微 | DFN-6 / SOT23-6 | 1.8V 受控<br>*(支持 1.5~3.6V)* | L1 增益 22.4dB / NF 0.85dB<br>L5 增益 22.0dB / NF 0.75dB | **本版 DNP（不贴）**：V0.2 量产装配为直通版，仅保留焊盘/BOM 位；贴装时必须同时 NC 掉 C46/C47<br>工作电流 4.5mA，随 GNSS 受控轨同步断电 | 原厂选型手册 |
 | **板载双通带 SAW** | **B39162B2651P810（Q1）** | Qualcomm / RF360 | 1511<br>*(1.5×1.1mm)* | 无源器件 | 单进单出双通带 (L1+L5)<br>2.4GHz 抑制 > 38dB | **本版 DNP（不贴）**；GNSS 模组内部已含 SAW，带外抑制由模组承担<br>若启用增强版必须与 C46/C47 互斥 | 原厂选型手册 |
 | **SPI NOR Flash** | **W25Q512NWEIQ**<br>*(1.8V 宽压旗舰)* | Winbond (华邦) | WSON-8<br>*(6×8mm)* | 1.9V 常通<br>*(VCC 1.7~1.95V)* | 标准 4 线 SPI (模式 0)<br>**目标时钟: 8MHz (低噪声)** | `/CS`=**P2.05**（固件内部上拉）、`CLK`=**P2.01**、`MOSI`=**P2.02**、`MISO`=**P2.04**（SPIM00 专用脚）<br>/WP(Pin3)与/HOLD(Pin7) 直连 1.9V 主电轨（改版建议改 10kΩ 上拉） | 原厂规格书 (1.8V 系列) |
-| **6轴 IMU** | **LSM6DSVTR** | STMicroelectronics | LGA-14<br>*(2.5×3.0mm)* | 1.9V 常通<br>*(磁珠+电容π型滤波)* | SPI 8MHz：`SCL/SPC`=**P1.03**、`SDA/SDI`=**P1.02**、`SDO/SA0`=**P1.13**、`CS`=**P1.14**（`SPIM22` 同域 P1，无需 Constant Latency）<br>SFLP 输出: 60Hz 姿态四元数 | 静止待机: 低功耗加速度计 (~7.5µA)<br>INT1 = **P0.02**（GPIOTE30）运动唤醒与数据就绪中断 | `Datasheets/LSM6DSV16X_Datasheet.pdf` |
+| **6轴 IMU** | **LSM6DSVTR** | STMicroelectronics | LGA-14<br>*(2.5×3.0mm)* | 1.9V 常通<br>*(磁珠+电容π型滤波)* | SPI 8MHz：`SCL/SPC`=**P1.03**、`SDA/SDI`=**P1.02**、`SDO/SA0`=**P1.13**、`CS`=**P1.14**（`SPIM22` 同域 P1，无需 Constant Latency）<br>SFLP 输出: 60Hz 姿态四元数（固件取 30 Hz，见 `README.md` §7.2 的固件实现现状注） | 静止待机: 低功耗加速度计 (~7.5µA)<br>INT1 = **P0.02**（GPIOTE30）运动唤醒与数据就绪中断 | `Datasheets/LSM6DSV16X_Datasheet.pdf` |
 | **三轴磁力计** | **LIS2MDL** | STMicroelectronics | LGA-12<br>*(2.0×2.0mm)* | 1.9V 常通<br>*(磁珠+电容π型滤波)* | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSVTR Sensor Hub AUX I2C<br>数据进 IMU FIFO，MCU 固件执行磁校准与姿态融合 | `Datasheets/LIS2MDL_Datasheet.pdf` |
 | **气压高度计** | **BMP388** | Bosch Sensortec | LGA-10<br>*(2.0×2.0mm)* | 1.9V 常通<br>*(磁珠+电容π型滤波)* | I2C (作为 Sensor Hub 从机) | 挂载于 LSM6DSVTR Sensor Hub AUX I2C<br>相对精度 typ. ±8Pa (±0.08hPa, 等效约 ±0.66m) | `Datasheets/BMP388_Datasheet.pdf` |
 | **常通降压 DCDC** | **SGM6040AXTHL8G/TR** | 圣邦微 (SGMICRO) | **TDFN-2×1.5-8L**<br>*(RSET设定 1.9V)* | 输入 1.8~5.5V<br>**设定输出 1.9V** | 750mA 输出能力，效率 > 90%<br>Pin 5 VSET 接 909Ω；Pin 6 STOP 内部下拉悬空 | 全板常通核心（为MCU/Flash/传感器/GNSS后备供电）<br>静态电流仅 60nA (关断 25nA) | `Datasheets/SGM6040A_Datasheet.pdf` |
@@ -130,6 +130,7 @@ V0.2 射频部分由两条**互相独立**的链路构成，GNSS 侧**只保留�
 > 1. **物理隔离与滤波（⚠️ 现状与设计目标不一致）**：设计目标是传感器轨由 1.9V 主轨经 **`BLM15PX121 (120Ω@100MHz)` 磁珠** + $10\mu\text{F}+0.1\mu\text{F}$ 构成 $\pi$ 型滤波；**但 V0.2 原理图实际用的是 `R5/R6/R7 = 0Ω` 跳线**，等同三条 1.9V 轨直接短接。改版须把 R7 换成磁珠后本段结论才成立，当前按"未滤波"评估底噪；
 > 2. **消除 STOP 掉电隐患**：取消原设计中“拉高 STOP 冻结 DCDC”的操作。LSM6DSVTR、LIS2MDL 与 BMP388 均为内置高精度 ADC 与精密参考源的纯数字输出传感器，内部模拟部分集成专用微型稳压器与电荷泵，在 $\pi$ 型滤波后供电下底噪完全达标，硬件悬空（内部下拉）确保供电稳固；
 > 3. **Sensor Hub 拓扑锁定**：LIS2MDL（磁力计）与 BMP388（气压计）挂载于 LSM6DSVTR 的 AUX I2C（Sensor Hub）总线上，主控仅通过一组 SPI 直连 IMU，多传感器融合数据打包进 4.5KB FIFO 批量突发读取，最大化主控休眠周期。
+>    *（固件现状：hub 数据仍按 `SENSOR_HUB_1..14` 寄存器直读，只有 SFLP 四元数/重力走 FIFO；把 accel/gyro/hub 都批量进 FIFO + 水位中断唤醒属于未落地项，见 `Firmware/docs/M1_BRINGUP.md` §2.1 末段。）*
 
 ---
 
@@ -340,4 +341,4 @@ $$\mathbf{R}_{\text{IMU}} \equiv \mathbf{R}_{\text{MAG}} \implies \begin{bmatrix
 在 LSM6DSVTR 芯片内部 Sensor Hub 读取 LIS2MDL 数据时，两颗芯片物理敏感轴天然 1:1 同向对齐：
 * `EXT_CFG_A (D4h)` 保持默认值 `0x05`（$Y=Y, Z=Z$）；
 * `EXT_CFG_B (D5h)` 保持默认值 `0x02`（$X=X$）；
-无需在驱动层执行繁复的轴向交换重排序，直接同向打包进 FIFO！
+无需在驱动层执行繁复的轴向交换重排序，直接同向读出（hub 寄存器；若走 FIFO 亦同向）！

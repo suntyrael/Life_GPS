@@ -11,6 +11,14 @@
 | twister native_sim | 6/6 套件通过 |
 | 协议契约 | `validate.py` PASS，`gen_c.py --check` 无漂移 |
 
+最近一次复测（commit `c1f6acc`，run 44872866305，2026-11-21，含 LSM6DSV16X 驱动 + SFLP）：
+
+| 项 | 结果 |
+| :--- | :--- |
+| 固件镜像 | FLASH 267,384 B / 729,088 B（36.7%），RAM 61,457 B / 262,144 B（23.4%） |
+| twister native_sim | 12/12 套件通过（新增 `lifegps.sflp`） |
+| app / docs workflow | success |
+
 ## 1. M1 覆盖范围
 
 | 模块 | 文件 | M1 行为 |
@@ -279,7 +287,7 @@ grep 'lgps_tele: GNSS' log.txt | sed -n 's/.*fix=\([0-9]*\).*/\1/p'
 | # | 位置 | 根因 | 修复 |
 | :--- | :--- | :--- | :--- |
 | 1 | `board_io.c:lgps_charger_charging()` | `CHG_STAT` 在 DT 里是 `GPIO_ACTIVE_LOW`，用 `gpio_pin_get_dt()` 取逻辑电平后又按 `value == 0` 判“充电中”，结论正好颠倒（与第四轮按键 bug 同一类） | 改用 `gpio_pin_get_raw()`：0 恒等于“/CHG 拉到地”，与 DT 标志无关 |
-| 2 | DTS `imu@0` | 审计认为器件要求 SPI 模式 3 | **不成立，未改**：DS11976 §5.1 原文 “the device is compatible with SPI modes 0 and 3”，模式 0 是台架已验证的模式（WHO_AM_I=0x6B、hub 有真实数据）；已在 DTS 写明出处，避免下一轮重复报 |
+| 2 | DTS `imu@0` | 审计认为器件要求 SPI 模式 3 | **不成立，未改**：DS11976 §5.1 原文 “the device is compatible with SPI modes 0 and 3”（LSM6DSV16X 同结论：DS13510 §5.1），模式 0 是台架已验证的模式（WHO_AM_I=0x6B、hub 有真实数据）；已在 DTS 写明出处，避免下一轮重复报 |
 | 3 | `flash_ring.c:lgps_ring_init()` | `records_in_sector` 只在 RAM，复位后为 0 → 第一条 append 直接写进已编程区（NOR 只能 1→0，旧记录被静默破坏） | 挂载时扫描扇区记录区，第一个“全 0xFF”槽位即写游标（`count_used_records()`，256 B 静态块 × 16 次读） |
 | 4 | `flash_ring.c:sector_rotate()` | 封存扇区时就地重算 header CRC；NOR 无法把 0 位改回 1 → 下次挂载 CRC 不匹配 → 整个环被重新格式化 | CRC 覆盖范围改为 `magic/sector_seq/erase_count`（前 12 字节），`commit_flags` 移出 CRC；封存变成纯 1→0 更新（0xFFFF→0x55AA） |
 | 5 | `gnss.c:gnss_uart_isr()` | ISR 里 `LOG_WRN`；`LOG_MODE_IMMEDIATE` 会逐字符 `poll_out` 并持锁（毫秒级），正好在 RX 溢出时丢数据 | ISR 只累加 `isr_rx_dropped`（atomic），由 GNSS 线程打印 |

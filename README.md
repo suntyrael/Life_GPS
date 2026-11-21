@@ -184,7 +184,7 @@
   * LSM6DSVTR 内置 SFLP（Sensor Fusion Low Power）内核，以 60Hz 硬件输出 6 轴 Game Rotation Vector 姿态四元数（增量功耗仅 14µA）；
   * **单 INT1 中断架构**：传感器 Pin 4 (INT1) 连接主控 **P0.02（Pin 27，GPIOTE30）**，负责静止唤醒及数据就绪中断；
   * **MCU 固件轻量级计步与运动判别**：运动模式检测与步数统计直接由 nRF54L15 固件驱动层轻量级执行，简化硬件依赖；
-  * **磁异常检测与自适应抑制**：Sensor Hub 采集 LIS2MDL 磁力计数据进 FIFO，主控在磁场平稳时进行航向校准，在强磁异常环境下自适应切断地磁校准。EKF 绝对航向纠偏，客观表述为“有效抑制并减缓长期偏航漂移”，绝不在工程文档中承诺物理上不可达到的“彻底消除漂移”；
+  * **磁异常检测与自适应抑制**：Sensor Hub 采集 LIS2MDL 磁力计数据（寄存器直读，亦可批量进 FIFO），主控在磁场平稳时进行航向校准，在强磁异常环境下自适应切断地磁校准。EKF 绝对航向纠偏，客观表述为“有效抑制并减缓长期偏航漂移”，绝不在工程文档中承诺物理上不可达到的“彻底消除漂移”；
 * **扩展能力 (Sensor Hub)**：具备独立 I2C Master，挂载三轴磁力计（**LIS2MDL**）与高精度气压计（**BMP388**），数据统一打包进芯片内部高达 **4.5 KB 的 Smart FIFO**（系统可按需配置 1KB 阈值中断或深度批处理缓冲），支持 MCU 突发批量读取。
 * **触摸感知**：具备 **Qvar** 静电电荷变化检测通道，支持设备外壳轻击滑动手势及人体穿戴检测。
 
@@ -228,7 +228,7 @@
 3. **专项评估：传感器供电拓扑**
    * **深度论证结论**：**传感器无需独立 LDO 供电**；
    * **物理滤波等效（⚠️ V0.2 现状未实现）**：设计目标是在传感器电源入口用磁珠（BLM15PX121，120Ω@100MHz）+ 陶瓷电容构成 $\pi$ 型滤波（1.5MHz 纹波衰减 >35 dB、零额外静态电流）；**但 V0.2 原理图实际使用 `R5/R6/R7 = 0Ω` 直连**，改版必须把 R7 换成磁珠后本结论才成立；
-   * **Sensor Hub 拓扑**：LIS2MDL（磁力计）与 BMP388（气压计）挂载于 LSM6DSVTR 的 AUX I2C 总线上，主控仅通过一组 SPI 直连 IMU，批量读取 FIFO。
+   * **Sensor Hub 拓扑**：LIS2MDL（磁力计）与 BMP388（气压计）挂载于 LSM6DSVTR 的 AUX I2C 总线上，主控仅通过一组 SPI 直连 IMU；hub 数据读 `SENSOR_HUB_1..14` 寄存器，SFLP 四元数/重力走 FIFO。
 4. **锂电池充电管理：圣邦微 SGM4056 (严控发热与闭环保护)**
    * **IC 定位与充电参数**：1A 线性锂电池充电芯片，集成高达 26.5V 输入耐压与过压保护（OVP 6.8V），防电池倒灌漏电 $< 1\text{ }\mu\text{A}$；
    * **充电发热严谨核算与电阻设定 (0.35C)**：依据原厂规格书，将 IREF 引脚电阻设定为 **$R_8 = 34.0\text{ k}\Omega$**（1% 精度），将恒流充电严格限制在 **$\approx 350\text{ mA}$（0.35C）**，最大瞬态耗散功率限制在 0.70W，温升完全可控；将 IMIN 引脚电阻设定为 **$R_9 = 340\text{ k}\Omega$**，将充饱截止电流（EOC）锁定在约 29 mA（$I_{MIN}=10169/R_{IMIN}-0.8$）；
@@ -745,7 +745,8 @@ $$\mathbf{R}_{\text{IMU}} \equiv \mathbf{R}_{\text{MAG}} = \begin{bmatrix} 0 & -
   * **SFLP 硬件 6 轴姿态解算**：仅融合加速度计与陀螺仪，在芯片硬件内部以 **60Hz 输出 6 轴姿态四元数（Game Rotation Vector）**，**增量电流仅 14 µA**。主控 MCU 绝大多数时间保持 System ON 深度休眠；
   * **单中断输出**：Pin 4 (INT1) 连至 MCU **P0.02（Pin 27，GPIOTE30）**，用于静止/运动唤醒与数据就绪；
 * **MCU 固件融合层 (nRF54L15 Cortex-M33)**：
-  * **Sensor Hub 采集**：LSM6DSVTR 作为独立 I2C Master 以 20Hz 轮询外挂的 LIS2MDL 磁力计并暂存 FIFO；
+  * **Sensor Hub 采集**：LSM6DSVTR 作为独立 I2C Master，host 周期由 IMU 的加速度/陀螺 data-ready 触发（固件现为 30 Hz），
+    磁力计与气压计数据落在 `SENSOR_HUB_1..14` 寄存器后由主控读走；FIFO 目前只承载 SFLP 四元数与重力向量（`tag 0x13/0x17`）；
   * **硬铁与软铁椭球拟合校准**：执行 $\mathbf{B}_{cal} = \mathbf{W} \cdot (\mathbf{B}_{raw} - \mathbf{V})$，去除板载器件固定偏置 $\mathbf{V}$ 与软铁变形矩阵 $\mathbf{W}$；
   * **传感器安装矩阵对齐**：将磁力计轴系严格旋转至载体机体坐标系（Body Frame）；
   * **异常磁场动态抑制与自适应降权（Magnetic Anomaly Rejection）**：
@@ -828,7 +829,7 @@ flowchart TD
 ### 7.5 PDR 零速更新 (ZUPT) 定量标定双判据与绝对锁死
 针对室内长时间静止时航向与步长噪声积分导致的“人在工位坐，轨迹漂移几公里”的顽疾，固件实现基于物理双判据的零速更新（ZUPT, Zero-Velocity Update）：
 1. **采样窗口与物理量计算**：
-   * 在 IMU 20Hz 采样通道维护滑动窗口 $N = 20$（时间跨度 $T = 1.0\text{s}$）；
+   * 在 IMU 30 Hz 采样通道（LSM6DSV16X ODR = 0100b，DS13510 Table 52/55）维护滑动窗口 $N = 30$（时间跨度 $T = 1.0\text{s}$）；
    * 实时计算三轴合加速度方差 $\sigma_a^2$ 与三轴合角速度模长 $\|\boldsymbol{\omega}\|$：
      $$\sigma_a^2 = \frac{1}{N}\sum_{i=1}^N \left( \|\mathbf{a}_i\| - \bar{a} \right)^2, \quad \|\boldsymbol{\omega}\| = \sqrt{\omega_x^2 + \omega_y^2 + \omega_z^2}$$
 2. **定量判定门限与时序锁死机制**：
