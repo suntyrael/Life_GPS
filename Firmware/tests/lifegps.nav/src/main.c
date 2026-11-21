@@ -25,11 +25,12 @@
 #define BENCH_DOMINANT_MIN 0.90F
 #define BENCH_CROSS_MAX 0.25F
 /*
- * 26 Hz is the LSM6DSR ODR the firmware programs (1000 / 26 = 38.46 ms, rounded
- * down here); together with LGPS_ZUPT_WINDOW_SAMPLES == 26 it makes the window
- * exactly 1.000 s. Tests therefore pace their samples like the real device.
+ * 30 Hz is the LSM6DSV16X ODR the firmware programs (1000 / 30 = 33.3 ms,
+ * rounded down here); together with LGPS_ZUPT_WINDOW_SAMPLES == 30 it makes the
+ * window exactly 1.000 s. Tests therefore pace their samples like the real
+ * device.
  */
-#define TEST_SAMPLE_PERIOD_MS 38U
+#define TEST_SAMPLE_PERIOD_MS 33U
 #define TEST_HALF_PI_RAD 1.57079632679F
 #define TEST_ORIGIN_TOLERANCE_M 1e-6F
 
@@ -447,7 +448,7 @@ ZTEST(lifegps_nav, test_attitude_level_stays_level)
 
 	lgps_attitude_reset(&att, accel);
 	for (int sample = 0; sample < 100; sample++) {
-		lgps_attitude_update(&att, accel, gyro, 1.0F / 26.0F);
+		lgps_attitude_update(&att, accel, gyro, 1.0F / 30.0F);
 	}
 
 	lgps_attitude_euler_deg(&att, euler);
@@ -467,16 +468,16 @@ ZTEST(lifegps_nav, test_attitude_gyro_signs_match_the_documented_frame)
 	 * compass heading grows clockwise, so the heading must decrease by 1 rad.
 	 */
 	lgps_attitude_reset(&att, NULL);
-	for (int sample = 0; sample < 26; sample++) {
-		lgps_attitude_update(&att, NULL, yaw_rate, 1.0F / 26.0F);
+	for (int sample = 0; sample < 30; sample++) {
+		lgps_attitude_update(&att, NULL, yaw_rate, 1.0F / 30.0F);
 	}
 	zassert_within(lgps_attitude_heading_rad(&att), -1.0F, 0.02F,
 		       "+Z gyro must decrease the compass heading");
 
 	/* A positive rate about +X_body lifts the nose. */
 	lgps_attitude_reset(&att, NULL);
-	for (int sample = 0; sample < 26; sample++) {
-		lgps_attitude_update(&att, NULL, pitch_rate, 1.0F / 26.0F);
+	for (int sample = 0; sample < 30; sample++) {
+		lgps_attitude_update(&att, NULL, pitch_rate, 1.0F / 30.0F);
 	}
 	lgps_attitude_euler_deg(&att, euler);
 	zassert_within(euler[1], 57.2957795F, 1.0F, "+X gyro must give nose-up pitch");
@@ -553,7 +554,7 @@ ZTEST(lifegps_nav, test_step_detector_counts_a_walking_cadence)
 	struct lgps_step step;
 	float last_delta = 0.0F;
 	int steps = 0;
-	const float sample_rate = 26.0F;
+	const float sample_rate = 30.0F;
 
 	lgps_step_reset(&step, 0U);
 
@@ -581,8 +582,8 @@ ZTEST(lifegps_nav, test_step_detector_ignores_a_static_device)
 
 	lgps_step_reset(&step, 0U);
 
-	for (int sample = 0; sample < 260; sample++) {
-		if (lgps_step_update(&step, 1.0F, (uint32_t)(sample * 38), NULL)) {
+	for (int sample = 0; sample < 300; sample++) {
+		if (lgps_step_update(&step, 1.0F, (uint32_t)(sample * TEST_SAMPLE_PERIOD_MS), NULL)) {
 			steps++;
 		}
 	}

@@ -6,7 +6,7 @@
 config BOARD_LIFEGPS
 	select SOC_NRF54L15_CPUAPP if BOARD_LIFEGPS_NRF54L15_CPUAPP
 
-# Bring-up only: the one-shot sensor-hub diagnostic in src/imu/lsm6dsr.c. It
+# Bring-up only: the one-shot sensor-hub diagnostic in src/imu/lsm6dsv16x.c. It
 # proves the auxiliary I2C read/write paths and decodes the per-slave NACK bits
 # before the streaming configuration is written, which is what localised the dead
 # BMP388 on the 2026-11-19 bench unit. It costs about 4 s of boot time and a few
@@ -14,6 +14,20 @@ config BOARD_LIFEGPS
 config LGPS_IMU_HUB_DIAG
 	bool "Run the sensor hub bring-up diagnostic once at boot"
 	default n
+
+# SFLP: the LSM6DSV16X sensor fusion low-power block. It has no register output
+# (DS13510 section 2.8), so the quaternion and gravity vector are batched into the
+# FIFO (tags 0x13 and 0x17, table 218) at 30 Hz and drained through
+# lgps_imu_read_sflp(). The gravity vector feeds the gravity / linear
+# split in the BLE Status frame; the quaternion is decoded and logged at bring-up.
+#
+# On by default because it costs no extra sample rate (30 Hz is already running)
+# and the firmware attitude filter keeps working if the FIFO never delivers a tag
+# (the driver logs that case once). Turn it off to save the FIFO setup writes and
+# the incremental SFLP current that README section 7.2 quotes as ~14 uA.
+config LGPS_IMU_SFLP
+	bool "Enable the LSM6DSV16X SFLP game rotation vector and gravity vector"
+	default y
 
 # Bench debugging escape hatch for the GNSS power policy: a receiver that runs
 # continuously cannot be watched on a scope or in u-center, because README section

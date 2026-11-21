@@ -5,7 +5,7 @@
  * derived from the datasheet (BST-BMP388-DS001-07 sections 9.1..9.3) with the
  * trimming block below, which is a synthetic but self-consistent part: applied
  * to the 24-bit raw pair of the 2026-11-21 bench burst it yields ~23 degC and
- * ~1012 hPa, i.e. the values a healthy BMP388 next to the ~23 degC LSM6DSR die
+ * ~1012 hPa, i.e. the values a healthy BMP388 next to the ~23 degC IMU die
  * must produce.
  *
  * SPDX-License-Identifier: MIT

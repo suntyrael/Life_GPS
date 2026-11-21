@@ -755,6 +755,13 @@ $$\mathbf{R}_{\text{IMU}} \equiv \mathbf{R}_{\text{MAG}} = \begin{bmatrix} 0 & -
     * 仅在磁场平稳且持续满足置信度时，才通过互补滤波/EKF 缓慢纠偏陀螺仪零偏，**客观表述为“有效抑制并减缓长期偏航漂移”，绝不在物理上承诺不可达到的“彻底消除漂移”**；
   * **间歇突发唤醒**：平稳行走时 MCU 每 2~5 秒（或在检测到大转弯时）突发唤醒一次执行校准，**单次耗时 < 1ms** 后瞬间回睡，均摊增加电流不足 $20\text{ }\mu\text{A}$。
 
+> **固件实现现状（2026-11，`Firmware/src/imu/lsm6dsv16x.c`）**：加速度计、陀螺仪与 SFLP 都配置为 **30 Hz**
+> （`CTRL1`/`CTRL2` 的 `ODR=0100b`、`SFLP_ODR` 的 `SFLP_GAME_ODR=001b`，DS13510 Table 52/55/324），ZUPT 窗口
+> 取 30 点 = 1.000 s；四元数与重力向量经 FIFO（tag `0x13` / `0x17`）读入。**重力向量**参与 Status 帧的
+> `gravity_mg`/`linear_mg` 拆分，**四元数**只做 bring-up 留证：SFLP 不含磁力计，yaw 没有世界基准，而 BLE
+> 契约要求世界对齐四元数，所以姿态包仍由固件融合（可对齐 GNSS 航迹角）。上文的 60 Hz 是 SFLP 模块的
+> 能力上限，不是当前配置。
+
 ```mermaid
 flowchart TD
     classDef raw fill:#1e293b,stroke:#475569,stroke-width:1.5px,color:#f8fafc;

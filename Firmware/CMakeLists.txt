@@ -29,8 +29,9 @@ target_sources(app PRIVATE
   src/diag/telemetry.c
   src/gnss/gnss.c
   src/gnss/ubx.c
-  src/imu/lsm6dsr.c
+  src/imu/lsm6dsv16x.c
   src/imu/bmp388.c
+  src/imu/sflp.c
   src/nav/attitude.c
   src/nav/baro.c
   src/nav/baro_store.c

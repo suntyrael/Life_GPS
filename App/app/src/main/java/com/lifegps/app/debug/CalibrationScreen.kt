@@ -266,7 +266,7 @@ private fun AccelCalCard(
                         text = if (predictedFace == CalibFaces.NONE) {
                             "请把设备平放在某一面上，让一条轴接近 ±1 g；否则设备无法判断这是第几面"
                         } else {
-                            "姿态可识别；保持静止，设备会用 26 Hz 采样自己判定静止"
+                            "姿态可识别；保持静止，设备会用 30 Hz 采样自己判定静止"
                         },
                         color = if (predictedFace == CalibFaces.NONE) Amber else TextDim,
                         fontSize = 12.sp,

@@ -25,7 +25,7 @@
 | Status | `4C475053-0002-4C47-5053-000000000001` | Read + Notify + CCC | 100 字节固定状态快照（前 82 字节与 v1 完全一致）；有 central 订阅时 10 Hz 推送，无订阅时 1 Hz 仅维持缓存 |
 | Control | `4C475053-0003-4C47-5053-000000000001` | Write + WriteWithoutResponse + Notify + CCC | 命令帧请求，响应走 Notify |
 | Log | `4C475053-0006-4C47-5053-000000000001` | Notify + CCC | 固件日志转发（UTF-8） |
-| Telemetry | `4C475053-0005-4C47-5053-000000000001` | Notify + CCC | 按传感器分组的二进制包：IMU（含姿态四元数）26 Hz、PDR 每步 |
+| Telemetry | `4C475053-0005-4C47-5053-000000000001` | Notify + CCC | 按传感器分组的二进制包：IMU（含姿态四元数）30 Hz、PDR 每步 |
 
 UUID 的 128 位表示与固件 `Firmware/include/lifegps/ble_uuid.h` 中的**小端字节宏**一一对应；
 两端一致性由 `Firmware/tests/lifegps.ble_frame` 的单测锁定（解析生成头里的 UUID 字符串
@@ -95,7 +95,7 @@ off  size  field
 | 78 | u32 | `ring_records` | 轨迹环累计记录数 |
 | 82 | i16×3 | `gravity_mg[3]` | **体坐标系**重力方向 ×1000（1 g = 1000 mg），由姿态四元数算出，静止时与 `acc` 同向 |
 | 88 | i16×3 | `linear_mg[3]` | **体坐标系**线性加速度 = `acc(body) − gravity`，单位 mg |
-| 94 | i16 | `imu_temp_cc` | LSM6DSR 裸片温度，0.01 °C（256 LSB/°C，+25 °C 偏置） |
+| 94 | i16 | `imu_temp_cc` | IMU（LSM6DSV16X）裸片温度，0.01 °C（256 LSB/°C，+25 °C 偏置） |
 | 96 | i16 | `mag_temp_cc` | LIS2MDL 裸片温度，0.01 °C（8 LSB/°C，无偏置） |
 | 98 | u8 | `sensor_flags` | bit0 重力/线性有效，bit1 IMU 温度有效，bit2 磁力计温度有效，bit3 气压计温度有效 |
 | 99 | u8 | `reserved2` | 0 |
@@ -105,7 +105,7 @@ off  size  field
 `82..93` 的 `gravity_mg`/`linear_mg` 是**体坐标系**（X 右、Y 前、Z 上），
 它与 Telemetry 包 `0x02` 的 `acc_lsb`（也是体坐标系）同框。
 2026-11-19 之前的 App 把 1 Hz 的 Status `acc_lsb`（传感器系，静止时 Z=+1 g）
-和 26 Hz 的 Telemetry `acc_lsb`（体坐标，静止时 Z=−1 g）写进同一个 UI 字段，
+和 30 Hz 的 Telemetry `acc_lsb`（体坐标，静止时 Z=−1 g）写进同一个 UI 字段，
 表现为「上一秒 −1 g、下一秒 +1 g」。**主机不得把两种坐标系的加速度混进同一个量**。
 
 没有的物理量（四元数、高度 hPa、单星 C/N0、TTFF、BMP388 的 °C）**不在帧里**，App 不得编造；
@@ -140,7 +140,7 @@ off type  field
 | id | payload | 字段 | 速率 |
 | :--- | :--- | :--- | :--- |
 | `0x01` GNSS | 42 B（整包 46 B；0.2.0 为 34 B） | 见下方字段表 | 1 Hz |
-| `0x02` IMU | 20 B（整包 24 B） | `i16 acc_lsb[3]`、`i16 gyro_lsb[3]`、`i16 quat_q15[4]`（w,x,y,z，32767 = 1.0） | 26 Hz（仅订阅时） |
+| `0x02` IMU | 20 B（整包 24 B） | `i16 acc_lsb[3]`、`i16 gyro_lsb[3]`、`i16 quat_q15[4]`（w,x,y,z，32767 = 1.0） | 30 Hz（仅订阅时；LSM6DSV16X ODR，DS13510 Table 52/55） |
 | `0x04` BARO | 20 B（整包 24 B） | 见下方字段表 | 1 Hz（仅订阅时） |
 | `0x05` PDR | 12 B（整包 16 B） | `i32 x_mm`（东）、`i32 y_mm`（北）、`i16 heading_ddeg`、`u16 steps` | 每完成一步 + 1 Hz 心跳 |
 | `0x08` NMEA | 1 B + 文本（整包 ≤ 133 B） | `u8 len`、`char text[len]`（ASCII，`$...*hh`，不含 CR/LF） | 每句一包，仅调试会话开启 NMEA 直通时 |
@@ -219,8 +219,8 @@ bit1 GNSS、bit2 IMU、bit3 MAG、bit4 BARO、bit5 PDR、bit6 POWER、bit7 SYSTE
 （X 东 / Y 北 / Z 上），所以加速度矢量可以直接和姿态一起画。
 Status 帧里的 `acc_lsb`/`gyro_lsb`/`mag_lsb` 仍是 **sensor 帧**（既有口径，不在此改动）。
 
-空口预算：26 Hz × 24 B ≈ 620 B/s，30–50 ms 连接间隔下占空比可忽略。
-App 侧建议把渲染限流到 15 Hz：26 Hz 的通知照收，但 Compose 每帧重绘没有必要。
+空口预算：30 Hz × 24 B ≈ 720 B/s，30–50 ms 连接间隔下占空比可忽略。
+App 侧建议把渲染限流到 15 Hz：30 Hz 的通知照收，但 Compose 每帧重绘没有必要。
 
 航向基准由固件决定，App 不需要复算：GNSS 有效且地速 ≥ 1.5 m/s 时用航迹角对齐
 yaw（并顺带学习磁力计偏置），否则用磁力计按该偏置维持 yaw。

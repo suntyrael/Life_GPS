@@ -13,9 +13,16 @@
  *
  * The loop polls the IMU every 10 ms but only consumes samples the chip reports as
  * fresh (STATUS_REG XLDA|GDA), so the ZUPT/PDR chain runs at exactly the configured
- * 26 Hz ODR with no sleep-drift. 26 samples therefore span exactly 1.000 s, the
+ * 30 Hz ODR with no sleep-drift. 30 samples therefore span exactly 1.000 s, the
  * window README 7.5 specifies. The same loop feeds the watchdog and publishes a
  * 1 Hz status line.
+ *
+ * The LSM6DSV16X also streams its SFLP game rotation vector and gravity vector
+ * through the FIFO (lifegps/sflp.h). The gravity vector is consumed here: it
+ * splits the measured acceleration into gravity and linear acceleration for the
+ * BLE Status frame. The quaternion is decoded and logged once at bring-up but not
+ * published - it is a 6-axis vector without magnetometer yaw, so the world-aligned
+ * quaternion in the BLE contract stays the firmware filter's (see README 7.2).
  */
 
 #include <zephyr/kernel.h>
@@ -43,7 +50,7 @@
 
 LOG_MODULE_REGISTER(lgps_main, LOG_LEVEL_INF);
 
-/* Poll faster than the 26 Hz ODR and let the data-ready bit do the pacing. */
+/* Poll faster than the 30 Hz ODR and let the data-ready bit do the pacing. */
 #define MAIN_LOOP_PERIOD_MS 10U
 /* The five-line text frame on DEBUG_UART keeps its 1 Hz cadence: it is the
  * scope-free instrument for bring-up and changing it would invalidate every
@@ -83,11 +90,18 @@ static bool hub_mag_valid;
 
 /* Body-frame gravity and linear acceleration of the newest IMU sample. The
  * accelerometer alone cannot tell "tilted" from "being pushed", so the split is
- * computed here from the attitude estimate and published with the snapshot.
+ * computed here from the attitude estimate (or from the SFLP gravity vector, when
+ * the sensor delivers one) and published with the snapshot.
  */
 static float gravity_body_g[3];
 static float linear_body_g[3];
 static bool gravity_valid;
+
+/* Newest SFLP sample from the FIFO. Each half carries its own valid flag, so a
+ * gravity entry without a quaternion (or the other way round) is handled.
+ */
+static struct lgps_imu_sflp sflp_state;
+static bool sflp_quat_logged;
 
 /* Body-frame raw counts for the telemetry packet. The body matrix is a signed
  * permutation of the sensor axes (see lifegps/nav.h), so this is the same
@@ -100,6 +114,47 @@ static void imu_to_body_lsb(const int16_t in[3], int16_t out[3])
 	out[2] = (int16_t)-in[2];
 }
 
+/*
+ * Fill gravity_body_g / linear_body_g for one sample.
+ *
+ * The SFLP gravity vector wins when it is present and plausible: it is the same
+ * hardware accelerometer, fused by the SFLP block at 30 Hz, so it has no
+ * integration drift. The plausibility window is the one lifegps/nav.h already
+ * defines for "this sample is gravity and not a shove"; outside it the SFLP entry
+ * is a fault signature and the firmware attitude estimate takes over.
+ *
+ * Returns true when the two vectors were written.
+ */
+static bool update_gravity_split(const float accel_body[3])
+{
+	float body[3] = { 0.0F, 0.0F, 0.0F };
+	bool from_sflp = false;
+
+	if (sflp_state.gravity_valid) {
+		float norm;
+
+		lgps_nav_body_from_imu(sflp_state.gravity_g, body);
+		norm = sqrtf((body[0] * body[0]) + (body[1] * body[1]) +
+			     (body[2] * body[2]));
+		from_sflp = (norm >= LGPS_ATT_ACCEL_NORM_MIN_G) &&
+			    (norm <= LGPS_ATT_ACCEL_NORM_MAX_G);
+	}
+
+	if (!from_sflp) {
+		if (!attitude.valid) {
+			return false;
+		}
+
+		lgps_attitude_gravity_body(&attitude, body);
+	}
+
+	for (uint8_t axis = 0U; axis < 3U; axis++) {
+		gravity_body_g[axis] = body[axis];
+		linear_body_g[axis] = accel_body[axis] - body[axis];
+	}
+
+	return true;
+}
 
 static int init_subsystems(void)
 {
@@ -257,7 +312,7 @@ static struct lgps_telemetry_snapshot *build_snapshot(uint32_t now_ms,
 			snap.gyro_dps[axis] = sample->gyro_dps[axis];
 		}
 
-		/* OUT_TEMP: 256 LSB/degC with a +25 degC offset (DS11976 9.30). */
+		/* OUT_TEMP: 256 LSB/degC with a +25 degC offset (DS13510 4.3, table 6). */
 		snap.imu_temp_cc = (int16_t)(((float)sample->raw_temp / LGPS_IMU_TEMP_LSB_PER_C +
 					      LGPS_IMU_TEMP_OFFSET_C) * 100.0F);
 		snap.imu_temp_valid = true;
@@ -560,6 +615,26 @@ int main(void)
 			lgps_nav_body_from_imu(sample.accel_g, accel_body);
 			lgps_nav_body_from_imu(sample.gyro_dps, gyro_body);
 
+			/* SFLP runs at the same 30 Hz as the register burst, so at most a
+			 * couple of FIFO entries are waiting per sample.
+			 */
+			{
+				struct lgps_imu_sflp sflp;
+
+				if (lgps_imu_read_sflp(&sflp) == 0) {
+					sflp_state = sflp;
+
+					if (sflp.quat_valid && !sflp_quat_logged) {
+						sflp_quat_logged = true;
+						LOG_INF("SFLP quaternion (sensor frame "
+							"w,x,y,z): %.3f %.3f %.3f %.3f",
+							(double)sflp.quat[3], (double)sflp.quat[0],
+							(double)sflp.quat[1],
+							(double)sflp.quat[2]);
+					}
+				}
+			}
+
 			/* ZUPT expects rad/s, the driver reports deg/s. */
 			const float gyro_rps[3] = {
 				gyro_body[0] / 57.2957795F,
@@ -584,15 +659,8 @@ int main(void)
 			last_sample_ms = now_ms;
 			lgps_attitude_update(&attitude, accel_body, gyro_rps, dt_s);
 
-			/* Split the measurement into gravity and what is left over. The
-			 * estimate is only trusted once the filter is live.
-			 */
-			if (attitude.valid) {
-				lgps_attitude_gravity_body(&attitude, gravity_body_g);
-				for (uint8_t axis = 0U; axis < 3U; axis++) {
-					linear_body_g[axis] =
-						accel_body[axis] - gravity_body_g[axis];
-				}
+			/* Split the measurement into gravity and what is left over. */
+			if (update_gravity_split(accel_body)) {
 				gravity_valid = true;
 			}
 

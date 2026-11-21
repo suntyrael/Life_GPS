@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: MIT
+tests:
+  lifegps.sflp:
+    platform_allow: native_sim
+    integration_platforms:
+      - native_sim
+    tags: lifegps

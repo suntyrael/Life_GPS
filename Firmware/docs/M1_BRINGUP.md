@@ -23,14 +23,15 @@
 | 看门狗 | `src/power/wdt.c` | WDT30 30 s，分层喂狗（主循环线程 + GNSS 线程，每个 5 s 窗口各签到至少一次才喂；窗口结束即清掩码） |
 | 电池 | `src/power/battery.c` | SAADC AIN4（P1.11）；两段标定：分压实测 0.2861（`LGPS_BATT_CAL_PACK_UV/TAP_UV`）+ ADC 通道 +4.18 % 标度误差（`LGPS_BATT_ADC_GAIN_PPM`），2.5–4.4 V 误差 ≤ ±2 mV；**不输出百分比**（放电曲线未实测） |
 | GNSS | `src/gnss/gnss.c`, `src/gnss/ubx.c` | UARTE20 38400（M10 出厂默认，与设备树 `current-speed` 一致）、**UBX-CFG-VALSET 打开 NAV-PVT（key `0x20910007`，RAM 层）+ CFG-VALGET 回读确认**、解析 NAV-PVT、冷启动 60 s → 首定 → 星历保持 35 s → PMREQ 备份 + 断电 → 退避 120/300/900 s；ACK-NAK 以 WRN 打印（class/id 取自 ACK 载荷） |
-| IMU | `src/imu/lsm6dsr.c` | LSM6DSR 软复位、WHO_AM_I=0x6B 校验、±4 g/±1000 dps @26 Hz 高性能（数据就绪位驱动采样）、INT1=DRDY；sensor hub 探测 LIS2MDL/BMP388 并配置 12 字节串流 |
+| IMU | `src/imu/lsm6dsv16x.c`, `src/imu/sflp.c` | LSM6DSV16X（= LSM6DSVTR）软复位、WHO_AM_I=0x70 校验、±4 g/±1000 dps @30 Hz 高性能（数据就绪位驱动采样）、INT1=DRDY；sensor hub 探测 LIS2MDL/BMP388 并配置 14 字节串流；SFLP 四元数 + 重力经 FIFO 读入（`CONFIG_LGPS_IMU_SFLP`） |
 | 导航数学 | `src/nav/nav.c` | 机体坐标旋转、ZUPT 双判据（σ²<0.005 g²、‖ω‖<0.08 rad/s、持续 10 s）、Weinberg 步长、磁异常判据 |
 | 存储 | `src/storage/flash_ring.c` | W25Q512 暂存环形：16×4 KB 扇区、16 B 扇头（magic/seq/erase_count/commit_flags/CRC16）、127 条 32 B 记录/扇区、写满轮转 + 擦除 |
 | 记录编解码 | `src/storage/traj.c` | 由 `protocol/lifegps_protocol.yaml` 生成的结构体 + 逐字节小端序列化 + CRC-8 |
 | 协议生成 | `tools/protocol-gen/gen_c.py` | YAML → `Firmware/include/generated/lifegps_protocol.h`；`--check` 供 CI 防漂移 |
 | 单测 | `Firmware/tests/lifegps.*` | CRC/时间、UBX、导航数学、记录编解码、扇区格式（`lifegps.ring`）、生成头契约（native_sim + ztest） |
 
-**不在 M1**：BLE/GATT、MCUboot OTA、heatshrink 归档、CRACEN 加密、气压高程解算、SFLP 姿态融合。
+**不在 M1**：BLE/GATT、MCUboot OTA、heatshrink 归档、CRACEN 加密、气压高程解算、芯片 pedometer / wake-up 中断。
+（SFLP 硬件姿态已在 M1 落地，见 §2.1。）
 
 ## 2. 硬件事实（每条都有出处）
 
@@ -45,39 +46,55 @@
 | RRAM 分区 | boot 62 KB / slot0 712 KB / slot1 712 KB / storage 36 KB | `dts/vendor/nordic/nrf54l15_cpuapp_partition.dtsi` |
 | Flash 深度掉电 | tDP = 3 µs、tRES1 = 30 µs | `Doc/Hardware/Datasheets/Winbond_07022021_W25Q512NW-2451091.pdf` AC characteristics |
 
-### 2.1 六轴传感器已更换为 **LSM6DSRTR**
+### 2.1 六轴传感器按原始设计回到 **LSM6DSVTR**（= LSM6DSV16X 晶圆）
 
-`Hardware/Schematic` 的 V0.2 网表（`U12`）与 DC 手册当前按 **LSM6DSV16X** 记录，实际装配件按你的
-说明改为 **LSM6DSRTR**。两者同为 LGA-14L、引脚定义兼容（2/3 = SCx/SDx 传感器中枢 I²C，13/14 = 主 SPI，
-1 = SDO/SA0，4 = INT1，12 = CS），**PCB 无需改动**，但固件侧的差异必须按 LSM6DSR 手册
-（ST **DS11976 Rev 2**）重写：
+上一轮按装配说明把 `U12` 当作 **LSM6DSRTR** 写了一版驱动（ST DS11976 Rev 2）。本轮按你的说明
+回到**原始设计**：网表 `Hardware/Schematic/Netlist_Main_V0.2_2026-11-11.tel:50` 写的是
+**LSM6DSVTR**，其晶圆就是 **LSM6DSV16X**，手册为 `Doc/Hardware/Datasheets/LSM6DSV16X_Datasheet.pdf`
+（ST **DS13510 Rev 4**）。两者同为 LGA-14L、引脚定义一致（2/3 = SCx/SDx 传感器中枢 I²C，13/14 = 主 SPI，
+1 = SDO/SA0，4 = INT1，12 = CS），**PCB、引脚、上拉都不动**；改动全部来自寄存器映射：
 
-| 项 | LSM6DSV16X（旧文档） | **LSM6DSR（现行）** |
+| 项 | LSM6DSR（上一版 DS11976） | **LSM6DSV16X（现行 DS13510 Rev 4）** |
 | :--- | :--- | :--- |
-| WHO_AM_I (0x0F) | 0x70 | **0x6B**（§9.14） |
-| 加速度 ODR 档位 | 60 Hz 等 | **12.5 / 26 / 52 / 104 / 208 / 416 / 833 / 1.66k…**（§9.15 Table 50），无 60 Hz |
-| 陀螺 ODR 档位 | 60 Hz 等 | 同表（§9.16 Table 53），无 60 Hz |
-| 加速度 FS 位 | CTRL1 中 OP_MODE+FS | `CTRL1_XL(0x10)`：ODR[7:4]、FS[3:2]（01=±16 g、**10=±4 g**）、LPF2 bit1 |
-| 陀螺 FS | `CTRL6` | `CTRL2_G(0x11)`：ODR[7:4]、FS[3:2]（**10=±1000 dps**）、FS_125 bit1、FS_4000 bit0 |
-| 灵敏度 | ±4 g: 0.122 mg/LSB；±1000 dps: 35 mdps/LSB | **相同**（§2 Table 3 `LA_So` / `G_So`） |
-| 控制寄存器 | CTRL1..CTRL10 | **CTRL1_XL / CTRL2_G / CTRL3_C / CTRL6_C / CTRL7_G / CTRL8_XL / CTRL9_XL / CTRL10_C** |
-| Sensor hub 输出 | `SENSOR_HUB_1..6`（6 字节） | **`SENSOR_HUB_1..18`（0x02..0x13，18 字节）**（§14） |
-| Hub 主控寄存器 | `MASTER_CONFIG(0x14)`、`SLV0_ADD(0x15)`… | 地址相同；`MASTER_ON`=bit2、`AUX_SENS_ON`=bit1:0、`SHUB_PU_EN`=bit3；`SLVx_CONFIG` 的 `SHUB_ODR[1:0]`=bit7:6（00=104 Hz、01=52、10=26、11=12.5） |
-| SFLP 硬件四元数 | 有（README §2 的 14 µA 论据） | **没有**（DS11976 特性表无 SFLP，只有 FSM / 计步器 / 显著运动检测） |
-| 计步 | 需固件过零检测 | **芯片内置 pedometer / step detector / step counter** |
+| WHO_AM_I (0x0F) | 0x6B | **0x70**（§9.13） |
+| SPI 地址帧 | bit7 = R/W，读 `0x80 \| reg` | **相同**：图 10 是 `RW AD6..AD0` MSB 先发（§5.1.3 的「bit 0」按传输顺序编号，不是字节位号，误读会把寄存器地址减半）；模式 0/3 均允许（§5.1） |
+| ODR 档位 | 12.5 / 26 / 52 / 104 / 208 Hz… | **1.875 / 7.5 / 15 / 30 / 60 / 120 / 240 / 480 Hz…**（Table 52 / Table 55），无 26 Hz |
+| 加速度 FS | `CTRL1_XL(0x10)[3:2]` | **`CTRL8(0x17) FS_XL[1:0]`**（Table 68），`CTRL1` 只剩 OP_MODE + ODR |
+| 陀螺 FS | `CTRL2_G(0x11)[3:2]` | **`CTRL6(0x15) FS_G[3:0]`**（Table 63），`CTRL2` 只剩 OP_MODE + ODR |
+| 灵敏度 | ±4 g: 0.122 mg/LSB；±1000 dps: 35 mdps/LSB | **相同**（§4.2 Table 2 `LA_So` / `G_So`） |
+| 温度 | 256 LSB/°C、+25 °C 零点 | **相同**（§4.3 Table 6 `TSen` 与注 3） |
+| Sensor hub 输出 | `SENSOR_HUB_1..18` | 同（§17 Table 439），仍是最多 7 字节/slave |
+| Hub 关键差异 | `SHUB_ODR` 在 `MASTER_CONFIG`；`SLV1_CONFIG` 直接写 numop；状态在主页 `0x39`；辅助上拉在 `MASTER_CONFIG` bit3 | **`SHUB_ODR` 挪到 `SLV0_CONFIG[7:5]`（Table 483）；`SLV1_CONFIG` bit4 必须写 1（Table 488 注 2）；状态在主页 `STATUS_MASTER_MAINPAGE(0x48)`（Table 136）；辅助上拉在 `IF_CFG(0x03).SHUB_PU_EN`（Table 30）** |
+| SFLP 硬件姿态 | **无** | **有**（§2.8）：`EMB_FUNC_EN_A(0x04).SFLP_GAME_EN` + `SFLP_ODR(0x5E)`；输出只在 FIFO（tag `0x13` 四元数 / `0x17` 重力 / `0x16` 陀螺零偏，Table 218） |
+| 计步 | 需固件过零检测 | 芯片内置 pedometer / step detector / step counter（本轮**未启用**，见下） |
 
-因此 M1 的结论与待办：
+**采样率与 ZUPT 窗口**：`CTRL1/CTRL2` 的 ODR 写 **0100b = 30 Hz**（Table 52/55），ZUPT 窗口取
+**30 点 = 1.000 s**，README §7.5 的方差门限（0.005 g² / 0.08 rad/s）仍按 1.0 s 窗口成立。
+节拍照旧由 `STATUS_REG(0x1E)` 的 `XLDA|GDA` 驱动（主循环 10 ms 轮询、无睡眠漂移）。
+随之换算的还有：标定面 60 点 = 2.000 s、静止窗 15 点 = 0.5 s、步态低通 α 由 0.45@26 Hz
+按同一转角换算为 **0.50@30 Hz**（`1 − (1 − 0.45)^(30/26)`）。
 
-1. 固件**不再假设** 60 Hz ODR 与 SFLP。LSM6DSR 的 ODR 只有 12.5 / 26 / 52 / 104 / 208 Hz，**没有 20 Hz**；
-   因此取最接近的 **26 Hz** 原生档，ZUPT 窗口取 **N = 26 点**，恰好 **1.000 s**，不需要抽取、不存在窗口畸变，
-   README §7.5 的方差门限（0.005 g² / 0.08 rad/s）按 1.0 s 窗口仍然成立。
-   采样节拍由 `STATUS_REG`（0x1E）的 `XLDA|GDA`（bit0|bit1）驱动，主循环 10 ms 轮询、无睡眠漂移。
-2. README §2「SFLP 硬件 6 轴姿态 60 Hz、增量 14 µA」对本机型**不成立**，需要改写为「固件姿态融合」或改用 LSM6DSR 的 FSM/计步器路径；**这属于既有文档改动，需要你批准后我才动 `README.md` / `Doc/Hardware/Pinmap_Main_V0.2.md` / `AGENTS.md`**。
-3. Sensor hub 现在有 18 字节输出：M1 用 6 字节 LIS2MDL（0x68 起，50 Hz）+ 6 字节 BMP388（0x04 起，25 Hz）。
-4. BMP388 补偿算法（Bosch 官方补偿系数 + 温度补偿）**已实现**（`Firmware/src/imu/bmp388.c`，系数 0x31..0x45 由 `hub_configure()` 在芯片仍处 sleep 时读入；
-   补偿后温度已进 `TEMP` 行的 `baro_C`、压力进 `BARO` 行的 `press_pa`）。
-   海拔需要基准：`BARO_BASELINE`（0x42）的 action 2 用 GNSS 高度反算海平面气压 QNH，之后 `alt_msl_mm` 就是海拔；
-   没做过 GNSS 校准时只有 `rel_alt_mm`，固件不编造海拔。
+**SFLP（本轮新增的能力）**：
+
+1. 使能：`FUNC_CFG_ACCESS(0x01)` bit7 进 embedded functions bank → `EMB_FUNC_EN_A` bit1
+   （`SFLP_GAME_EN`）、`EMB_FUNC_FIFO_EN_A(0x44)` bit1|bit4（四元数 + 重力入 FIFO）、
+   `SFLP_ODR` 的 `SFLP_GAME_ODR[5:3] = 001b`（30 Hz，与采样率一致）；`FIFO_CTRL4` 置连续模式
+   （`110b`，满了覆盖最旧，读端卡住只丢样本、不堵设备）。这套速率组合与 ST 官方示例
+   `lsm6dsv16x_STdC/examples/lsm6dsv16x_sensor_fusion.c` 一致（XL/G 30 Hz + SFLP 30 Hz）。
+2. 读取：`FIFO_STATUS1/2` 的 `DIFF_FIFO[8:0]` → 每次 7 字节（tag + 6 字节）从 `0x78` 读出，
+   解码在 `Firmware/include/lifegps/sflp.h`（纯函数，`Firmware/tests/lifegps.sflp` 单测）。
+3. 编码：四元数 = 3 个 IEEE 754 binary16 (x, y, z)，`w = sqrt(1 − x² − y² − z²)`；重力 = int16 ×
+   0.061 mg/LSB。两条都按 ST 官方 LSM6DSV16X 驱动/示例（`lsm6dsv16x_sensor_fusion.c` 的 `sflp2q()`、
+   `lsm6dsv16x_from_sflp_to_mg()`）核对，因为 DS13510 只写"四元数存在 FIFO 里"，没写编码。
+4. 用途：**重力向量**参与 BLE Status 帧的 `gravity_mg` / `linear_mg` 拆分（比固件积分估计更稳）；
+   **四元数**在 bring-up 打一行日志留证，**不替换** BLE 姿态四元数——SFLP 只融加速度计 + 陀螺仪，
+   yaw 没有世界基准，而 BLE 契约（`Doc/Software/BLE_Wire_v1.md` §4）要求世界对齐四元数。
+5. 开关：`CONFIG_LGPS_IMU_SFLP`（默认 y）。FIFO 里一直没出现 SFLP tag 时驱动只告警一次，
+   固件姿态滤波器照常工作。
+
+**本轮仍未启用**：芯片 pedometer / step detector（`PEDO_EN`）、wake-up / significant-motion 中断、
+FSM / MLC。前两项的理由是接口而不是寄存器：PDR 的 Weinberg 步长需要每一步的峰谷差（`delta_a`），
+芯片 pedometer 只给累计计数；wake-up 要接 INT1 → P0.02 的 GPIOTE 中断路径，属于 M2。
 
 ## 3. 串口日志格式（固定契约）
 
@@ -99,9 +116,9 @@
 | | `lat_e7` `lon_e7` `hmsl_mm` `spd_cms` `hdg_ddeg` | NAV-PVT | 与 `TrajectoryRecord_t` 同一量纲，无浮点损失 |
 | | `utc_s` | NAV-PVT UTC + 2020 epoch | 秒；未解析时 `---` |
 | | `age_ms` | 上一条 NAV-PVT 距今 | 判断接收机是否还在吐数据 |
-| `IMU` | `id` | `WHO_AM_I(0x0F)` | LSM6DSR = `0x6B` |
+| `IMU` | `id` | `WHO_AM_I(0x0F)` | LSM6DSV16X = `0x70`（LSM6DSR 版为 0x6B） |
 | | `acc_lsb` `gyro_lsb` | 原始 16 位计数 | 精确值，便于换算/复核 |
-| | `acc_g` `gyro_dps` | `LSB × 0.122 mg` / `× 35 mdps` | 灵敏度取自 DS11976 Table 3 |
+| | `acc_g` `gyro_dps` | `LSB × 0.122 mg` / `× 35 mdps` | 灵敏度取自 DS13510 §4.2 Table 2 |
 | `MAG` | `lsb` / `ut` | LIS2MDL 0x68..0x6D | `1 LSB = 1.5 mG = 0.15 µT`（LIS2MDL Table 3 `So`） |
 | `BARO` | `press_pa` `temp_C` `rel_alt_mm` `alt_msl_mm` | BMP388 0x04..0x09 + TPG 系数 0x31..0x45 + 基准扇区 17 | 已做补偿（DS BST-BMP388-DS001-07 §9.2/§9.3）：Pa / °C 是物理值。`rel_alt_mm` = 相对基准（校准点为 0）；`alt_msl_mm` = 海拔，只有基准来自 GNSS 高度（`0x42 action=2` 或自动）时才有，否则 `---`。同一行保留 `press_raw` `temp_raw` 便于复核 |
 | `SYS` | `bat_mv` | SAADC AIN4 + 分压实测标定 + ADC 标度修正 | 每 10 s 采样一次，期间沿用缓存 |
@@ -288,7 +305,7 @@ grep 'lgps_tele: GNSS' log.txt | sed -n 's/.*fix=\([0-9]*\).*/\1/p'
 
 #### 覆盖缺口（已补）
 
-`lsm6dsr.c` / `flash_ring.c` / `telemetry.c` 原先只被板级构建编译，没有单测，所以第 3、4 号缺陷 twister 发现不了。本轮把扇区格式（表头编解码 + 记录区扫描）抽成无驱动依赖的 `lifegps/sector_format.h`，新增 `Firmware/tests/lifegps.ring`（native_sim）：表头往返/CRC 覆盖范围、封存后 CRC 仍有效、封存只会清位、记录区扫描的 0 / 5 / 126 / 127 条与分块边界。
+`lsm6dsv16x.c` / `flash_ring.c` / `telemetry.c` 原先只被板级构建编译，没有单测，所以第 3、4 号缺陷 twister 发现不了。本轮把扇区格式（表头编解码 + 记录区扫描）抽成无驱动依赖的 `lifegps/sector_format.h`，新增 `Firmware/tests/lifegps.ring`（native_sim）：表头往返/CRC 覆盖范围、封存后 CRC 仍有效、封存只会清位、记录区扫描的 0 / 5 / 126 / 127 条与分块边界。
 
 > ⚠️ 环表头格式已变（CRC 覆盖范围）。旧固件写下的扇区会在下一次挂载时判为无效 → **一次性重新格式化前 64 KiB**。暂存环本身可丢数据，但归档内容会被清掉。
 
@@ -378,9 +395,12 @@ R_IMU = [-1  0  0 ]   Y_body = -X_sensor   (机头/行进方向)
 
 ## 5. 需要你批准的既有文档同步（我未擅自修改）
 
-1. `README.md` §1.3/§2/§7.2：LSM6DSVTR → **LSM6DSRTR**；删除「SFLP 硬件四元数 60 Hz / 14 µA」，改为固件融合或 LSM6DSR FSM/计步器路径。
-2. `Doc/Hardware/Pinmap_Main_V0.2.md`：`U12` 型号与 INT1/CS 描述同步为 LSM6DSR；IMU 采样率由 20 Hz 改为「104 Hz 采样 → 20 Hz 抽取」。
-3. `Hardware/Schematic` 网表/BOM：`U12` 料号改为 LSM6DSRTR（硬件侧动作）。
+1. ~~`README.md` §1.3/§2/§7.2：LSM6DSVTR → LSM6DSRTR；删除 SFLP 段落~~ **已撤销**：装配件回到
+   LSM6DSVTR，README 的 LSM6DSVTR / SFLP 描述重新成立（本轮只把采样率与 SFLP 的实际实现写进
+   `Firmware/README.md` 与 §2.1，不改设计叙述）。
+2. ~~`Doc/Hardware/Pinmap_Main_V0.2.md`：`U12` 型号同步为 LSM6DSR~~ **无需修改**：pinmap 只写引脚与
+   网络名，不含料号；引脚未变。
+3. `Hardware/Schematic` 网表/BOM：`U12` 料号保持 **LSM6DSVTR**（与原始设计一致，无需动作）。
 4. `.github/workflows/README.md`：把 `firmware.yml` 从「待加」移到「已启用」。
 5. `Firmware/docs/PARTITIONS.md`：DTS 参考段里 `size = <0x4000000>` 按 binding 是 **bit**（= 8 MiB），按注释意图是 64 MiB，二者矛盾；且 `slot1` 写死 `0x3F00000` 只对 64 MB 料成立，32 MB 料不存在该地址。建议改为“不写 `size`、slot1 偏移 = `容量 − 1 MiB` 运行时计算”，需要你确认后我再改这份契约文档（硬件/App 都在引用它）。
 6. `README.md` §1.3/1.4：旋转矩阵改为 `[[0,−1,0],[−1,0,0],[0,0,−1]]`（det=+1），并把

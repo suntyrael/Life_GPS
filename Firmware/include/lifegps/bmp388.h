@@ -8,7 +8,7 @@
  * coefficients of that individual part. This header owns that arithmetic only,
  * so it can be unit tested on native_sim (Firmware/tests/lifegps.bmp388)
  * without a bus, a driver or a device tree. The register transport stays in
- * src/imu/lsm6dsr.c, which owns the sensor hub.
+ * src/imu/lsm6dsv16x.c, which owns the sensor hub.
  *
  * Source, checked in the repository rather than from memory:
  * Doc/Hardware/Datasheets/BMP388_Datasheet.pdf (BST-BMP388-DS001-07, Rev 1.7)

@@ -53,7 +53,7 @@ void lgps_ble_publish(const struct lgps_telemetry_snapshot *snap);
  * vector can be drawn next to the body without a hidden axis swap.
  *
  * Cheap when nobody subscribes: it returns before encoding in that case, so the
- * main loop can call it at the full 26 Hz unconditionally.
+ * main loop can call it at the full 30 Hz unconditionally.
  */
 void lgps_ble_publish_imu(const int16_t acc_lsb[3], const int16_t gyro_lsb[3],
 			  const int16_t quat_q15[4]);

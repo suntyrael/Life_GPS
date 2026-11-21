@@ -35,7 +35,7 @@ void lgps_nav_body_from_imu(const float in[3], float out[3])
 	 *   X_body = -Y_sensor, Y_body = -X_sensor, Z_body = -Z_sensor
 	 *
 	 * Measured on Main_V0.2 (four static placements, sensor frame as reported by
-	 * the LSM6DSR, gravity on the axis pointing up):
+	 * the IMU, gravity on the axis pointing up):
 	 *   flat, face up      (-0.010,  0.187, -0.954)  -> +Z_body
 	 *   front edge +33 deg (-0.528, -0.147, -0.811)  -> +Y_body and +Z_body
 	 *   upright, top up    (-0.995, -0.023,  0.048)  -> +Y_body

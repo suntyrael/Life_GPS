@@ -17,7 +17,7 @@
 #define LGPS_WDT_TIMEOUT_MS 30000U
 
 /*
- * Supervision window. Tasks run at very different rates (IMU 26 Hz data-ready,
+ * Supervision window. Tasks run at very different rates (IMU 30 Hz data-ready,
  * GNSS 50 Hz service loop, main 100 Hz), so "all tasks checked in since the last
  * pet" can never be true at an arbitrary instant. The feed is therefore evaluated
  * once per window: every task must have checked in at least once inside it.

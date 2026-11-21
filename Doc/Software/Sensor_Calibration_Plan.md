@@ -9,7 +9,7 @@
 |---|---|
 | 分支 | `diag/hub-bmp388`（HEAD `271826e`；`main` 由另一会话推进，未见冲突） |
 | CI | `firmware` success（75/75 twister）、`app` success；最近一次 FLASH 241464 B / RAM 55440 B |
-| 硬件 | Main_V0.2，U12 = **LSM6DSRTR**（不是网表写的 LSM6DSV16X），U3 = LIS2MDL，U4 = BMP388 |
+| 硬件 | Main_V0.2，U12 = **LSM6DSVTR**（网表原名，晶圆即 LSM6DSV16X，手册 DS13510 Rev 4），U3 = LIS2MDL，U4 = BMP388 |
 | **U4(BMP388) 现状** | **已恢复**：重新焊接后 `0x76` 有 ACK（`CHIP_ID=0x50`），TPG 系数已能通过 hub 读出。首轮数据：气压原值 ~7.27e6、温度原值 ~8.53e6，低 5/7 位恒为 0 —— 这是 `osr_p=x8`/`osr_t=x2` 的有效位（16+log2(osr)），不是驱动 bug |
 
 已落地（不要重复实现）：IMU 采样含裸片温度、重力/线性加速度拆分、磁力计温度、Status 帧 82→100 字节、
@@ -18,13 +18,14 @@ App 侧 sensor/body 坐标系分离（±1 g 抖动已修）、hub 状态位解�
 ## 2. 必须知道的坑（都踩过）
 
 1. **`numop` 只有 3 bit（0..7）**。写 `0x08` 会落到 `BATCH_EXT_SENS_0_EN`，numop 变 0 → 该从机一个字节都不读，
-   且不会报错（`Firmware/src/imu/lsm6dsr.c` 的 `HUB_MAX_NUMOP`）。
+   且不会报错（`Firmware/src/imu/lsm6dsv16x.c` 的 `HUB_MAX_NUMOP`）。
 2. **排在 NACK 从机后面的 hub 槽位不会被填**。所以 BMP388 必须排在最后（`hub_configure()` 注释）。
 3. **LIS2MDL `TEMP_OUT` 有 +25 °C 零点**：`T = raw/8 + 25`（DS12144 §8.16 只给了灵敏度；
-   零点见 ST 驱动/AN5069，2026-11-19 台架用 LSM6DSR 裸片温度交叉验证过）。
+   零点见 ST 驱动/AN5069，2026-11-19 台架用 IMU 裸片温度交叉验证过）。
 4. **Status 帧里 `acc_lsb/gyro_lsb` 是传感器系**，`gravity_mg/linear_mg` 与 Telemetry `0x02` 的 `acc_lsb` 是**体坐标系**。
    同一 UI 字段不得跨坐标系写入（这正是 −1 g/+1 g 跳动的根因）。
-5. **hub 周期被 IMU data-ready 钳制在 26 Hz**（DS11976 Table 373），`SHUB_ODR` 写 52 Hz 不生效。
+5. **hub 周期被 IMU data-ready 钳制在 30 Hz**（DS13510 Table 477：`START_CONFIG=0` 时触发源是加速度计/陀螺 data-ready），
+   `SHUB_ODR`（`SLV0_CONFIG[7:5]`，Table 483）写更大值不生效。
 6. 温度/气压：BMP388 的 TPG 补偿**已实现**（`Firmware/src/imu/bmp388.c`：读 `0x31..0x45` 的 21 字节系数，
    再按 DS §9.2/§9.3 的参考实现算 Pa/°C）；单测 `Firmware/tests/lifegps.bmp388`。
    原值不是 20 位、不能右移 4 位（§3.10 是 24 位）；`0x800000` 也**不是** 0 °C（那是寄存器复位值，不是刻度）。
@@ -34,7 +35,7 @@ App 侧 sensor/body 坐标系分离（±1 g 抖动已修）、hub 状态位解�
 ### P0-A 加速度计刻度标定（小）
 现象：静止时 `|acc| ≈ 1.024 g`（偏高约 2.4%），`0.122 mg/LSB` 是标称值。
 做法：静止时用 `|acc|` 求一个标量缩放系数；在 firmware 里加 `LGPS_IMU_ACCEL_SCALE`（默认 1.0F），
-在 `Firmware/src/imu/lsm6dsr.c` 的 `decode_sample()` 里乘上；同时把陀螺零偏也纳入同一套标定记录。
+在 `Firmware/src/imu/lsm6dsv16x.c` 的 `decode_sample()` 里乘上；同时把陀螺零偏也纳入同一套标定记录。
 验收：静止 10 s，`|acc|` 落在 1.000 ± 0.005 g。
 
 ### P0-B 三传感器标定功能（App + 固件 + 协议，主任务）
@@ -55,11 +56,12 @@ BARO_BASELINE req  {u8 action, u32 baseline_pa_q4}  action: 0=取当前为基准
 ```
 
 **固件落点**：
-- 磁力计硬铁：LIS2MDL `OFFSET_X/Y/Z_REG_L/H`（`0x45..0x4A`，16 位补码）——`Firmware/src/imu/lsm6dsr.c` 的
+- 磁力计硬铁：LIS2MDL `OFFSET_X/Y/Z_REG_L/H`（`0x45..0x4A`，16 位补码）——`Firmware/src/imu/lsm6dsv16x.c` 的
   `shub_write_byte()` 一次写一个字节，写 6 个字节即可（注意每写一次要等 hub 周期）。
   软铁/刻度仍需软件处理（旋转采样求各轴 min/max，`offset=(min+max)/2`，`scale=2/(max-min)`）。
-- 加速度计零偏：LSM6DSR `X/Y/Z_OFS_USR`（`0x73/0x74/0x75`，主页面直接可写），
-  `CTRL6_C(0x15).USR_OFF_W` 选择权重（0 = 2⁻¹⁰ g/LSB），`CTRL9_XL(0x18).USR_OFF_ON_OUT=1` 打开补偿。
+- 加速度计零偏：LSM6DSV16X `X/Y/Z_OFS_USR`（`0x73/0x74/0x75`，主页面直接可写，Table 213/215），
+  `CTRL9(0x18).USR_OFF_W`（bit1）选择权重（0 = 2⁻¹⁰ g/LSB、1 = 2⁻⁶ g/LSB，Table 71），
+  `CTRL9(0x18).USR_OFF_ON_OUT`（bit0）=1 打开补偿。
   六面法每个姿态采样得到 `offset_axis = -(measured) / 2`，注意符号与 LSB 权重。
 - 气压基准：`BARO_BASELINE` 的前置 TPG 补偿**已完成**；剩下的是「取当前压力为基准 + 相对高程」，
   并且要把 Pa 放进帧（协议改动）。
@@ -102,7 +104,7 @@ BARO_BASELINE req  {u8 action, u32 baseline_pa_q4}  action: 0=取当前为基准
 
 | 关注点 | 文件 |
 |---|---|
-| IMU/磁力计/气压计驱动 | `Firmware/src/imu/lsm6dsr.c`、`Firmware/include/lifegps/imu.h` |
+| IMU/磁力计/气压计驱动 | `Firmware/src/imu/lsm6dsv16x.c`、`Firmware/src/imu/sflp.c`、`Firmware/include/lifegps/imu.h`、`Firmware/include/lifegps/sflp.h` |
 | 姿态/重力拆分 | `Firmware/src/nav/attitude.c`、`Firmware/include/lifegps/nav.h` |
 | BLE 帧编解码 | `Firmware/src/ble/ble_frame.c`、`Firmware/src/ble/ble_gatt.c`、`Firmware/include/lifegps/ble_frame.h` |
 | 命令分发（校准命令要接进这里） | `Firmware/src/ble/ble_gatt.c`（`reply_not_supported()` 一带） |
@@ -118,8 +120,8 @@ BARO_BASELINE req  {u8 action, u32 baseline_pa_q4}  action: 0=取当前为基准
 
 | 位置 | 原文/原文暗示 | 更正 |
 | :--- | :--- | :--- |
-| §3 P0-B「固件落点」 | `CTRL9_XL(0x18).USR_OFF_ON_OUT=1` | `USR_OFF_ON_OUT` 在 **`CTRL7_G`(0x16) bit1**（DS11976 Rev2 §9.21 Table 66）。`CTRL9_XL` 只有 DEN_X/Y/Z、DEN_XL_G、DEN_XL_EN、DEN_LH、I3C_disable（§9.23 Table 69，复位值 0xE0）。照原文写会**静默失效**。另：`USR_OFF_W` 在 `CTRL6_C`(0x15) bit3（§9.20 Table 62） |
-| §1 现状表 | 「U12 = LSM6DSRTR（不是网表写的 LSM6DSV16X）」 | 网表 `Hardware/Schematic/Netlist_Main_V0.2_2026-11-11.tel:50` 实际写 **`LSM6DSVTR`**；装配件是 LSM6DSRTR。同一颗 IMU 出现三个名字，因此 `AGENTS.md` §3 已改为「网表与实测/装配记录冲突时先问，不按网表静默写代码」 |
+| §3 P0-B「固件落点」 | `CTRL9_XL(0x18).USR_OFF_ON_OUT=1` | 寄存器名要按当前器件写：**LSM6DSV16X** 的 `USR_OFF_ON_OUT` = `CTRL9(0x18)` **bit0**、`USR_OFF_W` = 同寄存器 **bit1**（DS13510 §9.22 Table 71）。曾经的 LSM6DSR 版把 `USR_OFF_ON_OUT` 写在 `CTRL7_G(0x16)` bit1、`USR_OFF_W` 写在 `CTRL6_C(0x15)` bit3（DS11976 §9.21/§9.20），**两套位号不能混用**，照抄会静默失效 |
+| §1 现状表 | 「U12 = LSM6DSRTR（不是网表写的 LSM6DSV16X）」 | 网表 `Hardware/Schematic/Netlist_Main_V0.2_2026-11-11.tel:50` 写 **`LSM6DSVTR`**；`LSM6DSV16X` 是它的晶圆名。**2026-11 本轮已按装配说明回到 LSM6DSVTR**，驱动重写为 `Firmware/src/imu/lsm6dsv16x.c`（WHO_AM_I 0x70、SPI 读 `0x80 \| reg`、FS 在 CTRL6/CTRL8、30 Hz 采样、SFLP 经 FIFO）。仍保留 `AGENTS.md` §3 的规则：料号有冲突先问 |
 | §3 P0-B | 六面法由 App 指定 `position` | 改为**固件按重力向量自动识别姿态**：请求 `position = 0xFF`，响应新增 `detected_face`（`0xFF` = 姿态不够平，不许猜）。字段表见 `Doc/Software/BLE_Wire_v1.md` §6.4 |
 | §3 P0-B 持久化 | 「启用 `CONFIG_SETTINGS`+NVS 或复用保留扇区（需单独批准）」 | **仍未决**，待批准；App 侧已按「持久化在设备侧 + `last_calib_unix_s` 时间戳」实现 |
 | §3 P0-A / P0-B | 「待做」 | **App 侧已落地**：`CalibCodec.kt`（字节布局）、`CalibModels.kt`（判定/几何）、`CalibrationScreen.kt`（向导）+ 30 个 JVM 用例。固件侧（采集、数学、持久化）仍未开始 |

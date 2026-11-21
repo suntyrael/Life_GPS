@@ -1,0 +1,25 @@
+# Copyright (c) 2026 Life_GPS contributors
+# SPDX-License-Identifier: MIT
+#
+# STMicroelectronics LSM6DSVTR 6-axis IMU on the SPIM22 bus (Main_V0.2 U12).
+# The LSM6DSVTR die is the LSM6DSV16X, so the driver and the datasheet facts are
+# the LSM6DSV16X ones (Doc/Hardware/Datasheets/LSM6DSV16X_Datasheet.pdf, DS13510
+# Rev 4). The netlist names the part LSM6DSVTR; both names refer to this die.
+#
+# The part is used through its main SPI interface (LGA-14L pins 13/14 = SCL/SDA).
+# Its auxiliary I2C master (pins 2/3 = SCx/SDx) is the only electrical path to
+# LIS2MDL (U3) and BMP388 (U4) - those pins do not reach the MCU, they are tied
+# to the local AUX_SCL/AUX_SDA nets with R14/R15 pull-ups to 1.9 V
+# (Hardware/Schematic/Netlist_Main_V0.2_2026-11-11.tel).
+#
+# Register facts used by the driver come from DS13510 Rev 4: WHO_AM_I = 0x70
+# (section 9.13), SPI address byte "RW AD6..AD0" MSb first so a read is 0x80|reg
+# (section 5.1.3, figure 10), full scale in CTRL6/CTRL8 (sections 9.19/9.21),
+# sensor hub bank behind FUNC_CFG_ACCESS bit 6 (sections 16/17), embedded
+# functions bank behind bit 7 (section 12).
+
+description: STMicroelectronics LSM6DSV16X (LSM6DSVTR) 6-axis IMU on SPI
+
+compatible: "lifegps,lsm6dsv16x"
+
+include: [spi-device.yaml]

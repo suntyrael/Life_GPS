@@ -57,17 +57,17 @@ fun SensorStatusScreen(
         ) {
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatusPill("IMU 26Hz", Green, filled = true)
+                    StatusPill("IMU 30Hz", Green, filled = true)
                     StatusPill(if (imu.zupt) "ZUPT 锁死" else "运动中", if (imu.zupt) Amber else Cyan, filled = true)
                     StatusPill("磁异常检测：固件未提供", TextDim, filled = true)
                 }
             }
 
             item {
-                CardBlock("IMU · LSM6DSR") {
-                    MetricRow("加速度 X（body frame, 26 Hz）", f(imu.ax, "g"))
-                    MetricRow("加速度 Y（body frame, 26 Hz）", f(imu.ay, "g"))
-                    MetricRow("加速度 Z（body frame, 26 Hz）", f(imu.az, "g"))
+                CardBlock("IMU · LSM6DSV16X") {
+                    MetricRow("加速度 X（body frame, 30 Hz）", f(imu.ax, "g"))
+                    MetricRow("加速度 Y（body frame, 30 Hz）", f(imu.ay, "g"))
+                    MetricRow("加速度 Z（body frame, 30 Hz）", f(imu.az, "g"))
                     ValueBar("合加速度（body frame）", accelMag, 2f, Cyan, f(accelMag, "g"))
                     Spacer(Modifier.height(6.dp))
                     MetricRow("加速度 X（sensor frame, 1 Hz）", f(imu.axSensor, "g"))
@@ -83,9 +83,9 @@ fun SensorStatusScreen(
                     MetricRow("IMU 温度", tempOrDash(imu.imuTempValid, imu.imuTempC))
                     MetricRow("磁力计温度", tempOrDash(imu.magTempValid, imu.magTempC))
                     Spacer(Modifier.height(6.dp))
-                    MetricRow("角速度 X（body frame, 26 Hz）", f(imu.gx, "°/s"))
-                    MetricRow("角速度 Y（body frame, 26 Hz）", f(imu.gy, "°/s"))
-                    MetricRow("角速度 Z（body frame, 26 Hz）", f(imu.gz, "°/s"))
+                    MetricRow("角速度 X（body frame, 30 Hz）", f(imu.gx, "°/s"))
+                    MetricRow("角速度 Y（body frame, 30 Hz）", f(imu.gy, "°/s"))
+                    MetricRow("角速度 Z（body frame, 30 Hz）", f(imu.gz, "°/s"))
                     Spacer(Modifier.height(6.dp))
                     MetricRow("角速度 X（sensor frame, 1 Hz）", f(imu.gxSensor, "°/s"))
                     MetricRow("角速度 Y（sensor frame, 1 Hz）", f(imu.gySensor, "°/s"))
@@ -241,7 +241,7 @@ fun SensorStatusScreen(
 
             item {
                 Text(
-                    "Status 帧在有订阅时以 10 Hz 推送（无订阅 1 Hz）；加速度按 ±4 g（0.122 mg/LSB）、角速度按 ±1000 dps（35 mdps/LSB）、磁力计按 1.5 mG/LSB 换算。姿态四元数由 Telemetry 特征以 26 Hz 下发（界面限流到 15 Hz 渲染）；气压/温度由 Telemetry 0x04 以 1 Hz 下发（已补偿），不在 Status 帧内。",
+                    "Status 帧在有订阅时以 10 Hz 推送（无订阅 1 Hz）；加速度按 ±4 g（0.122 mg/LSB）、角速度按 ±1000 dps（35 mdps/LSB）、磁力计按 1.5 mG/LSB 换算。姿态四元数由 Telemetry 特征以 30 Hz 下发（界面限流到 15 Hz 渲染）；气压/温度由 Telemetry 0x04 以 1 Hz 下发（已补偿），不在 Status 帧内。",
                     color = TextDim,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(bottom = 20.dp),

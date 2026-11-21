@@ -683,9 +683,9 @@ class BleDebugRepository(context: Context) : DebugRepository {
     }
 
     /**
-     * IMU telemetry arrives at the IMU rate (26 Hz). The filter output is stored
+     * IMU telemetry arrives at the IMU rate (30 Hz). The filter output is stored
      * on every packet but only pushed into Compose at ~15 Hz: recomposing a 3D view
-     * 26 times per second buys nothing and costs battery.
+     * 30 times per second buys nothing and costs battery.
      */
     private fun onImuTelemetry(imu: ImuTelemetry) {
         latestQw = imu.qw
@@ -2090,7 +2090,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
          */
         const val GNSS_CFG_TIMEOUT_MS = 4_000L
 
-        /** QUERY cadence while a capture runs; 26 Hz sampling needs ~2.5 Hz of polling. */
+        /** QUERY cadence while a capture runs; 30 Hz sampling needs ~2.5 Hz of polling. */
         const val CALIB_POLL_PERIOD_MS = 400L
 
         /** FINISH_SAVE computes the coefficients and writes the flash record. */
@@ -2107,7 +2107,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
         /** LIS2MDL: 1.5 mG/LSB = 0.15 µT/LSB. */
         const val MAG_UT_PER_LSB = 0.15f
 
-        /** Attitude is pushed into Compose at ~15 Hz even though the IMU sends 26 Hz. */
+        /** Attitude is pushed into Compose at ~15 Hz even though the IMU sends 30 Hz. */
         const val ATTITUDE_UI_PERIOD_MS = 66L
 
         const val MAX_GEO_POINTS = 2_000

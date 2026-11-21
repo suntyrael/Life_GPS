@@ -8,7 +8,7 @@
  * lifegps/calib_store.h, which the test replaces with a stub.
  *
  * All register and unit facts come from the datasheets quoted next to the code:
- * LSM6DSR DS11976 Rev 2 (0.122 mg/LSB at +/-4 g, 35 mdps/LSB at +/-1000 dps) and
+ * LSM6DSV16X DS13510 Rev 4 (0.122 mg/LSB at +/-4 g, 35 mdps/LSB at +/-1000 dps) and
  * LIS2MDL DS12144 Rev 6 (1.5 mG/LSB = 0.15 uT/LSB).
  */
 

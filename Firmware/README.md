@@ -47,6 +47,11 @@ cd Life_GPS/Firmware && twister -p native_sim
 - **外部 64MB Flash**：63MB 轨迹 + 1MB OTA slot1；App 只写轨迹区。
 - **镜像预算**：待分区表定稿后重算。
 - **OTA POC**：外部 SPI NOR slot1 的 swap/回滚/DPD 释放必须在 M1 验证；失败回退内部双槽 430KB。
+- **IMU**：U12 = **LSM6DSVTR**（晶圆 LSM6DSV16X，手册 DS13510 Rev 4）。驱动 `src/imu/lsm6dsv16x.c`：
+  SPI 地址帧 `RW` 在最高位（读 = `0x80 | reg`，与 LSM6DSR 相同；DS13510 §5.1.3 图 10 的位号按传输顺序
+  编号，容易误读成 bit0）、±4 g/±1000 dps、**30 Hz** 高性能、INT1 = DRDY；
+  sensor hub 三个从机共 14 字节（LIS2MDL 6 B + LIS2MDL 温度 2 B + BMP388 6 B）；SFLP 四元数与重力向量经 FIFO
+  （tag `0x13`/`0x17`）读入，解码在 `src/imu/sflp.c`，开关 `CONFIG_LGPS_IMU_SFLP`（默认 y）。
 - **协议**：C 头文件由 `protocol/lifegps_protocol.yaml` 生成，不手写。
 
 ## 工作包

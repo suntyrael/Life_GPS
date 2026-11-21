@@ -83,11 +83,11 @@ enum lgps_calib_face_state {
 #define LGPS_CALIB_POSITION_AUTO 0xFFU
 #define LGPS_CALIB_FACE_NONE 0xFFU
 
-/* Samples per face at the 26 Hz IMU rate: 52 samples is 2.000 s. */
-#define LGPS_CALIB_FACE_SAMPLES 52U
+/* Samples per face at the 30 Hz IMU rate: 60 samples is 2.000 s. */
+#define LGPS_CALIB_FACE_SAMPLES 60U
 
-/* Samples in the stillness window that drives rest_pct (13 samples = 0.5 s). */
-#define LGPS_CALIB_REST_WINDOW 13U
+/* Samples in the stillness window that drives rest_pct (15 samples = 0.5 s). */
+#define LGPS_CALIB_REST_WINDOW 15U
 
 /* A face that has not settled after this long is reported as a jitter timeout. */
 #define LGPS_CALIB_FACE_TIMEOUT_MS 15000U
@@ -191,7 +191,7 @@ int lgps_calib_mag_clear(void);
 /* --- feeding --------------------------------------------------------------- */
 
 /*
- * Called from the main loop for every new IMU sample (26 Hz): drives the
+ * Called from the main loop for every new IMU sample (30 Hz): drives the
  * stillness window, the per-face accumulation and the timeout.
  */
 void lgps_calib_feed_imu(const struct lgps_imu_sample *sample, uint32_t now_ms);

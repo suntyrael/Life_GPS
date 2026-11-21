@@ -139,7 +139,7 @@ object CalibFaces {
      *
      * The App uses this only to *predict* what the firmware will report and to warn
      * the user when the pose is too tilted; the recorded face is always the one in
-     * the ACCEL_CAL response, because the firmware decides on 26 Hz samples.
+     * the ACCEL_CAL response, because the firmware decides on 30 Hz samples.
      *
      * @return 0..5, or [NONE] when the dominant axis is too weak or another axis
      *         carries too much of the vector.
@@ -190,7 +190,7 @@ object CalibFaces {
  * These are the numbers a user sees as "合格 / 建议重做"; they are not the
  * firmware's calibration maths, only a sanity gate so a bad capture is caught in
  * the wizard instead of a week later in the PDR drift. They are deliberately
- * loose: an LSM6DSR with a 2.4 % scale error (the bench finding that started
+ * loose: the bench unit with a 2.4 % scale error (the bench finding that started
  * this work) must pass, a device that was waved during capture must not.
  */
 object CalibJudge {

@@ -85,8 +85,8 @@
 		/*
 		 * Declared for M2 motion wake (pinmap section 2: P0.02 = LSM6_SPI_INT, GPIOTE30).
 		 * M1 polls the data-ready bit over SPI and never configures this pad, so it
-		 * stays in its reset state (input, disconnected buffer). LSM6DSR INT1 is
-		 * push-pull, so an unconfigured pad neither floats nor draws current.
+		 * stays in its reset state (input, disconnected buffer). LSM6DSV16X INT1
+		 * is push-pull, so an unconfigured pad neither floats nor draws current.
 		 */
 		imu-int1-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
 		/*
@@ -243,15 +243,18 @@
 	pinctrl-names = "default", "sleep";
 
 	imu: imu@0 {
-		compatible = "lifegps,lsm6dsr";
+		compatible = "lifegps,lsm6dsv16x";
 		reg = <0>;
 		spi-max-frequency = <8000000>;
 		/*
 		 * No spi-cpol/spi-cpha: SPI_CONFIG_DT takes CPOL/CPHA only from devicetree,
-		 * so these two flags *are* the bus mode, and the LSM6DSR datasheet permits
-		 * both mode 0 and mode 3 (DS11976 section 5.1: "the device is compatible
-		 * with SPI modes 0 and 3"). Mode 0 is what the M1 bench verified:
-		 * WHO_AM_I = 0x6B and a streaming sensor hub on every read.
+		 * so these two flags *are* the bus mode, and the LSM6DSV16X datasheet
+		 * permits both mode 0 and mode 3 (DS13510 section 5.1: "the device is
+		 * compatible with SPI modes 0 and 3"). Mode 0 is what the M1 bench
+		 * verified on the LSM6DSR predecessor (WHO_AM_I and a streaming sensor
+		 * hub on every read) and what this node keeps; the part change does not
+		 * touch the mode, only the address-byte layout inside the driver
+		 * (DS13510 section 5.1.3: bit 0 is the R/W bit).
 		 */
 	};
 };

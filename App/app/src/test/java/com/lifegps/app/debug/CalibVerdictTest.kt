@@ -48,8 +48,8 @@ class CalibVerdictTest {
 
     @Test
     fun accelResultFromTheBenchFindingPasses() {
-        // -24.6 mg bias and a -2.34 % scale error is roughly what a real
-        // LSM6DSR showed on the bench (the 1.024 g reading that started this work).
+        // -24.6 mg bias and a -2.34 % scale error is roughly what the bench
+        // unit (an LSM6DSVTR) showed: the 1.024 g reading that started this work.
         val verdict = CalibJudge.judgeAccel(accelResult())
         assertTrue(verdict.notes.toString(), verdict.ok)
         assertEquals(emptyList<String>(), verdict.notes)
