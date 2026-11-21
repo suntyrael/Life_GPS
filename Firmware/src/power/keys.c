@@ -93,6 +93,7 @@ static void diagnose_key_pin(const struct gpio_dt_spec *spec, const char *name)
 	int as_dt;
 	int explicit_up;
 	int explicit_down;
+	bool fault = false;
 	int ret;
 
 	/* Configuration exactly as the devicetree asks (pull-up | active low). */
@@ -149,26 +150,21 @@ static void diagnose_key_pin(const struct gpio_dt_spec *spec, const char *name)
 		LOG_ERR("%s: gpio_port_get_raw failed", name);
 	}
 
-	LOG_WRN("%s self-test: dt_flags=0x%02x effective=0x%02x (input=%d pull_up=%d pull_down=%d)",
-		name, spec->dt_flags, effective,
-		((effective & GPIO_INPUT) != 0U) ? 1 : 0,
-		((effective & GPIO_PULL_UP) != 0U) ? 1 : 0,
-		((effective & GPIO_PULL_DOWN) != 0U) ? 1 : 0);
-	LOG_WRN("%s self-test: port %s IN=0x%08x -> bit%u=%u (dt=%d explicit_up=%d "
-		"explicit_down=%d)", name, spec->port->name, port_in, spec->pin,
-		(unsigned int)((port_in >> spec->pin) & 0x01U), as_dt, explicit_up, explicit_down);
-
 	if ((effective & GPIO_PULL_UP) == 0U) {
 		LOG_ERR("%s: the driver reports no pull-up on this pin - configuration did not "
 			"reach the hardware", name);
+		fault = true;
 	} else if ((explicit_up == 0) && (explicit_down == 0)) {
 		LOG_WRN("%s: both pulls read 0 -> the pin is externally driven low "
 			"(held button, net shorted to GND, or the wrong pin)", name);
+		fault = true;
 	} else if ((explicit_up == 0) && (explicit_down == 1)) {
 		LOG_ERR("%s: the pull configuration has no effect on the pin (driver / pin mux)",
 			name);
+		fault = true;
 	} else if ((explicit_up == 1) && (explicit_down == 1)) {
 		LOG_WRN("%s: both pulls read 1 -> the pin is externally driven high", name);
+		fault = true;
 	} else if (as_dt == 0) {
 		/*
 		 * up=1/down=0 proves the pull-up works and the button is open, so the low
@@ -179,6 +175,19 @@ static void diagnose_key_pin(const struct gpio_dt_spec *spec, const char *name)
 			"configuration read low (pad settling); using the settled sample", name);
 	} else {
 		LOG_INF("%s: pull-up works, key is released", name);
+	}
+
+	/* The raw pad state is what a support case needs, and it is noise on a healthy
+	 * boot: it used to be two unconditional WRN lines, which meant a held button
+	 * produced four warnings per boot and drowned everything else. Print it once,
+	 * only when the verdict above is a fault.
+	 */
+	if (fault) {
+		LOG_WRN("%s: pad dt_flags=0x%02x effective=0x%02x port_IN=0x%08x bit%u=%u "
+			"(dt=%d explicit_up=%d explicit_down=%d)", name, spec->dt_flags,
+			effective, port_in, spec->pin,
+			(unsigned int)((port_in >> spec->pin) & 0x01U), as_dt, explicit_up,
+			explicit_down);
 	}
 }
 

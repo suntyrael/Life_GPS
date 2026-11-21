@@ -100,9 +100,48 @@
 5. 开关：`CONFIG_LGPS_IMU_SFLP`（默认 y）。FIFO 里一直没出现 SFLP tag 时驱动只告警一次，
    固件姿态滤波器照常工作。
 
-**本轮仍未启用**：芯片 pedometer / step detector（`PEDO_EN`）、wake-up / significant-motion 中断、
-FSM / MLC。前两项的理由是接口而不是寄存器：PDR 的 Weinberg 步长需要每一步的峰谷差（`delta_a`），
-芯片 pedometer 只给累计计数；wake-up 要接 INT1 → P0.02 的 GPIOTE 中断路径，属于 M2。
+**本轮仍未启用**：芯片 pedometer / wake-up 中断 / FSM / MLC 等，取舍与后续计划见 §2.2。
+
+### 2.2 IMU 功能取舍（2026-11-21 决定）
+
+按产品需求把 LSM6DSV16X 的能力过了一遍。三类结论，理由写在表里，避免后续会话重复提。
+
+**不需要（不做，也不实现）**
+
+| 能力 | 不做的理由 |
+| :--- | :--- |
+| Qvar / analog hub（`CTRL7(0x16).AH_QVAR_EN`、`AH_QVAR_OUT`） | 无触摸/手势需求；Qvar 要接金属感应面才有效，本机外壳没有 |
+| OIS / EIS 通道（辅助 SPI、`UI_CTRL*_OIS`、FIFO 的 EIS 通道） | 无摄像头，OIS/EIS 只服务成像防抖 |
+| Sensor hub `PASS_THROUGH_MODE`（`MASTER_CONFIG` bit4） | 主接口是 SPI；aux I2C 的调试由 `lgps_imu_hub_diag()` 覆盖，不需要把 aux 总线透传到主控 |
+| pedometer / step detector / step counter（`EMB_FUNC_EN_A.PEDO_EN`、`STEP_COUNTER_L/H(0x62/63)`） | 无步数统计需求；PDR 的步数来自固件过零检测，Weinberg 步长需要每步的峰谷差（`delta_a`），芯片只给累计计数 |
+| free-fall / tap / double-tap / 6D-4D / tilt（`WAKE_UP_THS.SINGLE_DOUBLE_TAP`、`FREE_FALL(0x5D)`、`TAP_*`、`D6D_SRC(0x47)`、`EMB_FUNC_EN_A.TILT_EN`） | 与交互无关：打点已有 KEY1，姿态与倾角由固件姿态滤波器给出；跌落检测只在保修取证时才有意义 |
+| FSM / MLC（第 14/15 章的 page 编程、`FSM_ENABLE(0x46)`、`MLC1..4_SRC(0x70..0x73)`） | 目的是把判断逻辑搬进传感器、让 MCU 睡；本项目 PDR 要求 MCU 常驻 30 Hz，收益不足 |
+| 自检 `ST_XL/ST_G`（`CTRL10(0x19)`） | 只在产测/RMA 有用，留到 F11 产测决定；App 的 `SELFTEST(0x40)` 目前仍回 `NOT_SUPPORTED` |
+
+**要做：长时间静止后的唤醒（M2）**
+
+1. 阈值：`WAKE_UP_THS(0x5B)` 的 `WK_THS[5:0]`；1 LSB 的重量由 `INACTIVITY_DUR(0x54)` 的
+   `WU_INACT_THS_W[2:0]` 选（默认 7.8125 mg/LSB，最大 250 mg/LSB）。
+2. 持续时间：`WAKE_UP_DUR(0x5C)` 的 `WAKE_DUR[1:0]`，1 LSB = 1/ODR_XL。
+3. 防误唤醒：`INACTIVITY_DUR.INACT_DUR[1:0]` 要求 2~4 次连续越阈才算"活动"（硬件去抖），
+   比再启用 sig-motion 更省事；sig-motion 只在实测误唤醒仍偏高时作为第二道门。
+4. 使能与路由：`FUNCTIONS_ENABLE(0x50)` bit7 `INTERRUPTS_ENABLE=1`，`MD1_CFG(0x5E)` bit5
+   `INT1_WU=1`；唤醒后读 `WAKE_UP_SRC(0x45)` 的 `WU_IA`（bit3）清标志。
+5. 静止降功耗：`FUNCTIONS_ENABLE.INACT_EN[1:0]=10b` 让加速度计在静止后自动降到
+   `INACTIVITY_DUR.XL_INACT_ODR[1:0]`（1.875/15/30/60 Hz）、陀螺进 sleep；唤醒后回 30 Hz 高性能。
+6. MCU 侧：INT1 = P0.02 走 GPIOTE 中断（dts 里已声明 `imu-int1-gpios`，**目前完全没用**，
+   采样靠轮询 `STATUS_REG`）；唤醒后重开 ZUPT 窗口并喂狗。
+7. 验收：静止 10 s 进休眠；拿起/摇晃一次即醒；桌上静置 1 h 的误唤醒次数先测出来再定门限。
+
+**待评估：FIFO 批量（低功耗第二阶段）**
+
+- 目的：把"每 30 Hz 一次 SPI 事务"换成"每 1~5 s 一次突发读"，静止时段 MCU 才能真正睡下去。
+  寄存器：`FIFO_CTRL3(0x09)` 的 `BDR_XL/BDR_GY`、`FIFO_CTRL1(0x07)` 水位、`FIFO_CTRL4(0x0A)` 模式、
+  `INT1_CTRL(0x0D)` 的 `INT1_FIFO_TH`。
+- 现状：只有 SFLP 走 FIFO；accel/gyro 与 hub 数据仍是寄存器直读（每样本 3 次 SPI）。
+- 顺序：先上 wake-up（单点收益明确），再按静止功耗实测决定是否值得做批量。
+
+**结论**：M2 只补 wake-up；FIFO 批量视实测；其余不做。
 
 ## 3. 串口日志格式（固定契约）
 
