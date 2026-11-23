@@ -38,6 +38,7 @@
 #ifndef LIFEGPS_BATTERY_H_
 #define LIFEGPS_BATTERY_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /*
@@ -58,15 +59,29 @@
 /* A Li-ion pack cannot sit below this; used to flag an absent pack / open divider. */
 #define LGPS_BATT_MV_PLAUSIBLE_MIN 2500
 
+/* Voltage-only estimate is unavailable below LGPS_BATT_MV_PLAUSIBLE_MIN. */
+#define LGPS_BATT_SOC_UNKNOWN 0xFFU
+
 /* Configure the SAADC channel. */
 int lgps_battery_init(void);
 
 /*
  * Read the pack voltage in millivolts. Returns 0 on success, negative errno
- * otherwise. No state of charge is computed here: with no current sense, the
- * App applies the measured OCV table to bat_mv (see
- * App/app/src/main/java/com/lifegps/app/ble/BatterySoc.kt).
+ * otherwise. No state of charge is computed here: see lgps_battery_soc_pct().
  */
 int lgps_battery_read_mv(int32_t *millivolts);
+
+/*
+ * Estimate state of charge from the calibrated pack voltage.
+ *
+ * This is a voltage-only estimate: the board has no current sense, so the
+ * tables are OCV and CC-charge terminal voltage, not a coulomb count. @p charging
+ * selects the charge table (SGM4056 /CHG current flowing), otherwise OCV.
+ *
+ * Returns 0 on success. On success @p percent is 0..100, or
+ * LGPS_BATT_SOC_UNKNOWN when @p millivolts is below the plausible minimum.
+ * Returns -EINVAL when @p percent is NULL.
+ */
+int lgps_battery_soc_pct(int32_t millivolts, bool charging, uint8_t *percent);
 
 #endif /* LIFEGPS_BATTERY_H_ */

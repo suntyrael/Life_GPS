@@ -44,7 +44,7 @@ struct lgps_traj_sample {
 	uint8_t hdop_d1;        /* 0.1 resolution; before 0.4.0 this byte held pDOP */
 	uint8_t satellites;
 	uint8_t status_flags;
-	uint8_t battery_pct;
+	uint8_t battery_pct; /* 0..100; the POI writer stores 0 when SOC is unknown */
 	int8_t floor_level;
 };
 

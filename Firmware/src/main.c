@@ -402,6 +402,17 @@ static struct lgps_telemetry_snapshot *build_snapshot(uint32_t now_ms,
 	snap.baro_msl_alt_mm = snap.baro_msl_valid ? lgps_baro_msl_altitude_mm() : 0;
 	(void)lgps_charger_charging(&charging);
 	snap.charging = charging;
+
+	if (bat_valid) {
+		int soc_ret = lgps_battery_soc_pct(bat_mv, charging, &snap.bat_pct);
+
+		if (soc_ret < 0) {
+			snap.bat_pct = LGPS_BATT_SOC_UNKNOWN;
+		}
+	} else {
+		snap.bat_pct = LGPS_BATT_SOC_UNKNOWN;
+	}
+
 	snap.key_levels = lgps_keys_levels();
 	snap.zupt_locked = lgps_zupt_locked(&zupt);
 	snap.zupt_var_g2 = lgps_zupt_accel_variance_g2(&zupt);

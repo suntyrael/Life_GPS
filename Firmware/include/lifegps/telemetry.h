@@ -95,6 +95,7 @@ struct lgps_telemetry_snapshot {
 	/* System */
 	bool bat_valid;
 	int32_t bat_mv;
+	uint8_t bat_pct; /* 0..100, or 0xFF when bat_valid is false */
 	bool charging;
 	uint8_t key_levels;   /* bit0 = KEY1_POI pressed, bit1 = KEY2_MODE pressed */
 	bool zupt_locked;

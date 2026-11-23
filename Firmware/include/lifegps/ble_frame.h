@@ -111,8 +111,10 @@ enum lgps_ble_status_code {
 #define LGPS_BLE_TELEM_MASK_NMEA 0x00000100U  /* id 0x08 */
 #define LGPS_BLE_TELEM_MASK_SAT 0x00000200U   /* id 0x09 */
 
-/* soc_pct is "unknown" until a fuel gauge or a coulomb counter exists; the app
- * derives a percentage from bat_mv instead of the firmware pretending to know.
+/* soc_pct is 0..100 from the voltage-only OCV/charge tables, or this value when
+ * bat_mv is below LGPS_BATT_MV_PLAUSIBLE_MIN. There is no coulomb counter; the
+ * App falls back to its own bat_mv table only for older firmware that sends
+ * 0xFF here.
  */
 #define LGPS_BLE_SOC_UNKNOWN 0xFFU
 

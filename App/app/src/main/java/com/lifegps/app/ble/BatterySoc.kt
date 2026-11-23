@@ -3,10 +3,11 @@ package com.lifegps.app.ble
 /**
  * Voltage-only state-of-charge estimate for the single-cell Li-ion pack.
  *
- * v1 has no current sense and no fuel gauge, so the firmware sends only `bat_mv`
- * (`soc_pct` stays 0xFF). The tables below are fitted from one 0.2 C cycle of the
- * 1000 mAh-class pack in `1000mAh电池放电.xlsx` (test started 2026-10-19, room
- * temperature was not logged):
+ * The firmware computes this voltage-only estimate and sends it in `soc_pct`.
+ * The tables below are kept as the fallback for older firmware that still sends
+ * 0xFF; [fromStatus] prefers the device value when it is 0..100. The data comes
+ * from one 0.2 C cycle of the 1000 mAh-class pack in `1000mAh电池放电.xlsx`
+ * (test started 2026-10-19, room temperature was not logged):
  *
  *  - CC discharge: 4.1424 V -> 3.000 V, 1.1106 Ah at ~0.200 A.
  *  - CC-CV charge: 3.2812 V -> 4.2000 V, 1.1102 Ah at ~0.200 A.
@@ -54,6 +55,16 @@ object BatterySoc {
         0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50,
         55, 60, 65, 70, 75, 80, 85, 90, 95, 100,
     )
+
+    /**
+     * Prefer the device's own estimate. Older firmware sends 0xFF in `socPct`;
+     * only then fall back to the local table (and only with a real voltage).
+     */
+    fun fromStatus(socPct: Int, mv: Int, charging: Boolean): Int {
+        if (socPct in 0..100) return socPct
+        if (mv <= 0) return 0
+        return percent(mv, charging)
+    }
 
     /**
      * Convert a pack voltage to percent. [charging] selects the charge terminal

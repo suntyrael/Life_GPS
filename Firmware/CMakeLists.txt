@@ -37,6 +37,7 @@ target_sources(app PRIVATE
   src/nav/baro_store.c
   src/nav/nav.c
   src/power/battery.c
+  src/power/battery_soc.c
   src/power/keys.c
   src/power/led.c
   src/power/power_sm.c

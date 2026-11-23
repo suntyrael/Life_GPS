@@ -39,6 +39,7 @@
 #include <generated/lifegps_protocol.h>
 #include <lifegps/ble.h>
 #include <lifegps/baro.h>
+#include <lifegps/battery.h>
 #include <lifegps/ble_frame.h>
 #include <lifegps/ble_uuid.h>
 #include <lifegps/calib.h>
@@ -59,6 +60,8 @@ LOG_MODULE_REGISTER(lgps_ble, LOG_LEVEL_INF);
  */
 BUILD_ASSERT(LGPS_BLE_STATUS_SIZE <= LGPS_PROTO_MTU - 8,
 	     "status frame must fit in one notification");
+BUILD_ASSERT(LGPS_BATT_SOC_UNKNOWN == LGPS_BLE_SOC_UNKNOWN,
+	     "battery and BLE must agree on the unknown SOC marker");
 
 #define LGPS_BLE_NAME_SIZE 16
 /*
@@ -188,6 +191,7 @@ static struct k_spinlock status_lock;
  * thread must not see a half-updated pair.
  */
 static atomic_t published_steps;
+static atomic_t published_soc_pct;
 
 /* Counted instead of logged inside the notify path; reported from publish(), in
  * the main thread, where the log backend is not on the notification path.
@@ -475,7 +479,7 @@ static void status_from_fix(struct lgps_ble_status *status,
 	status->fix_type = snap->fix.fix_type;
 	status->satellites = snap->fix.satellites;
 	status->key_levels = snap->key_levels;
-	status->soc_pct = LGPS_BLE_SOC_UNKNOWN;
+	status->soc_pct = snap->bat_pct;
 	status->pdop_1e2 = snap->fix.pdop_1e2;
 	status->speed_cms = snap->fix.valid ? snap->fix.speed_cms : 0U;
 	status->heading_ddeg = snap->fix.valid ? snap->fix.heading_ddeg : 0U;
@@ -671,6 +675,7 @@ static uint8_t cmd_poi_mark(uint8_t *payload, size_t capacity, size_t *out_len)
 	struct lgps_ring_stats stats = { 0 };
 	struct lgps_traj_sample sample = { 0 };
 	uint8_t record[LGPS_RECORD_TRAJECTORY_SIZE];
+	atomic_val_t soc_pct;
 	int err;
 
 	if (capacity < 2U) {
@@ -686,6 +691,7 @@ static uint8_t cmd_poi_mark(uint8_t *payload, size_t capacity, size_t *out_len)
 	}
 
 	lgps_ring_get_stats(&stats);
+	soc_pct = atomic_get(&published_soc_pct);
 
 	sample.seq_id = stats.records_written;
 	sample.timestamp_s = fix.utc_epoch_s;
@@ -725,7 +731,7 @@ static uint8_t cmd_poi_mark(uint8_t *payload, size_t capacity, size_t *out_len)
 	}
 	sample.satellites = fix.satellites;
 	sample.status_flags = (uint8_t)(LGPS_FLAG_FIX_VALID | LGPS_FLAG_POI_EVENT);
-	sample.battery_pct = 0U;
+	sample.battery_pct = (soc_pct <= 100) ? (uint8_t)soc_pct : 0U;
 	sample.floor_level = 0;
 
 	err = lgps_traj_encode(&sample, record);
@@ -1473,6 +1479,7 @@ void lgps_ble_publish(const struct lgps_telemetry_snapshot *snap)
 	k_spin_unlock(&status_lock, key);
 
 	atomic_set(&published_steps, (atomic_val_t)status.steps);
+	atomic_set(&published_soc_pct, (atomic_val_t)status.soc_pct);
 
 	if (status_subscribed) {
 		notify_guarded(status_attr, frame, (uint16_t)len);
@@ -1665,6 +1672,7 @@ int lgps_ble_init(void)
 	debug_unlocked = false;
 	status_frame_valid = false;
 	atomic_clear(&published_steps);
+	atomic_set(&published_soc_pct, (atomic_val_t)LGPS_BLE_SOC_UNKNOWN);
 
 	/* One token per queued frame, otherwise a second Control write would find
 	 * the only token already consumed and wait for a wakeup that never comes.

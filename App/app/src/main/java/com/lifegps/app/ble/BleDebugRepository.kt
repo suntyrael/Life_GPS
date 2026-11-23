@@ -357,11 +357,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
                 firmware = caps?.let { c -> "fw ${c.firmwareText}" } ?: it.firmware,
                 protocol = caps?.let { c -> "proto ${c.protocolText}" } ?: it.protocol,
                 batteryMv = batteryMv,
-                batteryPct = if (batteryMv > 0) {
-                    BatterySoc.percent(batteryMv, frame.charging)
-                } else {
-                    0
-                },
+                batteryPct = BatterySoc.fromStatus(frame.socPct, batteryMv, frame.charging),
                 charging = frame.charging,
                 // v1 has no "work mode" field in the Status frame.
                 mode = "—",

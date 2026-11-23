@@ -72,7 +72,7 @@ off  size  field
 | 3 | u8 | `fix_type` | UBX fixType（0..5） |
 | 4 | u8 | `satellites` | 参与定位的卫星数 |
 | 5 | u8 | `key_levels` | bit0 KEY1 按下，bit1 KEY2 按下 |
-| 6 | u8 | `soc_pct` | **v1 恒为 0xFF（未知）**，App 由 `bat_mv` 自行换算 |
+| 6 | u8 | `soc_pct` | 0..100 = 固件电压法估算（实测 OCV/充电端电压表，无电流计）；0xFF = 电压无效或低于 2.5 V，App 回退到 `bat_mv` 换算 |
 | 7 | u8 | `reserved0` | 0 |
 | 8 | u16 | `pdop_1e2` | pDOP ×100（NAV-PVT；99.99 的“无解”哨兵值不出现，置 0） |
 | 10 | u16 | `speed_cms` | cm/s |
@@ -106,6 +106,10 @@ off  size  field
 | 110 | u16 | `head_acc_cdd` | **0.4.0 追加**：航向精度，0.01°（NAV-PVT `headAcc` 1e-5° ÷1000） |
 | 112 | u16 | `hdop_1e2` | **0.4.0 追加**：hDOP ×100（UBX-NAV-DOP `hDOP`，载荷偏移 12） |
 | 114 | u16 | `vdop_1e2` | **0.4.0 追加**：vDOP ×100（UBX-NAV-DOP `vDOP`，载荷偏移 10） |
+
+`soc_pct` 是固件按实测 OCV/充电端电压表做的**电压法**估算（0.2C 单节数据），
+不是库仑积分；没有电流计，负载、温度、老化都会带来误差。`0xFF` 只在 ADC 读取失败或
+`bat_mv < 2500 mV` 时出现，App 仍可回退到 `bat_mv` 表。
 
 **100..115 的取值约定**：`0` 一律表示“接收机没给这个值”（无定位、整数字段装不下、NAV-PVT
 的 `0xFFFFFFFF` 未知标识）。主机**不得**把 0 当成真实的“精度 0 m / DOP 0”。

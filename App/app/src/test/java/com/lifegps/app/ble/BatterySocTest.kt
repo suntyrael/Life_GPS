@@ -15,6 +15,17 @@ import org.junit.Test
 class BatterySocTest {
 
     @Test
+    fun deviceSocWinsOverTheLocalFallback() {
+        assertEquals(42, BatterySoc.fromStatus(42, 3800, charging = false))
+    }
+
+    @Test
+    fun unknownDeviceSocFallsBackToTheLocalTable() {
+        assertEquals(39, BatterySoc.fromStatus(0xFF, 3800, charging = false))
+        assertEquals(0, BatterySoc.fromStatus(0xFF, -1, charging = false))
+    }
+
+    @Test
     fun ocvEndpointsClampToEmptyAndFull() {
         assertEquals(0, BatterySoc.percent(2500, charging = false))
         assertEquals(0, BatterySoc.percent(3230, charging = false))
