@@ -498,12 +498,14 @@ private fun BaroBaselineCard(
     val canOperate = baro.valid && !unsupported && !busy
 
     // Client-side guard only, mirroring the conditions the wire document lists for
-    // action 2 (fix, ≥ 8 satellites, pDOP ≤ 2.0, speed < 0.3 m/s = 1.08 km/h). The
-    // device is still the authority and adds the vertical accuracy it knows.
+    // action 2 (fix, ≥ 6 satellites, pDOP ≤ 5.0, speed < 0.5 m/s = 1.8 km/h). The
+    // device is still the authority and adds the vertical accuracy it knows
+    // (≤ 30 m). The old 8 satellites / pDOP 2.0 pair rejected a perfectly usable
+    // 3D fix, so the button stayed grey on a working device.
     val gnssUsable = gnss.fix &&
-        gnss.sats >= 8 &&
-        gnss.pdop <= 2.0 &&
-        gnss.speedKmh < 1.08
+        gnss.sats >= 6 &&
+        gnss.pdop <= 5.0 &&
+        gnss.speedKmh < 1.8
 
     CardBlock(
         title = "气压基准 · BARO_BASELINE",
@@ -625,8 +627,8 @@ private fun BaroBaselineCard(
         } else if (!gnssUsable) {
             Spacer(Modifier.height(4.dp))
             Text(
-                "没有可用的 GNSS 高度（需要 fix、卫星 ≥ 8、pDOP ≤ 2.0、地速 < 0.3 m/s，" +
-                    "固件还会检查垂直精度），“用 GNSS 海拔校准”因此保持禁用。",
+                "没有可用的 GNSS 高度（需要 fix、卫星 ≥ 6、pDOP ≤ 5.0、地速 < 0.5 m/s，" +
+                    "固件还会检查垂直精度 ≤ 30 m），“用 GNSS 海拔校准”因此保持禁用。",
                 color = Amber,
                 fontSize = 11.sp,
             )

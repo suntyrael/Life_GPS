@@ -69,6 +69,17 @@ enum lgps_calib_state {
 #define LGPS_CALIB_FLAG_DEFAULTS 0x02U
 #define LGPS_CALIB_FLAG_QUICK 0x04U
 #define LGPS_CALIB_FLAG_SAVE_FAILED 0x08U
+/*
+ * Which half of the record was written by a real calibration.
+ *
+ * One record carries both sensors, so FROM_STORE alone cannot answer "is the
+ * accelerometer calibrated?": a magnetometer-only calibration used to set it and
+ * the App then showed both rows as calibrated. Each finish path sets its own bit,
+ * each CLEAR drops only its own bit, and the bits live in the record so they
+ * survive a reboot.
+ */
+#define LGPS_CALIB_FLAG_MAG_VALID 0x10U
+#define LGPS_CALIB_FLAG_IMU_VALID 0x20U
 
 enum lgps_calib_face_state {
 	LGPS_CALIB_FACE_WAIT_REST = 0,

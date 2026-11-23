@@ -1,6 +1,7 @@
 package com.lifegps.app.ble
 
 import android.content.Context
+import android.os.SystemClock
 import com.lifegps.app.debug.AccelCalResult
 import com.lifegps.app.debug.AttitudeState
 import com.lifegps.app.debug.BaroBaselineResult
@@ -18,6 +19,7 @@ import com.lifegps.app.debug.DeviceSummary
 import com.lifegps.app.debug.FlashStatus
 import com.lifegps.app.debug.GeoPoint
 import com.lifegps.app.debug.GnssLinkInfo
+import com.lifegps.app.debug.GnssRestartState
 import com.lifegps.app.debug.GnssStatus
 import com.lifegps.app.debug.ImuStatus
 import com.lifegps.app.debug.LogEntry
@@ -68,6 +70,14 @@ class BleDebugRepository(context: Context) : DebugRepository {
     private val appContext: Context = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val clock = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
+
+    /** Last UTC the device reported (Life_GPS epoch seconds); 0 = never synced. */
+    @Volatile
+    private var clockSyncEpochS = 0L
+
+    /** [android.os.SystemClock.elapsedRealtime] at the moment of that report. */
+    @Volatile
+    private var clockSyncAtMs = 0L
 
     @Volatile
     private var permissionsGranted = false
@@ -120,6 +130,9 @@ class BleDebugRepository(context: Context) : DebugRepository {
 
     private val _gnssDebug = MutableStateFlow(GnssDebugState())
     override val gnssDebug: StateFlow<GnssDebugState> = _gnssDebug.asStateFlow()
+
+    private val _gnssRestart = MutableStateFlow(GnssRestartState())
+    override val gnssRestart: StateFlow<GnssRestartState> = _gnssRestart.asStateFlow()
 
     private val _nmea = MutableStateFlow<List<String>>(emptyList())
     override val nmea: StateFlow<List<String>> = _nmea.asStateFlow()
@@ -367,6 +380,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
 
         val latitude = frame.latE7 / 1e7
         val longitude = frame.lonE7 / 1e7
+        syncClock(frame.utcEpochS, frame.utcValid)
         _gnss.value = GnssStatus(
             state = BleFrame.gnssStateName(frame.gnssState),
             fix = frame.gnssFixValid,
@@ -533,9 +547,8 @@ class BleDebugRepository(context: Context) : DebugRepository {
      * not published by this firmware version and stay unset instead of zero-filled.
      */
     private fun onSatTelemetry(telemetry: SatTelemetry) {
-        val rows = telemetry.rows
-            .sortedWith(compareByDescending<SatTelemetryRow> { it.used }.thenByDescending { it.cno })
-            .map { row ->
+        val rows = sortSatellites(
+            telemetry.rows.map { row ->
                 SatelliteInfo(
                     svid = row.svId,
                     system = gnssSystemName(row.gnssId),
@@ -547,8 +560,10 @@ class BleDebugRepository(context: Context) : DebugRepository {
                     almAvail = row.almAvail,
                     carrier = carrierLabel(row.gnssId, row.sigId),
                     tracking = row.qualityLabel,
+                    quality = row.quality,
                 )
-            }
+            },
+        )
 
         /* `sats` keeps coming from the Status frame (NAV-PVT numSV, i.e. the
          * satellites actually used); the table lists every satellite the receiver
@@ -681,6 +696,40 @@ class BleDebugRepository(context: Context) : DebugRepository {
                 result.status != 0 -> GnssDebugState(error = describeStatus(result.status))
                 decoded == null -> GnssDebugState(error = "响应无法解析")
                 else -> decoded
+            }
+        }
+    }
+
+    /**
+     * Cold / warm / hot start (opcode 0x37).
+     *
+     * The device answers as soon as the request is handed to its GNSS thread, not
+     * when the receiver is back: a controlled software reset keeps the module off
+     * its UART for about a second, and the firmware re-applies the RAM-layer
+     * message rates afterwards. What the App can honestly show is "accepted", and
+     * the TTFF of the next cycle is the evidence.
+     */
+    override fun restartGnss(mode: Int) {
+        if (_gnssRestart.value.busy) return
+        scope.launch {
+            _gnssRestart.update { it.copy(busy = true, error = null) }
+            val result = request(Opcode.GNSS_RESTART, GnssCodec.encodeRestart(mode))
+            val accepted = result?.payload?.let { GnssCodec.decodeRestart(it) }
+            _gnssRestart.value = when {
+                result == null -> GnssRestartState(
+                    mode = mode,
+                    error = "链路未就绪或超时",
+                )
+                result.status != 0 -> GnssRestartState(
+                    mode = mode,
+                    error = describeStatus(result.status),
+                )
+                accepted == null -> GnssRestartState(mode = mode, error = "响应无法解析")
+                else -> GnssRestartState(
+                    mode = accepted,
+                    message = "${GnssRestartMode.label(accepted)}已下发：接收机约 1 s 后重启，" +
+                        "TTFF 重新从 0 开始计时",
+                )
             }
         }
     }
@@ -1751,7 +1800,10 @@ class BleDebugRepository(context: Context) : DebugRepository {
             scalePpm = response.scalePpm,
             coveragePct = response.coveragePct,
             sampleCount = response.sampleCount,
-            fromStore = response.fromStore,
+            /* Per-sensor: the record holds both halves, so the magnetometer row
+             * asks for the magnetometer bit (see CalibFlagBits.MAG_VALID).
+             */
+            fromStore = response.calibrated,
             lastCalibUnixS = response.lastCalibUnixS,
         )
         val hasCoefficients = phase == CalibPhase.REVIEW || phase == CalibPhase.SAVED
@@ -1841,7 +1893,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
             gyroBiasMdps = response.gyroBiasMdps,
             faceMask = response.faceMask,
             quickMode = response.quickMode,
-            fromStore = response.fromStore,
+            fromStore = response.calibrated,
             lastCalibUnixS = response.lastCalibUnixS,
         )
         val hasCoefficients = phase == CalibPhase.REVIEW || phase == CalibPhase.SAVED
@@ -2021,14 +2073,49 @@ class BleDebugRepository(context: Context) : DebugRepository {
         return out
     }
 
-    private fun now(): String = LocalTime.now().format(clock)
+    private fun now(): String {
+        val synced = syncedClockMillis()
+        if (synced != null) return LOCAL_CLOCK_FORMAT.format(Instant.ofEpochMilli(synced))
+        return LocalTime.now().format(clock)
+    }
 
+    /**
+     * The App's wall clock, taken from the receiver instead of the phone.
+     *
+     * A GNSS fix carries UTC, and a phone whose own clock is wrong would otherwise
+     * stamp every log line with the wrong time. [clockSyncEpochS] is the last UTC
+     * the receiver reported and [clockSyncAtMs] the phone's monotonic time at that
+     * moment; the difference is extrapolated so the log keeps counting between two
+     * 1 Hz frames. Returns null until a fix carried UTC, and the caller falls back
+     * to the phone clock.
+     */
+    private fun syncedClockMillis(): Long? {
+        val base = clockSyncEpochS
+        if (base <= 0L) return null
+        val elapsed = SystemClock.elapsedRealtime() - clockSyncAtMs
+        return ((base + LIFEGPS_EPOCH_UNIX_OFFSET_S) * 1000L) + elapsed
+    }
+
+    private fun syncClock(epochS: Long, utcValid: Boolean) {
+        if (!utcValid || epochS <= 0L) return
+        clockSyncEpochS = epochS
+        clockSyncAtMs = SystemClock.elapsedRealtime()
+    }
+
+    /**
+     * GNSS time in the product's default zone.
+     *
+     * The device only knows UTC (the receiver has no concept of a civil time
+     * zone), and this product ships in China, so the App renders it as UTC+8.
+     * That is a deliberate constant, not the phone's zone: two phones in two zones
+     * must show the same device time. The status row is labelled with the offset.
+     */
     private fun formatUtc(epochS: Long): String {
         if (epochS <= 0L) return "--"
         // utc_epoch_s counts from the Life_GPS 2020 epoch, not from Unix.
         val unixSeconds = epochS + LIFEGPS_EPOCH_UNIX_OFFSET_S
         return try {
-            UTC_FORMAT.format(Instant.ofEpochSecond(unixSeconds))
+            LOCAL_FORMAT.format(Instant.ofEpochSecond(unixSeconds))
         } catch (error: RuntimeException) {
             "--"
         }
@@ -2186,7 +2273,19 @@ class BleDebugRepository(context: Context) : DebugRepository {
         /** Seconds between the Life_GPS 2020 epoch and the Unix epoch. */
         const val LIFEGPS_EPOCH_UNIX_OFFSET_S = 1_577_836_800L
 
-        val UTC_FORMAT: DateTimeFormatter =
-            DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneOffset.UTC)
+        /**
+         * Default zone of the GNSS time on screen: UTC+8 (China Standard Time, no
+         * daylight saving). The receiver reports UTC only; this is the one place
+         * the offset from UTC to the product's civil time is decided.
+         */
+        const val DEFAULT_UTC_OFFSET_HOURS = 8
+
+        val LOCAL_FORMAT: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("HH:mm:ss")
+                .withZone(ZoneOffset.ofHours(DEFAULT_UTC_OFFSET_HOURS))
+
+        val LOCAL_CLOCK_FORMAT: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
+                .withZone(ZoneOffset.ofHours(DEFAULT_UTC_OFFSET_HOURS))
     }
 }

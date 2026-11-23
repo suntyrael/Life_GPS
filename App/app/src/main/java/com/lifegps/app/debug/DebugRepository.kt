@@ -57,6 +57,9 @@ interface DebugRepository {
     /** Raw NMEA sentences, newest last, bounded by the implementation. */
     val nmea: StateFlow<List<String>>
 
+    /** Last cold / warm / hot start request (opcode 0x37). */
+    val gnssRestart: StateFlow<GnssRestartState>
+
     /** Whitelisted receiver settings, keyed by configuration key. */
     val gnssCfg: StateFlow<Map<Long, GnssCfgValue>>
 
@@ -65,6 +68,9 @@ interface DebugRepository {
 
     /** Re-reads the session state from the device. */
     fun refreshGnssDebug()
+
+    /** Requests a cold (0) / warm (1) / hot (2) start from the receiver. */
+    fun restartGnss(mode: Int)
 
     fun clearNmea()
 

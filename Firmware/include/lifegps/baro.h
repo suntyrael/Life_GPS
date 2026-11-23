@@ -48,7 +48,7 @@
  * Gate for the automatic baseline. All five conditions must hold for a whole
  * window before the current pressure is accepted as the reference:
  *
- *   fix_valid, fix_type >= 3, satellites >= 8, known pDOP <= 2.0, speed < 0.3 m/s
+ *   fix_valid, fix_type >= 3, satellites >= 6, known pDOP <= 5.0, speed < 0.5 m/s
  *
  * 30 consecutive 1 Hz samples (30 s) and a window standard deviation below
  * 0.3 hPa (30 Pa, ~2.5 m) reject a moving or gusting moment. pDOP = 0 means the
@@ -56,9 +56,9 @@
  * as a perfect zero.
  */
 #define LGPS_BARO_AUTO_MIN_FIX_TYPE 3U
-#define LGPS_BARO_AUTO_MIN_SATELLITES 8U
-#define LGPS_BARO_AUTO_MAX_PDOP_1E2 200U /* pDOP <= 2.00 */
-#define LGPS_BARO_AUTO_MAX_SPEED_CMS 30U /* 0.3 m/s */
+#define LGPS_BARO_AUTO_MIN_SATELLITES 6U
+#define LGPS_BARO_AUTO_MAX_PDOP_1E2 500U /* pDOP <= 5.00 */
+#define LGPS_BARO_AUTO_MAX_SPEED_CMS 50U /* 0.5 m/s */
 #define LGPS_BARO_AUTO_WINDOW_SAMPLES 30U
 #define LGPS_BARO_AUTO_MAX_SIGMA_PA 30.0F
 
@@ -101,16 +101,21 @@ enum lgps_baro_reference {
 
 /*
  * Gate for a GNSS height calibration. A GNSS height is only as good as its
- * vertical accuracy: the BMP388 resolve about 0.1 hPa (0.8 m), while a marginal
- * 3D fix easily sits at +/-20 m. Calibrating with such a height would make the
- * absolute altitude look precise while being 20 m off, so the firmware refuses
- * instead of pretending.
+ * vertical accuracy: the BMP388 resolve about 0.1 hPa (0.8 m), so a height that
+ * is tens of metres off cannot be allowed to define the reference.
+ *
+ * The limits are deliberately loose enough for a normal 3D fix in the open:
+ * a hand-held MAX-M10S typically reports pDOP 2..4 with vAcc of a few metres,
+ * and the previous pDOP <= 2.0 / satellites >= 8 combination rejected exactly
+ * those fixes, so the calibration could never run on a device that was working
+ * correctly. vAcc is the only number that actually describes the height, and it
+ * stays the binding limit (30 m, roughly 3 sigma of a marginal urban fix).
  */
 #define LGPS_BARO_GNSS_MIN_FIX_TYPE 3U
-#define LGPS_BARO_GNSS_MIN_SATELLITES 8U
-#define LGPS_BARO_GNSS_MAX_PDOP_1E2 200U  /* pDOP <= 2.00 */
-#define LGPS_BARO_GNSS_MAX_SPEED_CMS 30U  /* 0.3 m/s */
-#define LGPS_BARO_GNSS_MAX_VACC_MM 20000U /* vAcc <= 20 m */
+#define LGPS_BARO_GNSS_MIN_SATELLITES 6U
+#define LGPS_BARO_GNSS_MAX_PDOP_1E2 500U  /* pDOP <= 5.00 */
+#define LGPS_BARO_GNSS_MAX_SPEED_CMS 50U  /* 0.5 m/s */
+#define LGPS_BARO_GNSS_MAX_VACC_MM 30000U /* vAcc <= 30 m */
 
 /*
  * State machine init. lgps_baro_load() additionally restores the baseline from

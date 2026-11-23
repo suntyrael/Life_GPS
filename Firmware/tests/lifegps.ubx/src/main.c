@@ -259,6 +259,54 @@ ZTEST(lifegps_ubx, test_rxm_pmreq_duration_clamped)
 		      "duration must be clamped to 12 days");
 }
 
+/*
+ * UBX-CFG-RST cold start, assembled by hand from section 3.10.2.1: navBbrMask
+ * 0xFFFF at offset 0 (X2), resetMode 0x01 (controlled software reset) at offset 2,
+ * reserved 0 at offset 3.
+ */
+ZTEST(lifegps_ubx, test_build_cfg_rst_cold_start)
+{
+	static const uint8_t expected[] = {
+		0xB5U, 0x62U, 0x06U, 0x04U, 0x04U, 0x00U, 0xFFU, 0xFFU, 0x01U, 0x00U, 0x0DU, 0x5FU,
+	};
+	uint8_t frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_CFG_RST_PAYLOAD_LEN +
+		      LGPS_UBX_TRAILER_LEN];
+	int ret;
+
+	ret = lgps_ubx_build_cfg_rst(frame, sizeof(frame), LGPS_UBX_CFG_RST_BBR_COLD,
+				     LGPS_UBX_CFG_RST_MODE_SOFTWARE);
+	zassert_equal(ret, (int)sizeof(expected), "CFG-RST frame must be 12 bytes");
+	zassert_mem_equal(frame, expected, sizeof(expected),
+			  "cold start must be navBbrMask 0xFFFF, resetMode 0x01");
+}
+
+ZTEST(lifegps_ubx, test_build_cfg_rst_hot_and_warm)
+{
+	uint8_t frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_CFG_RST_PAYLOAD_LEN +
+		      LGPS_UBX_TRAILER_LEN];
+	uint16_t mask;
+	int ret;
+
+	ret = lgps_ubx_build_cfg_rst(frame, sizeof(frame), LGPS_UBX_CFG_RST_BBR_HOT,
+				     LGPS_UBX_CFG_RST_MODE_SOFTWARE);
+	zassert_equal(ret, (int)sizeof(frame), "hot start frame");
+	mask = (uint16_t)(frame[LGPS_UBX_HEADER_LEN] |
+			  ((uint16_t)frame[LGPS_UBX_HEADER_LEN + 1U] << 8));
+	zassert_equal(mask, 0x0000U, "hot start keeps every BBR section");
+
+	ret = lgps_ubx_build_cfg_rst(frame, sizeof(frame), LGPS_UBX_CFG_RST_BBR_WARM,
+				     LGPS_UBX_CFG_RST_MODE_SOFTWARE);
+	zassert_equal(ret, (int)sizeof(frame), "warm start frame");
+	mask = (uint16_t)(frame[LGPS_UBX_HEADER_LEN] |
+			  ((uint16_t)frame[LGPS_UBX_HEADER_LEN + 1U] << 8));
+	zassert_equal(mask, 0x0001U, "warm start drops the ephemeris only");
+
+	zassert_equal(lgps_ubx_build_cfg_rst(NULL, sizeof(frame), 0U, 0x01U), -EINVAL,
+		      "NULL buffer must be refused");
+	zassert_equal(lgps_ubx_build_cfg_rst(frame, sizeof(frame), 0U, 0x7FU), -EINVAL,
+		      "an undefined resetMode must be refused");
+}
+
 /* Golden UBX-CFG-VALSET / VALGET frames for key 0x20910007 (NAV-PVT rate on
  * UART1), assembled by hand from section 3.10.5.1 / 3.10.4.1 so the test does
  * not share a code path with the implementation it checks.
@@ -640,6 +688,58 @@ ZTEST(lifegps_ubx, test_nav_sat_truncated_and_wrong_class)
 	parser.msg_id = LGPS_UBX_ID_NAV_PVT;
 	zassert_equal(lgps_ubx_decode_nav_sat(&parser, sats, ARRAY_SIZE(sats), &count), -EINVAL,
 		      "a non-NAV-SAT frame must be refused");
+}
+
+ZTEST(lifegps_ubx, test_nav_sig_full_sky_fits_the_parser)
+{
+	/* 40 signals = 8 + 16 * 40 = 648 B, the epoch size 0.4.0 documents. Sized for
+	 * NAV-SAT only (392 B), the parser dropped this frame as "too long", which
+	 * blanked the whole CF column on the phone. The buffers are static because the
+	 * frame plus the (now larger) parser state would otherwise cost a few
+	 * kilobytes of this thread's stack for no reason.
+	 */
+	static uint8_t frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_NAV_SIG_HEADER_LEN +
+			     (40U * LGPS_UBX_NAV_SIG_SIG_LEN) + LGPS_UBX_TRAILER_LEN];
+	static struct lgps_ubx_parser parser;
+	static struct lgps_ubx_nav_sig sigs[LGPS_UBX_NAV_SIG_MAX];
+	uint8_t count = 0U;
+	size_t len;
+
+	zassert_true(LGPS_UBX_MAX_PAYLOAD_LEN >= LGPS_UBX_NAV_SIG_PAYLOAD_MAX,
+		     "the payload buffer must cover a full NAV-SIG sky");
+
+	len = build_nav_sig_frame(frame, 40U, 40U, sizeof(frame));
+	lgps_ubx_parser_reset(&parser);
+	feed_expect_ready(frame, len, &parser);
+
+	zassert_equal(lgps_ubx_decode_nav_sig(&parser, sigs, ARRAY_SIZE(sigs), &count), 0,
+		      "a 40-signal NAV-SIG frame must decode");
+	zassert_equal(count, 40U, "every signal of the frame is stored");
+}
+
+ZTEST(lifegps_ubx, test_nav_sig_buffer_boundary)
+{
+	/* The largest frame the buffer can hold: exactly LGPS_UBX_NAV_SIG_MAX signals.
+	 * One byte more would be dropped by the parser, so this is the real ceiling.
+	 */
+	static uint8_t frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_NAV_SIG_PAYLOAD_MAX +
+			     LGPS_UBX_TRAILER_LEN];
+	static struct lgps_ubx_parser parser;
+	static struct lgps_ubx_nav_sig sigs[LGPS_UBX_NAV_SIG_MAX];
+	uint8_t count = 0U;
+	size_t len;
+
+	zassert_equal(sizeof(frame) - LGPS_UBX_HEADER_LEN - LGPS_UBX_TRAILER_LEN,
+		      (size_t)LGPS_UBX_MAX_PAYLOAD_LEN, "buffer sized for the largest message");
+
+	len = build_nav_sig_frame(frame, (uint8_t)LGPS_UBX_NAV_SIG_MAX,
+				  (uint8_t)LGPS_UBX_NAV_SIG_MAX, sizeof(frame));
+	lgps_ubx_parser_reset(&parser);
+	feed_expect_ready(frame, len, &parser);
+
+	zassert_equal(lgps_ubx_decode_nav_sig(&parser, sigs, ARRAY_SIZE(sigs), &count), 0,
+		      "the buffer boundary frame must decode");
+	zassert_equal(count, (uint8_t)LGPS_UBX_NAV_SIG_MAX, "all signals stored");
 }
 
 ZTEST(lifegps_ubx, test_valget_wide_value)

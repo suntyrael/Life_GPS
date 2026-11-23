@@ -130,6 +130,48 @@ class CalibCodecTest {
     }
 
     @Test
+    fun magOnlyRecordDoesNotCalibrateTheAccelerometer() {
+        /* Both responses carry the same record flags: a magnetometer-only record.
+         * Before the per-sensor bits, this made the IMU row read "已校准" too.
+         */
+        val flags = CalibFlagBits.FROM_STORE or CalibFlagBits.MAG_VALID
+        val mag = CalibCodec.decodeMagCal(magBody().also { it[25] = flags.toByte() })
+        val accel = CalibCodec.decodeAccelCal(accelBody().also { it[43] = flags.toByte() })
+        requireNotNull(mag)
+        requireNotNull(accel)
+
+        assertTrue(mag.fromStore)
+        assertTrue(mag.calibrated)
+        assertTrue(accel.fromStore)
+        assertFalse(accel.calibrated)
+    }
+
+    @Test
+    fun imuOnlyRecordDoesNotCalibrateTheMagnetometer() {
+        val flags = CalibFlagBits.FROM_STORE or CalibFlagBits.IMU_VALID
+        val mag = CalibCodec.decodeMagCal(magBody().also { it[25] = flags.toByte() })
+        val accel = CalibCodec.decodeAccelCal(accelBody().also { it[43] = flags.toByte() })
+        requireNotNull(mag)
+        requireNotNull(accel)
+
+        assertFalse(mag.calibrated)
+        assertTrue(accel.calibrated)
+    }
+
+    @Test
+    fun aRecordWithoutSensorBitsFallsBackToFromStore() {
+        // 0.4.0 and earlier set bit 0 only; both rows keep the old behaviour.
+        val flags = CalibFlagBits.FROM_STORE
+        val mag = CalibCodec.decodeMagCal(magBody().also { it[25] = flags.toByte() })
+        val accel = CalibCodec.decodeAccelCal(accelBody().also { it[43] = flags.toByte() })
+        requireNotNull(mag)
+        requireNotNull(accel)
+
+        assertTrue(mag.calibrated)
+        assertTrue(accel.calibrated)
+    }
+
+    @Test
     fun truncatedMagBodyIsRejected() {
         val short = magBody().copyOf(CalibCodec.MAG_RSP_SIZE - 1)
         assertNull(CalibCodec.decodeMagCal(short))

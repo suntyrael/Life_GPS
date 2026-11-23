@@ -42,6 +42,37 @@ data class GnssDebugState(
     val nmea: Boolean get() = flags and GnssCodec.FLAG_NMEA != 0
 }
 
+/**
+ * Cold / warm / hot start (`GNSS_RESTART` 0x37).
+ *
+ * The three differ only in how much of the receiver's backup memory the firmware
+ * clears before it restarts (UBX-CFG-RST `navBbrMask`, interface description
+ * section 3.10.2.1: 0xFFFF / 0x0001 / 0x0000). Request is one byte, the answer
+ * echoes the mode the device accepted.
+ */
+object GnssRestartMode {
+    const val COLD = 0
+    const val WARM = 1
+    const val HOT = 2
+
+    val ALL = listOf(COLD, WARM, HOT)
+
+    fun label(mode: Int): String = when (mode) {
+        COLD -> "冷启动"
+        WARM -> "温启动"
+        HOT -> "热启动"
+        else -> "模式 $mode"
+    }
+
+    /** What the receiver loses, in the terms the user can check afterwards (TTFF). */
+    fun detail(mode: Int): String = when (mode) {
+        COLD -> "清空星历 + 历书 + 位置 + 时钟 + UTC（navBbrMask 0xFFFF）。室外通常 30~60 s。"
+        WARM -> "只清空星历，保留历书与最后位置（0x0001）。通常 20~40 s。"
+        HOT -> "什么都不清，立即重启（0x0000）。接收机仍持星历则几秒定位。"
+        else -> ""
+    }
+}
+
 object GnssCodec {
     // --- debug session (0x36) -------------------------------------------------
 
@@ -59,6 +90,17 @@ object GnssCodec {
         )
 
     fun encodeDebugQuery(): ByteArray = ByteArray(0)
+
+    // --- restart (0x37) -------------------------------------------------------
+
+    /** `u8 mode`; the answer echoes the mode the device accepted. */
+    fun encodeRestart(mode: Int): ByteArray = byteArrayOf((mode and 0xFF).toByte())
+
+    /** Response body after the status byte: `u8 mode`. */
+    fun decodeRestart(body: ByteArray): Int? {
+        if (body.size < 1) return null
+        return BleFrame.u8(body, 0) and 0xFF
+    }
 
     /** Response body after the status byte: `u8 flags, u16 remaining_s`. */
     fun decodeDebug(body: ByteArray): GnssDebugState? {

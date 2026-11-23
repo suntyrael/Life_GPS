@@ -1126,6 +1126,41 @@ static uint8_t status_from_errno(int err)
 }
 
 /*
+ * GNSS_RESTART (0x37): cold / warm / hot start.
+ *
+ * Request: `u8 mode` (0 cold, 1 warm, 2 hot). Response: `u8 mode` - the mode that
+ * was handed to the GNSS thread, which is what the App confirms against. The
+ * receiver itself is reset one GNSS-thread pass later, so this answer means
+ * "accepted", never "done"; the state that follows is visible in the status frame
+ * (COLD_START) and the TTFF of the new cycle.
+ */
+static uint8_t cmd_gnss_restart(const struct lgps_ble_cmd *cmd, uint8_t *payload,
+				size_t capacity, size_t *out_len)
+{
+	uint8_t mode;
+	int ret;
+
+	if (capacity < 1U + 1U) {
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+
+	if (cmd->payload_len != 1U) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	mode = cmd->payload[0];
+	ret = lgps_gnss_restart((enum lgps_gnss_start_mode)mode);
+	if (ret != 0) {
+		return status_from_errno(ret);
+	}
+
+	payload[1] = mode;
+	*out_len = 1U + 1U;
+
+	return LGPS_BLE_OK;
+}
+
+/*
  * Whitelisted receiver setting: request body is action, key (u32) and - for a
  * write - the little-endian value bytes. The answer always carries the value the
  * receiver reports afterwards, never the one the host asked for.
@@ -1218,6 +1253,8 @@ static uint8_t dispatch(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t
 		return cmd_gnss_debug(cmd, payload, capacity, out_len);
 	case LGPS_CMD_GNSS_CFG:
 		return cmd_gnss_cfg(cmd, payload, capacity, out_len);
+	case LGPS_CMD_GNSS_RESTART:
+		return cmd_gnss_restart(cmd, payload, capacity, out_len);
 	case LGPS_CMD_DEBUG_UNLOCK:
 		return cmd_debug_unlock(cmd);
 	case LGPS_CMD_REBOOT:

@@ -572,7 +572,12 @@ static int persist_current(bool allow_erase)
 	uint8_t axis;
 
 	if (allow_erase) {
-		bool any = false;
+		/* A sensor whose coefficients are all zero is still "calibrated" when its
+		 * validity bit is set, so the erase decision looks at the bits as well as
+		 * at the numbers - otherwise clearing the magnetometer would throw away a
+		 * perfectly good IMU record that happened to need no correction.
+		 */
+		bool any = (flags & (LGPS_CALIB_FLAG_MAG_VALID | LGPS_CALIB_FLAG_IMU_VALID)) != 0U;
 
 		for (axis = 0U; axis < 3U; axis++) {
 			if ((coeffs.accel_bias_ug[axis] != 0) ||
@@ -612,6 +617,29 @@ static void load_defaults(void)
 	last_calib_unix_s = 0U;
 }
 
+/*
+ * Legacy records (written before the per-sensor validity bits existed) carry a
+ * single FROM_STORE bit for both sensors. Infer the bits from the coefficients so
+ * an already-calibrated unit does not report "uncalibrated" after an update.
+ */
+static uint8_t infer_sensor_validity(const struct lgps_calib_coeffs *in)
+{
+	uint8_t bits = 0U;
+
+	for (uint8_t axis = 0U; axis < 3U; axis++) {
+		if ((in->mag_bias_lsb[axis] != 0) || (in->mag_scale_ppm[axis] != 0)) {
+			bits |= LGPS_CALIB_FLAG_MAG_VALID;
+		}
+
+		if ((in->accel_bias_ug[axis] != 0) || (in->accel_scale_ppm[axis] != 0) ||
+		    (in->gyro_bias_mdps[axis] != 0)) {
+			bits |= LGPS_CALIB_FLAG_IMU_VALID;
+		}
+	}
+
+	return bits;
+}
+
 int lgps_calib_init(void)
 {
 	struct lgps_calib_coeffs stored;
@@ -634,9 +662,12 @@ int lgps_calib_init(void)
 
 	coeffs = stored;
 	last_calib_unix_s = unix_s;
-	flags = (uint8_t)(record_flags & (LGPS_CALIB_FLAG_FROM_STORE | LGPS_CALIB_FLAG_QUICK));
+	flags = (uint8_t)(record_flags & (LGPS_CALIB_FLAG_FROM_STORE | LGPS_CALIB_FLAG_QUICK |
+					  LGPS_CALIB_FLAG_MAG_VALID | LGPS_CALIB_FLAG_IMU_VALID));
 	if ((flags & LGPS_CALIB_FLAG_FROM_STORE) == 0U) {
 		flags |= LGPS_CALIB_FLAG_DEFAULTS;
+	} else if ((flags & (LGPS_CALIB_FLAG_MAG_VALID | LGPS_CALIB_FLAG_IMU_VALID)) == 0U) {
+		flags |= infer_sensor_validity(&coeffs);
 	}
 
 	return 0;
@@ -809,6 +840,9 @@ int lgps_calib_accel_finish(void)
 		flags &= (uint8_t)~LGPS_CALIB_FLAG_QUICK;
 	}
 
+	/* This half of the record is now a real calibration, whatever it holds. */
+	flags |= LGPS_CALIB_FLAG_IMU_VALID;
+
 	accel.face_mask = 0U;
 	memset(accel.face_valid, 0, sizeof(accel.face_valid));
 	accel.quick_valid = false;
@@ -823,7 +857,11 @@ int lgps_calib_accel_clear(void)
 	memset(coeffs.accel_scale_ppm, 0, sizeof(coeffs.accel_scale_ppm));
 	memset(coeffs.gyro_bias_mdps, 0, sizeof(coeffs.gyro_bias_mdps));
 	coeffs.accel_face_mask = 0U;
-	flags = LGPS_CALIB_FLAG_DEFAULTS;
+	/* Only this half: a stored magnetometer calibration keeps its bit and its
+	 * "calibrated" state.
+	 */
+	flags &= (uint8_t)~LGPS_CALIB_FLAG_IMU_VALID;
+	flags &= (uint8_t)~LGPS_CALIB_FLAG_QUICK;
 	accel.face_mask = 0U;
 	memset(accel.face_valid, 0, sizeof(accel.face_valid));
 	accel.quick_valid = false;
@@ -886,6 +924,8 @@ int lgps_calib_mag_finish(void)
 	memcpy(coeffs.mag_scale_ppm, scale_ppm, sizeof(coeffs.mag_scale_ppm));
 	memcpy(coeffs.mag_coverage_pct, coverage_pct, sizeof(coeffs.mag_coverage_pct));
 
+	flags |= LGPS_CALIB_FLAG_MAG_VALID;
+
 	mag.state = LGPS_CALIB_STATE_IDLE;
 	mag.have_sample = false;
 
@@ -897,6 +937,10 @@ int lgps_calib_mag_clear(void)
 	memset(coeffs.mag_bias_lsb, 0, sizeof(coeffs.mag_bias_lsb));
 	memset(coeffs.mag_scale_ppm, 0, sizeof(coeffs.mag_scale_ppm));
 	memset(coeffs.mag_coverage_pct, 0, sizeof(coeffs.mag_coverage_pct));
+	/* The IMU half of the record is untouched: its bit decides whether the App
+	 * still says "calibrated" for the accelerometer.
+	 */
+	flags &= (uint8_t)~LGPS_CALIB_FLAG_MAG_VALID;
 
 	return persist_current(true);
 }

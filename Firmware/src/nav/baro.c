@@ -301,8 +301,8 @@ static bool gnss_height_usable(const struct lgps_gnss_fix *fix)
 		return false;
 	}
 
-	/* vAcc is the receiver's own 1-sigma vertical estimate. A height that is
-	 * worse than 20 m cannot calibrate an altimeter that resolves 0.8 m.
+	/* vAcc is the receiver's own 1-sigma vertical estimate and the only number
+	 * that describes the height itself, so it is what the gate binds on.
 	 */
 	return (fix->v_acc_mm != 0U) && (fix->v_acc_mm <= LGPS_BARO_GNSS_MAX_VACC_MM);
 }

@@ -280,4 +280,27 @@ enum lgps_gnss_state lgps_gnss_get_state(void);
 
 const char *lgps_gnss_state_name(enum lgps_gnss_state state);
 
+/*
+ * Cold / warm / hot start (BLE opcode 0x37).
+ *
+ * The three differ only in how much of the receiver's backup memory (BBR) is
+ * cleared before it restarts - UBX-CFG-RST `navBbrMask` 0xFFFF / 0x0001 / 0x0000,
+ * interface description section 3.10.2.1:
+ *
+ *   COLD  everything: ephemeris, almanac, position, clock, UTC, RTC
+ *   WARM  the ephemeris, the almanac is kept
+ *   HOT   nothing
+ *
+ * The request is handed to the GNSS thread (it owns the UART and the state
+ * machine) and answers immediately. A receiver that is not powered cannot be
+ * reset: -ENODEV.
+ */
+enum lgps_gnss_start_mode {
+	LGPS_GNSS_START_COLD = 0,
+	LGPS_GNSS_START_WARM = 1,
+	LGPS_GNSS_START_HOT = 2,
+};
+
+int lgps_gnss_restart(enum lgps_gnss_start_mode mode);
+
 #endif /* LIFEGPS_GNSS_H_ */

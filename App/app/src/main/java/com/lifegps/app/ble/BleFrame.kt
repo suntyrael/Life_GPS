@@ -148,6 +148,8 @@ enum class Opcode(val code: Int, val label: String) {
     /* 0.2.0: GNSS debugging (see BLE_Wire_v1.md §6.6 / §6.7). */
     GNSS_CFG(0x35, "GNSS_CFG"),
     GNSS_DEBUG(0x36, "GNSS_DEBUG"),
+    /* 0.5.0: cold / warm / hot start (BLE_Wire_v1.md §6.8). */
+    GNSS_RESTART(0x37, "GNSS_RESTART"),
     IMU_SNAPSHOT(0x32, "IMU_SNAPSHOT"),
     BUTTON_EVENT(0x33, "BUTTON_EVENT"),
     SELFTEST(0x40, "SELFTEST"),

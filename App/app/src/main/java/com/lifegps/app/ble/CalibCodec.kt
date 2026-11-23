@@ -279,6 +279,22 @@ object CalibFlagBits {
 
     /** The coefficients took effect but the record could not be written to flash. */
     const val SAVE_FAILED = 0x08
+
+    /**
+     * The magnetometer half of the record came from a magnetometer calibration.
+     *
+     * One record holds both sensors, so [FROM_STORE] alone says "something is
+     * stored", not which sensor. A firmware older than this bit reports neither
+     * 0x10 nor 0x20; the decoders then fall back to [FROM_STORE] so an old unit
+     * keeps behaving as before.
+     */
+    const val MAG_VALID = 0x10
+
+    /** The accelerometer/gyroscope half of the record came from an IMU calibration. */
+    const val IMU_VALID = 0x20
+
+    /** Set when the firmware reports per-sensor validity at all. */
+    const val SENSOR_VALID_MASK = MAG_VALID or IMU_VALID
 }
 
 /** `face_state` byte of the accelerometer capture. */
@@ -304,6 +320,21 @@ data class MagCalResponse(
     val usingDefaults: Boolean get() = flags and CalibFlagBits.DEFAULTS != 0
     val saveFailed: Boolean get() = flags and CalibFlagBits.SAVE_FAILED != 0
 
+    /**
+     * True when this magnetometer result is a calibration that the device keeps.
+     *
+     * Bit 4 decides it; a firmware that predates the bit only sets FROM_STORE, so
+     * that is the fallback. Without this, calibrating the magnetometer alone made
+     * the accelerometer row read "calibrated" too - both rows read the one record
+     * flag.
+     */
+    val calibrated: Boolean
+        get() = fromStore &&
+            (
+                (flags and CalibFlagBits.SENSOR_VALID_MASK) == 0 ||
+                    (flags and CalibFlagBits.MAG_VALID) != 0
+                )
+
     /** Lowest of the three axis coverage values; the App gates "finish" on it. */
     val minCoveragePct: Int get() = coveragePct.min()
 }
@@ -326,6 +357,14 @@ data class AccelCalResponse(
     val usingDefaults: Boolean get() = flags and CalibFlagBits.DEFAULTS != 0
     val quickMode: Boolean get() = flags and CalibFlagBits.QUICK_SINGLE_FACE != 0
     val saveFailed: Boolean get() = flags and CalibFlagBits.SAVE_FAILED != 0
+
+    /** Same rule as [MagCalResponse.calibrated], for the accelerometer/gyro half. */
+    val calibrated: Boolean
+        get() = fromStore &&
+            (
+                (flags and CalibFlagBits.SENSOR_VALID_MASK) == 0 ||
+                    (flags and CalibFlagBits.IMU_VALID) != 0
+                )
 
     fun hasFace(position: Int): Boolean =
         position in 0 until CalibCodec.POSITION_COUNT && (faceMask and (1 shl position)) != 0

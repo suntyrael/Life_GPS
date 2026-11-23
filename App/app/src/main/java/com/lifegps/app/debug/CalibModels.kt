@@ -40,11 +40,24 @@ data class MagCalResult(
     val scalePpm: List<Int>,
     val coveragePct: List<Int>,
     val sampleCount: Int,
+    /**
+     * This sensor's coefficients are a calibration the device keeps.
+     *
+     * Not the raw record flag: one record holds both sensors, so the repository
+     * ANDs it with the magnetometer validity bit (`CalibFlagBits.MAG_VALID`).
+     */
     val fromStore: Boolean,
     val lastCalibUnixS: Long,
 )
 
-/** Persisted accelerometer/gyroscope coefficients, in engineering units. */
+/**
+ * Persisted accelerometer/gyroscope coefficients, in engineering units.
+ *
+ * Its `fromStore` carries the same per-sensor meaning as [MagCalResult.fromStore]:
+ * it is set only when the IMU half of the record was written by an IMU
+ * calibration, so a magnetometer-only calibration no longer makes this row read
+ * "已校准".
+ */
 data class AccelCalResult(
     val biasUg: List<Int>,
     val scalePpm: List<Int>,

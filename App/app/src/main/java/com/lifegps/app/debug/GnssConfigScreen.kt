@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -31,6 +32,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lifegps.app.ble.GnssCfgKey
 import com.lifegps.app.ble.GnssCfgKeys
 import com.lifegps.app.ble.GnssCfgValue
+import com.lifegps.app.ble.GnssRestartMode
 import com.lifegps.app.ui.components.CardBlock
 import com.lifegps.app.ui.components.DebugScaffold
 import com.lifegps.app.ui.components.SectionHeader
@@ -55,8 +57,10 @@ fun GnssConfigScreen(
     onBack: () -> Unit,
 ) {
     val cfg by repo.gnssCfg.collectAsStateWithLifecycle()
+    val restart by repo.gnssRestart.collectAsStateWithLifecycle()
     var editing by remember { mutableStateOf<GnssCfgKey?>(null) }
     var persist by remember { mutableStateOf(false) }
+    var restartAsk by remember { mutableStateOf<Int?>(null) }
 
     LaunchedEffect(Unit) {
         if (cfg.isEmpty()) repo.refreshGnssCfg()
@@ -150,6 +154,42 @@ fun GnssConfigScreen(
                 }
             }
 
+            item {
+                SectionHeader("启动方式", "冷 / 温 / 热启动只决定接收机清掉多少备份数据（0x37）")
+            }
+            item {
+                CardBlock {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        GnssRestartMode.ALL.forEach { mode ->
+                            OutlinedButton(
+                                onClick = { restartAsk = mode },
+                                enabled = !restart.busy,
+                                modifier = Modifier.weight(1f),
+                            ) { Text(GnssRestartMode.label(mode), fontSize = 12.sp) }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    GnssRestartMode.ALL.forEach { mode ->
+                        Text(
+                            "${GnssRestartMode.label(mode)}：${GnssRestartMode.detail(mode)}",
+                            color = TextDim,
+                            fontSize = 11.sp,
+                        )
+                    }
+                    restart.error?.let { Text(it, color = Red, fontSize = 11.sp) }
+                    if (restart.message.isNotEmpty()) {
+                        Text(restart.message, color = Green, fontSize = 11.sp)
+                    }
+                    Text(
+                        "重启会清掉接收机 RAM 层的配置（输出率、以及 460800 的线速率）：" +
+                            "固件会在接收机回来后自动重新写入，所以界面上的接收计数会短暂停住，不是故障。" +
+                            "每一次重启都会重新开始计 TTFF。",
+                        color = Amber,
+                        fontSize = 11.sp,
+                    )
+                }
+            }
+
             item { SectionHeader("星历加速", "APO = AssistNow Autonomous：接收机自己预测轨道") }
             item {
                 CardBlock {
@@ -164,6 +204,35 @@ fun GnssConfigScreen(
                 }
             }
         }
+    }
+
+    restartAsk?.let { mode ->
+        AlertDialog(
+            onDismissRequest = { restartAsk = null },
+            title = { Text(GnssRestartMode.label(mode), fontSize = 15.sp) },
+            text = {
+                Column {
+                    Text(GnssRestartMode.detail(mode), color = TextMain, fontSize = 12.sp)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "接收机会直接重启，当前的定位与卫星表会清空一次。",
+                        color = Amber,
+                        fontSize = 11.sp,
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        repo.restartGnss(mode)
+                        restartAsk = null
+                    },
+                ) { Text("重启接收机") }
+            },
+            dismissButton = {
+                TextButton(onClick = { restartAsk = null }) { Text("取消") }
+            },
+        )
     }
 
     editing?.let { key ->

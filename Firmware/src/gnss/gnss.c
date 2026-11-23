@@ -22,7 +22,12 @@
 
 LOG_MODULE_REGISTER(lgps_gnss, LOG_LEVEL_INF);
 
-#define GNSS_THREAD_STACK 2048
+/* The thread decodes whole UBX lists on its own stack: NAV-SAT keeps 32 rows and
+ * NAV-SIG up to LGPS_UBX_NAV_SIG_MAX (64) rows there before they are copied under
+ * the satellite lock, so the 2048 the NAV-SAT-only firmware needed is no longer
+ * enough.
+ */
+#define GNSS_THREAD_STACK 3072
 #define GNSS_THREAD_PRIORITY 6
 #define GNSS_RX_RING_SIZE 4096
 #define GNSS_PVT_LOG_PERIOD_MS 5000U
@@ -176,6 +181,26 @@ static struct k_spinlock sat_lock;
 #define GNSS_SAT_STALE_MS 5000U
 
 /*
+ * Cold / warm / hot start request (BLE opcode 0x37).
+ *
+ * Same hand-over as the debug session: the BLE thread records the request, the
+ * GNSS thread owns the UART and sends UBX-CFG-RST. `restart_at_ms` is the moment
+ * the receiver is expected to be back on its UART at the boot rate, 0 = no
+ * restart in flight.
+ */
+static struct k_spinlock restart_lock;
+static bool restart_pending;
+static uint8_t restart_mode;
+static uint32_t restart_at_ms;
+
+/* A controlled software reset keeps the receiver off its UART for about a second.
+ * Interface description section 3.10.2.1 gives no number; the 100 ms boot delay in
+ * gnss_power_up() is the floor, and a reset additionally restarts the GNSS
+ * subsystem, so the wait is deliberately generous.
+ */
+#define GNSS_RESTART_SETTLE_MS 1500U
+
+/*
  * NMEA capture ring: one sentence per slot, produced by the GNSS thread and
  * consumed by the main loop.
  *
@@ -298,6 +323,24 @@ static const struct gnss_bringup_step bringup_profile[] = {
 	/* Measurement period; BBR so it survives the standby request. */
 	{ LGPS_UBX_CFG_KEY_RATE_MEAS, CONFIG_LGPS_GNSS_RATE_MS, 2U,
 	  LGPS_UBX_LAYER_RAM | LGPS_UBX_LAYER_BBR, 0U, false, true },
+#if IS_ENABLED(CONFIG_LGPS_GNSS_FOUR_GNSS)
+	/*
+	 * Four constellations (integration manual section 2.1.3): the factory set is
+	 * GPS + Galileo + BeiDou B1I, and B1I cannot be received together with B1C or
+	 * GLONASS L1OF. The order below is the only sequence in which every single
+	 * write is a legal combination - B1I goes off first, then B1C comes on, then
+	 * GLONASS. More satellites in view is the one lever that lowers h/v/pDOP
+	 * without touching the hardware.
+	 *
+	 * Every CFG-SIGNAL write restarts the GNSS subsystem, so each step waits out
+	 * the 0.5 s margin the manual asks for after the ACK. A receiver that NAKs one
+	 * step keeps the combination it had; nothing is left half-switched.
+	 */
+	{ LGPS_UBX_CFG_KEY_SIGNAL_BDS_B1_ENA, 0U, 1U, LGPS_UBX_LAYER_RAM, 600U, false, true },
+	{ LGPS_UBX_CFG_KEY_SIGNAL_BDS_B1C_ENA, 1U, 1U, LGPS_UBX_LAYER_RAM, 600U, false, true },
+	{ LGPS_UBX_CFG_KEY_SIGNAL_GLO_L1_ENA, 1U, 1U, LGPS_UBX_LAYER_RAM, 600U, false, true },
+	{ LGPS_UBX_CFG_KEY_SIGNAL_GLO_ENA, 1U, 1U, LGPS_UBX_LAYER_RAM, 600U, false, true },
+#endif
 	/* Line rate last, RAM layer only, no ACK expected (see above). */
 	{ LGPS_UBX_CFG_KEY_UART1_BAUDRATE, LGPS_GNSS_BAUD_FAST, 4U, LGPS_UBX_LAYER_RAM,
 	  LGPS_GNSS_BAUD_SETTLE_MS, true, false },
@@ -1377,8 +1420,40 @@ int lgps_gnss_cfg_set(uint32_t key, uint32_t value, bool persist_to_flash,
 	return (ret == -EAGAIN) ? -ETIMEDOUT : ret;
 }
 
-/* --- power-up profile (CONFIG_LGPS_GNSS_FAST_LINK) ------------------------- */
+/*
+ * Cold / warm / hot start, called from the BLE command thread (opcode 0x37).
+ *
+ * Nothing is written to the UART here: the GNSS thread owns it and the state
+ * machine, so the request is latched and picked up by gnss_service_restart().
+ * The answer is therefore "accepted", not "done" - the App shows the state that
+ * follows (COLD_START) rather than pretending the receiver already restarted.
+ */
+int lgps_gnss_restart(enum lgps_gnss_start_mode mode)
+{
+	k_spinlock_key_t key;
 
+	if ((unsigned int)mode > LGPS_GNSS_START_HOT) {
+		return -EINVAL;
+	}
+
+	if ((gnss_state == LGPS_GNSS_STATE_OFF) || (gnss_state == LGPS_GNSS_STATE_BACKOFF)) {
+		/* A receiver that is not powered has no backup memory to clear. */
+		return -ENODEV;
+	}
+
+	key = k_spin_lock(&restart_lock);
+	restart_pending = true;
+	restart_mode = (uint8_t)mode;
+	k_spin_unlock(&restart_lock, key);
+
+	LOG_INF("GNSS restart requested: %s start",
+		(mode == LGPS_GNSS_START_COLD) ? "cold"
+					       : ((mode == LGPS_GNSS_START_WARM) ? "warm" : "hot"));
+
+	return 0;
+}
+
+/* --- power-up profile (CONFIG_LGPS_GNSS_FAST_LINK) ------------------------- */
 /*
  * Advance the profile by at most one frame per call.
  *
@@ -1394,6 +1469,14 @@ static void gnss_bringup_service(void)
 	uint32_t now_ms;
 
 	if (bringup_index >= ARRAY_SIZE(bringup_profile)) {
+		return;
+	}
+
+	/* A cold/warm/hot start owns the line rate until it has rebuilt the RAM layer
+	 * (gnss_service_restart). A profile step in between would switch the host to
+	 * 460800 for a receiver that is rebooting at 38400.
+	 */
+	if (restart_at_ms != 0U) {
 		return;
 	}
 
@@ -1947,6 +2030,141 @@ static void gnss_power_up(void)
 		current_baud);
 }
 
+/* `navBbrMask` for one of the three start types (interface description 3.10.2.1). */
+static uint16_t restart_bbr_mask(uint8_t mode)
+{
+	switch (mode) {
+	case LGPS_GNSS_START_WARM:
+		return LGPS_UBX_CFG_RST_BBR_WARM;
+	case LGPS_GNSS_START_HOT:
+		return LGPS_UBX_CFG_RST_BBR_HOT;
+	case LGPS_GNSS_START_COLD:
+	default:
+		return LGPS_UBX_CFG_RST_BBR_COLD;
+	}
+}
+
+static const char *restart_mode_name(uint8_t mode)
+{
+	switch (mode) {
+	case LGPS_GNSS_START_WARM:
+		return "warm";
+	case LGPS_GNSS_START_HOT:
+		return "hot";
+	default:
+		return "cold";
+	}
+}
+
+/*
+ * Cold / warm / hot start (BLE opcode 0x37), GNSS-thread side.
+ *
+ * Two phases, because a controlled software reset takes the receiver off its UART
+ * for a while:
+ *
+ *   1. send UBX-CFG-RST, then park the host on the boot line rate - the reset
+ *      throws away the RAM layer that held the 460800 rate;
+ *   2. after GNSS_RESTART_SETTLE_MS rebuild everything that the cleared RAM layer
+ *      used to hold: parser state, the satellite/signal lists and the message
+ *      output rates. The bring-up profile re-arms itself once NAV-PVT is verified
+ *      again, exactly as after a real power cycle.
+ *
+ * The receiver is not asked to acknowledge CFG-RST (section 3.10.2.1: newer
+ * firmware does not), so the proof that it worked is the NAV-PVT readback below.
+ */
+static void gnss_service_restart(void)
+{
+	uint32_t now_ms = lgps_diag_uptime_ms();
+	bool pending;
+	uint8_t mode;
+	k_spinlock_key_t key;
+
+	key = k_spin_lock(&restart_lock);
+	pending = restart_pending;
+	mode = restart_mode;
+	restart_pending = false;
+	k_spin_unlock(&restart_lock, key);
+
+	if (pending) {
+		uint8_t frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_CFG_RST_PAYLOAD_LEN +
+			      LGPS_UBX_TRAILER_LEN];
+		const uint16_t mask = restart_bbr_mask(mode);
+		int len = lgps_ubx_build_cfg_rst(frame, sizeof(frame), mask,
+						LGPS_UBX_CFG_RST_MODE_SOFTWARE);
+
+		if (len < 0) {
+			LOG_ERR("UBX-CFG-RST build failed (%d)", len);
+		} else if (gnss_uart_send(frame, (size_t)len) < 0) {
+			LOG_ERR("UBX-CFG-RST could not be sent");
+		} else {
+			/* The frame is 12 bytes and half a millisecond at 460800; the
+			 * sleep is only there to let the TX FIFO drain before the host
+			 * changes the rate under it.
+			 */
+			k_msleep(10);
+			(void)gnss_uart_set_baud(LGPS_GNSS_BAUD_DEFAULT);
+			restart_at_ms = now_ms + GNSS_RESTART_SETTLE_MS;
+			LOG_INF("UBX-CFG-RST sent (navBbrMask 0x%04x): %s start, host stays at %u 8N1",
+				(unsigned int)mask, restart_mode_name(mode),
+				LGPS_GNSS_BAUD_DEFAULT);
+		}
+	}
+
+	if ((restart_at_ms == 0U) || ((int32_t)(now_ms - restart_at_ms) < 0)) {
+		return;
+	}
+
+	restart_at_ms = 0U;
+
+	/* The receiver is back with its flash/BBR configuration. */
+	nav_pvt_rate_verified = false;
+	nav_pvt_rate_failure_logged = false;
+	policy_hold_logged = false;
+	fast_link_attempted = false;
+	recovery_needed = false;
+	recovery_count = 0U;
+	debug_applied_flags = 0U;
+	bringup_index = GNSS_BRINGUP_DONE;
+	bringup_armed = false;
+	next_reconfig_ms = 0U;
+	ubx_last_rx_ms = now_ms;
+	rail_on_ms = now_ms;
+
+	{
+		k_spinlock_key_t sat_key = k_spin_lock(&sat_lock);
+
+		sat_count = 0U;
+		sig_count = 0U;
+		k_spin_unlock(&sat_lock, sat_key);
+	}
+
+	{
+		k_spinlock_key_t ttff_key = k_spin_lock(&ttff_lock);
+
+		/* TTFF of the start that just began. The rail was not cut, so
+		 * power_off_ms becomes 0 - the start type (cold/warm/hot) is what the
+		 * BLE command reported, not a measurement the host can re-derive.
+		 */
+		ttff.ttff_ms = 0U;
+		ttff.power_off_ms = 0U;
+		k_spin_unlock(&ttff_lock, ttff_key);
+	}
+
+	/* Whatever the old rate left half-parsed would shift the first answer. */
+	ring_buf_reset(&gnss_rx_ring);
+	lgps_ubx_parser_reset(&parser);
+
+	(void)gnss_enable_nav_pvt();
+	gnss_apply_nav_sat_rate(true);
+	gnss_apply_nav_dop_rate(true);
+	gnss_apply_nav_sig_rate(true);
+	(void)gnss_request_rate_readback();
+
+	LOG_INF("GNSS restarted: RAM-layer outputs re-asserted at %u 8N1",
+		LGPS_GNSS_BAUD_DEFAULT);
+	set_state(LGPS_GNSS_STATE_COLD_START, LGPS_GNSS_COLD_START_TIMEOUT_MS);
+}
+
 /*
  * Next backoff step, i.e. what follows a wait of @p current_ms.
  *
@@ -2087,6 +2305,7 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 
 		gnss_service_debug();
 		gnss_service_cfg();
+		gnss_service_restart();
 		gnss_bringup_service();
 		gnss_process_rx();
 		lgps_wdt_checkin(LGPS_WDT_TASK_GNSS);

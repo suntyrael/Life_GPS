@@ -50,7 +50,7 @@ data class GnssStatus(
     val altitudeM: Double,
     val speedKmh: Double,
     val headingDeg: Double,
-    /** `HH:mm:ss` in UTC (the device has no sub-second time on the wire). */
+    /** `HH:mm:ss`, GNSS UTC rendered in the product's default zone (UTC+8). */
     val utcTime: String,
     /** GPSTest shape: `N sec`, empty until the first fix. */
     val ttff: String,
@@ -77,6 +77,21 @@ data class GnssStatus(
     val vdop: Double = 0.0,
 )
 
+/**
+ * Result of the last cold / warm / hot start (opcode 0x37).
+ *
+ * [mode] is what the device echoed back, -1 before any request; [busy] covers the
+ * round trip. The restart itself is asynchronous (the receiver needs about a second
+ * before its UART answers again), so this is "the device accepted the request",
+ * and the TTFF of the new cycle is the proof it happened.
+ */
+data class GnssRestartState(
+    val mode: Int = -1,
+    val busy: Boolean = false,
+    val message: String = "",
+    val error: String? = null,
+)
+
 data class SatelliteInfo(
     val svid: Int,
     val system: String,
@@ -92,7 +107,38 @@ data class SatelliteInfo(
     val almAvail: Boolean = false,
     /** UBX-NAV-SAT `qualityInd` rendered as words: 搜索中 / 已捕获 / 跟踪 / 不可用. */
     val tracking: String = "",
+    /** The same `qualityInd` as a number (0 无信号 .. 4..7 跟踪); -1 when unknown. */
+    val quality: Int = -1,
 )
+
+/**
+ * Order of the satellite table, and the reason the table stopped jumping.
+ *
+ * The screen used to sort by GNSS system and then by svid. A receiver moves
+ * satellites in and out of the solution every epoch, so the rows re-shuffled
+ * whenever that happened, and C/N0 - the number the user actually reads - had no
+ * influence on the order at all.
+ *
+ * Now: satellites used in the solution (NAV-SAT `svUsed`) first, then the ones
+ * being tracked (`qualityInd` 4..7), then everything else; inside a group the
+ * strongest C/N0 leads. `system` and `svid` only break exact ties, so two rows of
+ * equal strength never swap places between two packets.
+ */
+fun sortSatellites(rows: List<SatelliteInfo>): List<SatelliteInfo> = rows.sortedWith(
+    compareBy<SatelliteInfo> { satelliteRank(it) }
+        .thenByDescending { it.cno }
+        .thenBy { it.system }
+        .thenBy { it.svid },
+)
+
+/** `qualityInd` at or above this value means "code/carrier locked" (NAV-SAT §3.15.13.1). */
+private const val TRACKING_QUALITY = 4
+
+private fun satelliteRank(satellite: SatelliteInfo): Int = when {
+    satellite.used -> 0
+    satellite.quality >= TRACKING_QUALITY -> 1
+    else -> 2
+}
 
 /**
  * GNSS receive-path counters from the `0x01` telemetry group.

@@ -82,7 +82,7 @@ off  size  field
 | 20 | i32 | `lon_e7` | 1e-7°，无效时为 0 |
 | 24 | i32 | `hmsl_mm` | 海拔 mm，**平均海平面**（UBX-NAV-PVT `hMSL`，偏移 36），不是椭球高（椭球高在 100）；`0x42 action=2` 用的就是它 |
 | 28 | i32 | `bat_mv` | 电池 mV，无效时为 -1 |
-| 32 | u32 | `utc_epoch_s` | Life_GPS 2020 epoch 秒，0 = 未知 |
+| 32 | u32 | `utc_epoch_s` | Life_GPS 2020 epoch 秒（**UTC**，0 = 未知）；App 按产品默认时区 UTC+8 显示，标签写明偏移，不用手机时区 |
 | 36 | u32 | `uptime_ms` | 开机毫秒 |
 | 40 | u32 | `gnss_age_ms` | 距上次 NAV-PVT 的毫秒，0 = 尚无 |
 | 44 | u32 | `steps` | PDR 累计步数 |
@@ -267,6 +267,7 @@ yaw（并顺带学习磁力计偏置），否则用磁力计按该偏置维持 y
 | `0x43` | ACCEL_CAL | `u8 action` + `u8 position`（6.4） | 见 6.4 |
 | `0x35` | GNSS_CFG | `u8 action` + `u32 key` (+ value)（6.6） | 见 6.6 |
 | `0x36` | GNSS_DEBUG | `u8 flags` + `u16 ttl_s`（6.7） | 见 6.7 |
+| `0x37` | GNSS_RESTART | `u8 mode`（0 冷 / 1 温 / 2 热，6.9） | `u8 mode`（设备接受的模式） |
 | `0x52` | REBOOT | — | —（响应发出后 200 ms 冷复位，需先 `DEBUG_UNLOCK`） |
 | `0x60` | FLASH_INFO | — | 见 6.2 |
 | `0x7F` | DEBUG_UNLOCK | 4 字节 ASCII `LGPS` | — |
@@ -325,8 +326,13 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
 | 6 | i16 | `bias_x_lsb` / 8 `bias_y_lsb` / 10 `bias_z_lsb`（LIS2MDL 原始 LSB） |
 | 12 | i32 | `scale_x_ppm` / 16 `scale_y_ppm` / 20 `scale_z_ppm` |
 | 24 | u8 | `calib_state`：0 IDLE，1 COLLECTING，2 RESULT_PENDING |
-| 25 | u8 | `calib_flags`：bit0 系数来自记录，bit1 用的是编译期默认值，bit2 单面快速，bit3 已生效但落盘失败 |
+| 25 | u8 | `calib_flags`：bit0 系数来自记录，bit1 用的是编译期默认值，bit2 单面快速，bit3 已生效但落盘失败，**bit4 磁力计半边是真实校准**，bit5 IMU 半边是真实校准 |
 | 26 | u32 | `last_calib_unix_s`（0 = 设备尚未同步 UTC，不代表没校准过） |
+
+**bit4 / bit5 是“这一半传感器真的校准过”**：一条记录同时装磁力计和三轴 IMU 的系数，所以
+bit0 只能说明“记录存在”，说明不了哪一半是校准过的。只校准磁力计时固件置 bit4、清 bit5，
+App 的“加速度计”一行因此仍然显示未校准（0.4.0 及更早只有一个 bit0，App 对那种固件退回
+“bit0 即已校准”的旧行为）。CLEAR 只清自己那一半的位；两半都清掉时记录被擦除。
 
 **系数在固件里算**：`(raw - bias) × (1 + ppm/1e6)`。App 只做显示口径的换算（LSB → µT，
 0.15 µT/LSB），不得自己积分 min/max。`coverage_pct_*` 表示该轴范围被走了多少，供三轴进度条用；
@@ -359,7 +365,7 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
 | 18 | i32 | `scale_x_ppm` / 22 `scale_y_ppm` / 26 `scale_z_ppm` |
 | 30 | i32 | `gyro_bias_x_mdps` / 34 / 38 |
 | 42 | u8 | `calib_state` |
-| 43 | u8 | `calib_flags`（同 6.3；bit2 = 单面快速） |
+| 43 | u8 | `calib_flags`（同 6.3；bit2 = 单面快速，**bit5 = IMU 半边是真实校准**） |
 | 44 | u32 | `last_calib_unix_s` |
 
 零偏存 µg 而不存传感器寄存器单位是故意的：`X/Y/Z_OFS_USR`（0x73~0x75，DS13510 §9.81~9.83，Table 210/211）
@@ -383,8 +389,8 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
 
 1. `action=0`：把**当前**补偿后的气压写成基准（App 上“取当前为基准”按钮）；
 2. `action=1`：手动输入（App 上输入 hPa，发 `Pa × 16`）；
-3. **自动**：GNSS 条件满足时由固件自己设（不需要 App 参与）：`fixType ≥ 3`、`numSV ≥ 8`、
-   已知 pDOP ≤ 2.0、地速 < 0.3 m/s，连续 30 s 且该窗口气压标准差 < 0.3 hPa；已有基准时
+3. **自动**：GNSS 条件满足时由固件自己设（不需要 App 参与）：`fixType ≥ 3`、`numSV ≥ 6`、
+   已知 pDOP ≤ 5.0、地速 < 0.5 m/s，连续 30 s 且该窗口气压标准差 < 0.3 hPa；已有基准时
    只有差 > 1 hPa 才重设（防抖）。
 
 **基准有两种含义**（这决定了 `0x04` 的 `msl_valid`）：
@@ -394,9 +400,11 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
 | `action=0/1` | 你站的地方的气压 | **相对**：校准点是 0，只有 `rel_alt_mm` |
 | `action=2` | 由气压 + GNSS 高度反算的**海平面气压 QNH** | **绝对**：`alt_msl_mm` 是海拔，`rel_alt_mm` 是相对校准点 |
 
-`action=2` 的条件（固件判定，不满足返 `0x01` INVALID_ARGUMENT）：`fixType ≥ 3`、`numSV ≥ 8`、
-已知 pDOP ≤ 2.0、地速 < 0.3 m/s，且 NAV-PVT `vAcc` ≤ 20 m —— 一条 ±30 m 的高度没法校准一台
-分辨率 0.8 m 的气压计，固件宁可拒绝。计算用最近约 10 s 的平均气压（单点噪声 1 Pa ≈ 8 cm）。
+`action=2` 的条件（固件判定，不满足返 `0x01` INVALID_ARGUMENT）：`fixType ≥ 3`、`numSV ≥ 6`、
+已知 pDOP ≤ 5.0、地速 < 0.5 m/s，且 NAV-PVT `vAcc` ≤ 30 m —— 门限按“一次正常的三维定位”
+定，而不是按理想天空：0.5 版之前要求的 `numSV ≥ 8` + `pDOP ≤ 2.0` 在开阔地也会把可用定位
+挡在外面，校准永远跑不起来；`vAcc` 才是真正描述高度的那个数，所以它仍是最终限制。
+计算用最近约 10 s 的平均气压（单点噪声 1 Pa ≈ 8 cm）。
 
 基准**掉电不丢**：存在外部 NOR 的独立扇区（`CONFIG_LGPS_BARO_SECTOR_INDEX`，默认 17，
 `Firmware/src/nav/baro_store.c`，20 字节记录 + CRC-16，含记录版本与 `kind` 位），与标定记录
@@ -542,10 +550,34 @@ GNSS 子系统反复重启、速率被接受但撑不住。它们的共同点就
 - 已知功耗模式（`CFG-PM-OPERATEMODE != 0`）在本次开机内会关闭这条看门狗：PSMOO/PSMCT 的休眠期
   本来就不发数据，不能当死机处理。
 
+### 6.9 GNSS_RESTART（`0x37`）请求 / 响应
+
+```
+请求  u8 mode      0 = 冷启动，1 = 温启动，2 = 热启动
+响应  u8 mode      设备接受的模式（回显请求值）；status 说明是否接受
+```
+
+三种启动只差一件事：接收机在重启前清掉多少备份数据（BBR）。对应 UBX-CFG-RST 的
+`navBbrMask`（接口说明书 §3.10.2.1，`resetMode=0x01` 受控软复位）：
+
+| `mode` | `navBbrMask` | 清掉的东西 | 典型 TTFF |
+| :--- | :--- | :--- | :--- |
+| 0 冷 | `0xFFFF` | 星历、历书、位置、时钟漂移、UTC/闰秒、RTC、AOP | 30~60 s |
+| 1 温 | `0x0001` | 只清星历 | 20~40 s |
+| 2 热 | `0x0000` | 什么都不清 | 接收机仍持星历则数秒 |
+
+- `status = 0x00` 表示**已交给 GNSS 线程**，不表示接收机已经重启完成：受控软复位会让接收机
+  离开 UART 约 1 s，固件在它回来之后才重新写入 RAM 层的输出率与 460800 线速率（复位会清掉 RAM 层）。
+- 接收机不回应这个命令（§3.10.2.1：“Newer FW version will not acknowledge this message at all”），
+  所以固件不等 ACK，用复位后的 NAV-PVT 回读作为证据。
+- 复位后固件把状态切回 `COLD_START`，TTFF 从 0 重新计时；`status` 里能看到这次是哪种启动
+  对应的 TTFF。`0x05 BUSY` 表示接收机未上电（断电退避中），此时无 BBR 可清。
+
 ## 7. 版本策略
 
 - `ver` 字节变更 = 不兼容改动，App 必须拒绝连接并在 UI 上说明。
-- **追加 opcode 不升 `ver`**：0.2.0 只追加了 `0x43` 与三组校准载荷，`ver` 保持 1。
+- **追加 opcode 不升 `ver`**：0.2.0 只追加了 `0x43` 与三组校准载荷，`ver` 保持 1；
+  0.5.0 追加 `0x37 GNSS_RESTART`，`ver` 同样保持 1。
 - 只追加字段时提升 `proto_*` / `fw_*`，并把 `status_size` 一起提高；App 按
   `status_size` 决定解析长度，短帧按缺失处理。
 - YAML 回填 status/命令载荷后，本文件同步收缩为指针。

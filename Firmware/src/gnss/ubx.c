@@ -126,6 +126,12 @@ static uint8_t min_u8(uint8_t left, uint8_t right)
 	return (left < right) ? left : right;
 }
 
+static void put_le16(uint8_t *dst, uint16_t value)
+{
+	dst[0] = (uint8_t)(value & 0xFFU);
+	dst[1] = (uint8_t)((value >> 8) & 0xFFU);
+}
+
 static void put_le32(uint8_t *dst, uint32_t value)
 {
 	dst[0] = (uint8_t)(value & 0xFFU);
@@ -443,6 +449,29 @@ int lgps_ubx_build_valdel(uint8_t *buf, size_t buf_len_bytes, uint8_t layers, co
 
 	return lgps_ubx_build(buf, buf_len_bytes, LGPS_UBX_CLASS_CFG, LGPS_UBX_ID_CFG_VALDEL,
 			      payload, (uint16_t)((size_t)CFG_OFF_KEY + ((size_t)count * 4U)));
+}
+
+int lgps_ubx_build_cfg_rst(uint8_t *buf, size_t buf_len_bytes, uint16_t nav_bbr_mask,
+			   uint8_t reset_mode)
+{
+	/* Offset 0 navBbrMask (X2), offset 2 resetMode (U1), offset 3 reserved. */
+	uint8_t payload[LGPS_UBX_CFG_RST_PAYLOAD_LEN] = {0};
+
+	if (buf == NULL) {
+		return -EINVAL;
+	}
+
+	if ((reset_mode != LGPS_UBX_CFG_RST_MODE_SOFTWARE) && (reset_mode != 0x00U) &&
+	    (reset_mode != 0x02U) && (reset_mode != 0x04U) && (reset_mode != 0x08U) &&
+	    (reset_mode != 0x09U)) {
+		return -EINVAL;
+	}
+
+	put_le16(&payload[0], nav_bbr_mask);
+	payload[2] = reset_mode;
+
+	return lgps_ubx_build(buf, buf_len_bytes, LGPS_UBX_CLASS_CFG, LGPS_UBX_ID_CFG_RST,
+			      payload, (uint16_t)sizeof(payload));
 }
 
 int lgps_ubx_decode_ack(const struct lgps_ubx_parser *parser, bool *accepted, uint8_t *msg_class,

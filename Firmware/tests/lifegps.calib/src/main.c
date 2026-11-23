@@ -440,6 +440,65 @@ ZTEST(lifegps_calib, test_mag_session_end_to_end)
 	zassert_equal(100U, stored.mag_coverage_pct[2], "coverage is persisted");
 }
 
+ZTEST(lifegps_calib, test_mag_only_calibration_does_not_mark_the_imu)
+{
+	/* One record, two sensors: a magnetometer calibration must not make the App
+	 * report the accelerometer as calibrated as well.
+	 */
+	const int16_t samples[][3] = {
+		{ -300, 0, 0 }, { 300, 0, 0 }, { 0, -300, 0 }, { 0, 300, 0 },
+		{ 0, 0, -300 }, { 0, 0, 300 },
+	};
+	struct lgps_calib_snapshot snap;
+
+	zassert_equal(0, lgps_calib_mag_start(), "start failed");
+	for (size_t index = 0U; index < ARRAY_SIZE(samples); index++) {
+		lgps_calib_feed_mag(samples[index]);
+	}
+
+	zassert_equal(0, lgps_calib_mag_finish(), "finish failed");
+	lgps_calib_snapshot(&snap);
+
+	zassert_true((snap.flags & LGPS_CALIB_FLAG_FROM_STORE) != 0U, "record written");
+	zassert_true((snap.flags & LGPS_CALIB_FLAG_MAG_VALID) != 0U,
+		     "the magnetometer half is calibrated");
+	zassert_false((snap.flags & LGPS_CALIB_FLAG_IMU_VALID) != 0U,
+		      "the IMU half must stay uncalibrated");
+
+	/* And it stays that way across a reboot. */
+	zassert_equal(0, lgps_calib_init(), "init failed");
+	lgps_calib_snapshot(&snap);
+	zassert_false((snap.flags & LGPS_CALIB_FLAG_IMU_VALID) != 0U,
+		      "a reloaded mag-only record still has no IMU calibration");
+}
+
+ZTEST(lifegps_calib, test_clearing_one_sensor_keeps_the_other)
+{
+	const int16_t samples[][3] = {
+		{ -300, 0, 0 }, { 300, 0, 0 }, { 0, -300, 0 }, { 0, 300, 0 },
+		{ 0, 0, -300 }, { 0, 0, 300 },
+	};
+	struct lgps_calib_snapshot snap;
+
+	for (uint8_t position = 0U; position < LGPS_CALIB_POSITION_COUNT; position++) {
+		capture_face(position, 200.0F, OVERREAD_LSB_PER_G);
+	}
+	zassert_equal(0, lgps_calib_accel_finish(), "accel finish failed");
+
+	zassert_equal(0, lgps_calib_mag_start(), "mag start failed");
+	for (size_t index = 0U; index < ARRAY_SIZE(samples); index++) {
+		lgps_calib_feed_mag(samples[index]);
+	}
+	zassert_equal(0, lgps_calib_mag_finish(), "mag finish failed");
+
+	zassert_equal(0, lgps_calib_mag_clear(), "mag clear failed");
+	lgps_calib_snapshot(&snap);
+	zassert_false((snap.flags & LGPS_CALIB_FLAG_MAG_VALID) != 0U, "mag cleared");
+	zassert_true((snap.flags & LGPS_CALIB_FLAG_IMU_VALID) != 0U,
+		     "clearing the magnetometer must not clear the IMU record");
+	zassert_true(lgps_calib_store_test_has_record(), "the IMU half is still stored");
+}
+
 ZTEST(lifegps_calib, test_mag_finish_refuses_partial_coverage)
 {
 	const int16_t few[][3] = {

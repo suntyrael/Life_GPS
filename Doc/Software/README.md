@@ -5,6 +5,7 @@
 | [Android_App_Plan.md](Android_App_Plan.md) | Android 调试工具/产品终端规划、BLE 协议、同步、存储、CI | v0.1 |
 | [Android_Dev_Guide.md](Android_Dev_Guide.md) | 零 Android 经验的环境搭建、学习路线、第一个练手任务 | v0.1 |
 | [BLE_Protocol.md](BLE_Protocol.md) | 协议基线（最终由 `protocol/lifegps_protocol.yaml` 生成） | 草案 |
+| [GNSS_Accuracy_Tuning.md](GNSS_Accuracy_Tuning.md) | 不改硬件怎么加卫星数、压 h/v/p DOP（依据 MAX-M10S 集成手册/接口说明） | v0.1 |
 | [../../Firmware/README.md](../../Firmware/README.md) | 固件工程、Zephyr 构建、分区表 | 规划 |
 | [../../protocol/README.md](../../protocol/README.md) | 协议 SSOT、校验器、Golden Vectors | v0.1 |
 

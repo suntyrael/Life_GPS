@@ -34,9 +34,30 @@
 #define LGPS_UBX_ID_ACK_NAK 0x00U
 #define LGPS_UBX_ID_ACK_ACK 0x01U
 #define LGPS_UBX_CLASS_CFG 0x06U
+#define LGPS_UBX_ID_CFG_RST 0x04U
 #define LGPS_UBX_ID_CFG_VALSET 0x8AU
 #define LGPS_UBX_ID_CFG_VALGET 0x8BU
 #define LGPS_UBX_ID_CFG_VALDEL 0x8CU
+
+/*
+ * UBX-CFG-RST (section 3.10.2): reset the receiver / clear backup data structures.
+ *
+ * `navBbrMask` is 2 bytes and its three documented special sets are the whole
+ * difference between a cold, a warm and a hot start (section 3.10.2.1):
+ *
+ *   0x0000 hot start   - keep ephemeris, almanac, position, clock, UTC, RTC
+ *   0x0001 warm start  - drop the ephemeris, keep the almanac
+ *   0xFFFF cold start  - drop everything
+ *
+ * `resetMode` 0x01 is a controlled software reset: the receiver restarts and
+ * reloads its configuration from BBR + flash, which also means the RAM-layer
+ * items this firmware wrote (line rate, message rates) are gone afterwards.
+ */
+#define LGPS_UBX_CFG_RST_PAYLOAD_LEN 4U
+#define LGPS_UBX_CFG_RST_BBR_HOT 0x0000U
+#define LGPS_UBX_CFG_RST_BBR_WARM 0x0001U
+#define LGPS_UBX_CFG_RST_BBR_COLD 0xFFFFU
+#define LGPS_UBX_CFG_RST_MODE_SOFTWARE 0x01U
 
 #define LGPS_UBX_NAV_PVT_PAYLOAD_LEN 92U
 #define LGPS_UBX_NAV_DOP_PAYLOAD_LEN 18U
@@ -53,6 +74,13 @@
 #define LGPS_UBX_NAV_SIG_SIG_LEN 16U
 /* sigFlags (X2 at group offset 10), section 3.15.15.1: bit 3 = prUsed. */
 #define LGPS_UBX_NAV_SIG_FLAG_PR_USED 0x0008U
+/*
+ * Rows the decoder keeps. `numSigs` is a U1 and is not bounded by the satellite
+ * count (one satellite can report several signals), so this is what sizes both the
+ * signal list and the parser payload buffer: 64 signals is two per satellite on a
+ * full M10 sky, i.e. more than the 40 a normal epoch carries.
+ */
+#define LGPS_UBX_NAV_SIG_MAX 64U
 
 /* NAV-SAT flags (12-byte group, offset +8) bit masks and field positions.
  *
@@ -184,11 +212,29 @@
 #define LGPS_UBX_CFG_KEY_UART1_BAUDRATE 0x40520001U    /* U4, section 4.9.27 */
 
 /*
- * Largest payload the streaming parser accepts. UBX-NAV-PVT is 92 bytes, but
- * UBX-NAV-SAT scales with the number of satellites in view (8 + 12 * numSvs), so
- * the buffer covers the 32-satellite worst case the M10 can report.
+ * Largest payload the streaming parser accepts.
+ *
+ * UBX-NAV-PVT is 92 bytes, but two messages scale with the sky:
+ *
+ *   NAV-SAT  8 + 12 * numSvs  = 392 B at the 32 satellites the M10 can report
+ *   NAV-SIG  8 + 16 * numSigs = 1032 B at 64 signals (two per satellite, which is
+ *                               what a dual-signal sky of the same size produces)
+ *
+ * The buffer must cover the larger one. It used to be sized for NAV-SAT only, so
+ * every NAV-SIG frame announcing more than 24 signals (8 + 16 * 24 = 392) was
+ * dropped by lgps_ubx_parser_feed() as "too long" and never reached the decoder.
+ * The visible symptom was the whole CF column of the satellite table going blank
+ * at once - sig_id stayed 0xFF for every row until the sky shrank again.
+ * `numSigs` is not bounded by the satellite count: one satellite can report more
+ * than one signal, and 0.4.0 documents 40 signals as a normal epoch.
  */
-#define LGPS_UBX_MAX_PAYLOAD_LEN (LGPS_UBX_NAV_SAT_HEADER_LEN + (32U * LGPS_UBX_NAV_SAT_SV_LEN))
+#define LGPS_UBX_NAV_SAT_PAYLOAD_MAX                                                          \
+	(LGPS_UBX_NAV_SAT_HEADER_LEN + (32U * LGPS_UBX_NAV_SAT_SV_LEN))
+#define LGPS_UBX_NAV_SIG_PAYLOAD_MAX                                                          \
+	(LGPS_UBX_NAV_SIG_HEADER_LEN + (LGPS_UBX_NAV_SIG_MAX * LGPS_UBX_NAV_SIG_SIG_LEN))
+#define LGPS_UBX_MAX_PAYLOAD_LEN                                                              \
+	((LGPS_UBX_NAV_SAT_PAYLOAD_MAX > LGPS_UBX_NAV_SIG_PAYLOAD_MAX) ?                      \
+		 LGPS_UBX_NAV_SAT_PAYLOAD_MAX : LGPS_UBX_NAV_SIG_PAYLOAD_MAX)
 
 /* NAV-PVT valid (offset 11) bit masks. */
 #define LGPS_UBX_PVT_VALID_DATE 0x01U
@@ -423,10 +469,9 @@ int lgps_ubx_decode_nav_dop(const struct lgps_ubx_parser *parser, struct lgps_ub
 /*
  * One tracked signal (interface description section 3.15.15.1, 16-byte group).
  * NAV-SIG is the only message that names the signal behind a C/N0 value, so it is
- * what turns the App's `CF` column into L1/E1/B1I/B1C instead of a guess.
+ * what turns the App's `CF` column into L1/E1/B1I/B1C instead of a guess. At most
+ * LGPS_UBX_NAV_SIG_MAX of them are kept per epoch.
  */
-#define LGPS_UBX_NAV_SIG_MAX 32U
-
 struct lgps_ubx_nav_sig {
 	uint8_t gnss_id;
 	uint8_t sv_id;
@@ -453,5 +498,15 @@ int lgps_ubx_decode_nav_sig(const struct lgps_ubx_parser *parser, struct lgps_ub
  */
 int lgps_ubx_build_rxm_pmreq(uint8_t *buf, size_t buf_len_bytes, uint32_t duration_ms, bool backup,
 			     bool force, uint32_t wakeup_sources);
+
+/*
+ * Build UBX-CFG-RST (4-byte payload).
+ * @p nav_bbr_mask is one of the special sets above; @p reset_mode is
+ * LGPS_UBX_CFG_RST_MODE_SOFTWARE for a normal restart. Not acknowledged by the
+ * receiver (section 3.10.2.1: "Newer FW version will not acknowledge this message
+ * at all"), so nothing may wait for an ACK. Returns the frame length, or -EINVAL.
+ */
+int lgps_ubx_build_cfg_rst(uint8_t *buf, size_t buf_len_bytes, uint16_t nav_bbr_mask,
+			   uint8_t reset_mode);
 
 #endif /* LIFEGPS_UBX_H_ */

@@ -57,6 +57,12 @@ import java.util.Locale
  * The DOP pair is `pDOP` (NAV-PVT) next to `hDOP/vDOP` (UBX-NAV-DOP, requested at
  * the same rate since 0.4.0). pDOP is not hDOP: it is never smaller, so the two
  * columns are not interchangeable.
+ *
+ * Two things are deliberately *not* GPSTest's: the `Time` row is rendered in the
+ * product's default zone (UTC+8, labelled with the offset) instead of device-local
+ * time, and the row order is used -> tracked -> unused, strongest C/N0 first
+ * ([sortSatellites] in DebugModels). The old order (GNSS system, svid) re-shuffled
+ * itself whenever the receiver moved a satellite in or out of the solution.
  */
 @Composable
 fun GnssStatusScreen(
@@ -75,7 +81,6 @@ fun GnssStatusScreen(
     val hint = diagnosticHint(gnss, link)
 
     val inView = gnss.satellites.size
-    val sorted = gnss.satellites.sortedWith(compareBy<SatelliteInfo>({ it.system }, { it.svid }))
 
     DebugScaffold(
         title = "GPS",
@@ -158,7 +163,9 @@ fun GnssStatusScreen(
                     } else {
                         SatHeader()
                         Spacer(Modifier.height(2.dp))
-                        sorted.forEach { satellite ->
+                        // Already ordered by the repository: used -> tracked -> rest,
+                        // then C/N0 descending (sortSatellites in DebugModels).
+                        gnss.satellites.forEach { satellite ->
                             SatRow(satellite)
                         }
                     }
@@ -215,8 +222,10 @@ private fun LabelColumn2() {
         modifier = Modifier.padding(top = 2.dp, bottom = 2.dp, start = 10.dp, end = 4.dp),
         horizontalAlignment = Alignment.End,
     ) {
-        // GPSTest prints device-local time; this device only knows GNSS UTC.
-        LocationLabel("Time (UTC):")
+        // GPSTest prints device-local time. The receiver reports UTC and this
+        // product's default zone is UTC+8, so the value is UTC+8 (see
+        // BleDebugRepository.DEFAULT_UTC_OFFSET_HOURS), not the phone's zone.
+        LocationLabel("Time (UTC+8):")
         LocationLabel("TTFF:")
         LocationLabel("E H/V Acc:")
         LocationLabel("# Sats:")
