@@ -22,4 +22,4 @@ west build -b nrf54l15dk/nrf54l15/cpuapp -- -DCONFIG_LGPS_MOCK_DATA=y
 
 - 位置：`protocol/vectors/`
 - 同一份二进制同时被 C（native_sim）和 Kotlin（App JVM 单测）读取。
-- 覆盖：轨迹 32B、Beacon 16B、命令帧、Data 块、日包、跨 0xFF delta、heatshrink 边界。
+- 覆盖：轨迹 32B、命令帧、Data 块、日包、跨 0xFF delta、heatshrink 边界。

@@ -8,7 +8,7 @@
 
 meta:
   name: "LIFE GPS BLE Protocol"
-  version: "0.2.0"
+  version: "1.0.0"
   status: "draft"
   endianness: "little"
   mtu: 247
@@ -94,19 +94,6 @@ records:
       - {name: battery_level, type: u8, offset: 29}
       - {name: floor_level, type: i8, offset: 30}
       - {name: checksum, type: u8, offset: 31}
-  beacon:
-    size: 16
-    crc: record
-    fields:
-      - {name: timestamp, type: u32, offset: 0}
-      - {name: subsecond_ms, type: u16, offset: 4}
-      - {name: beacon_id_hash, type: u16, offset: 6}
-      - {name: major_id, type: u16, offset: 8}
-      - {name: minor_id, type: u16, offset: 10}
-      - {name: rssi, type: i8, offset: 12}
-      - {name: tx_power, type: i8, offset: 13}
-      - {name: event_flags, type: u8, offset: 14}
-      - {name: crc8, type: u8, offset: 15}
   raw:
     size: 0
     fields: []
@@ -123,22 +110,22 @@ packages:
       - {name: codec, type: u16, offset: 6}
       - {name: day_id, type: u32, offset: 8}
       - {name: record_count, type: u32, offset: 12}
-      - {name: beacon_count, type: u32, offset: 16}
+      # Reserved slots keep the 48-byte header stable; all must be zero.
+      - {name: reserved0, type: u32, offset: 16}
       - {name: traj_raw_len, type: u32, offset: 20}
       - {name: traj_packed_len, type: u32, offset: 24}
-      - {name: beacon_raw_len, type: u32, offset: 28}
-      - {name: beacon_packed_len, type: u32, offset: 32}
+      - {name: reserved1, type: u32, offset: 28}
+      - {name: reserved2, type: u32, offset: 32}
       - {name: prev_day_id, type: u32, offset: 36}
-      - {name: reserved, type: u32, offset: 40}
+      - {name: reserved3, type: u32, offset: 40}
       - {name: flags, type: u16, offset: 44}
       - {name: header_crc16, type: u16, offset: 46}
     footer_fields:
       - {name: traj_crc32, type: u32, offset: 0}
-      - {name: beacon_crc32, type: u32, offset: 4}
+      - {name: reserved, type: u32, offset: 4}
 
 streams:
   - {id: 0, name: trajectory, record: trajectory}
-  - {id: 1, name: beacon, record: beacon}
   - {id: 2, name: archive_day, record: raw}
   - {id: 3, name: flash_raw, record: raw}
   - {id: 4, name: log_replay, record: raw}

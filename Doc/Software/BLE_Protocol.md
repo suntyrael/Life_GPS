@@ -9,7 +9,6 @@
 | 字节序 | 小端 |
 | 目标 MTU | 247（Data 块最大 payload 228B） |
 | 单条轨迹记录 | 32B，CRC-8（poly 0x07 / init 0x00） |
-| 单条 Beacon 事件 | 16B，CRC-8 |
 | 命令帧 | magic 0xA5 + 8B header + payload + CRC-16/CCITT-FALSE |
 | 数据块 | magic 0x5A + 14B header + payload + CRC-16/CCITT-FALSE |
 | 日包 | `LGD1`，48B header + 压缩块 + 8B footer（CRC-32） |

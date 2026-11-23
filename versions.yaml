@@ -9,7 +9,7 @@
 # - kernel 取自 sdk-nrf v3.4.2 的 west.yml：zephyr -> sdk-zephyr @ ncs-v3.4.2，其 VERSION=4.4.2
 # - v3.5 当前仅 preview，不选；v3.4 为 LTS，优先
 
-protocol: "0.1.0"
+protocol: "1.0.0"
 firmware: "0.1.0"
 app: "0.1.0"
 

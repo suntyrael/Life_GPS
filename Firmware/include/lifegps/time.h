@@ -2,7 +2,7 @@
 /*
  * Life_GPS firmware - "Life_GPS 2020 epoch" civil time conversion.
  *
- * The trajectory/beacon records store whole seconds counted from
+ * The trajectory records store whole seconds counted from
  * 2020-01-01T00:00:00Z (see README section 8.2), which keeps uint32_t valid
  * until 2156. This module owns the only place that converts between that
  * counter and a UTC calendar date; no other file may re-implement it.

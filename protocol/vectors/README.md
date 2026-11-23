@@ -8,7 +8,6 @@
 | :--- | :--- |
 | `trajectory_basic.bin` | 32B 轨迹记录，普通值 |
 | `trajectory_delta_wrap.bin` | 跨 0x00/0xFF 的 delta 回绕 |
-| `beacon_basic.bin` | 16B Beacon 事件 |
 | `command_get_status.bin` | 命令帧 + CRC16 |
 | `data_chunk_trajectory.bin` | Data 块 + 7 条记录 |
 | `day_package_basic.bin` | 完整日包（header + 压缩块 + footer） |

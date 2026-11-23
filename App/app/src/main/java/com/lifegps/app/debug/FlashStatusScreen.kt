@@ -78,7 +78,6 @@ fun FlashStatusScreen(
                     )
                     Spacer(Modifier.height(8.dp))
                     MetricRow("轨迹记录", if (flash.totalMb > 0f) "${flash.recordCount}" else "—")
-                    MetricRow("Beacon 事件", "固件 v1 未提供", TextDim)
                     MetricRow(
                         "Journal",
                         flash.journal.ifBlank { "固件 v1 未提供" },
@@ -145,7 +144,7 @@ fun FlashStatusScreen(
 
             item {
                 Text(
-                    "FLASH_INFO(0x60) 返回 flash_bytes / traj_bytes / sector_seq / sector_count / records_written；JEDEC、已用字节、Beacon 数与 Journal 不在 v1 响应内，保持 “—”。",
+                    "FLASH_INFO(0x60) 返回 flash_bytes / traj_bytes / sector_seq / sector_count / records_written；JEDEC、已用字节与 Journal 不在 v1 响应内，保持 “—”。",
                     color = TextDim,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(bottom = 20.dp),

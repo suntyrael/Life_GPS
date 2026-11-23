@@ -15,9 +15,9 @@
 
 /* meta: LIFE GPS BLE Protocol (draft). */
 #define LGPS_PROTO_NAME "LIFE GPS BLE Protocol"
-#define LGPS_PROTO_VERSION_STRING "0.2.0"
-#define LGPS_PROTO_VERSION_MAJOR 0
-#define LGPS_PROTO_VERSION_MINOR 2
+#define LGPS_PROTO_VERSION_STRING "1.0.0"
+#define LGPS_PROTO_VERSION_MAJOR 1
+#define LGPS_PROTO_VERSION_MINOR 0
 #define LGPS_PROTO_VERSION_PATCH 0
 #define LGPS_PROTO_LITTLE_ENDIAN 1
 #define LGPS_PROTO_MTU 247
@@ -84,36 +84,6 @@
 #define LGPS_FRAME_DATA_OFF_PAYLOAD_LEN 12
 #define LGPS_FRAME_DATA_SIZE_PAYLOAD_LEN 2
 
-/* beacon record: 16 B, CRC from crc.record. */
-#pragma pack(push, 1)
-struct lifegps_record_beacon {
-	uint32_t timestamp; /* offset 0 */
-	uint16_t subsecond_ms; /* offset 4 */
-	uint16_t beacon_id_hash; /* offset 6 */
-	uint16_t major_id; /* offset 8 */
-	uint16_t minor_id; /* offset 10 */
-	int8_t rssi; /* offset 12 */
-	int8_t tx_power; /* offset 13 */
-	uint8_t event_flags; /* offset 14 */
-	uint8_t crc8; /* offset 15 */
-};
-#pragma pack(pop)
-
-#define LGPS_RECORD_BEACON_SIZE 16
-#define LGPS_RECORD_BEACON_FIELD_COUNT 9
-#define LGPS_RECORD_BEACON_OFF_TIMESTAMP 0
-#define LGPS_RECORD_BEACON_OFF_SUBSECOND_MS 4
-#define LGPS_RECORD_BEACON_OFF_BEACON_ID_HASH 6
-#define LGPS_RECORD_BEACON_OFF_MAJOR_ID 8
-#define LGPS_RECORD_BEACON_OFF_MINOR_ID 10
-#define LGPS_RECORD_BEACON_OFF_RSSI 12
-#define LGPS_RECORD_BEACON_OFF_TX_POWER 13
-#define LGPS_RECORD_BEACON_OFF_EVENT_FLAGS 14
-#define LGPS_RECORD_BEACON_OFF_CRC8 15
-
-_Static_assert(sizeof(struct lifegps_record_beacon) == LGPS_RECORD_BEACON_SIZE,
-	       "beacon record layout does not match the YAML");
-
 /* trajectory record: 32 B, CRC from crc.record. */
 #pragma pack(push, 1)
 struct lifegps_record_trajectory {
@@ -167,21 +137,20 @@ _Static_assert(sizeof(struct lifegps_record_trajectory) == LGPS_RECORD_TRAJECTOR
 #define LGPS_PACKAGE_DAY_HEADER_OFF_CODEC 6
 #define LGPS_PACKAGE_DAY_HEADER_OFF_DAY_ID 8
 #define LGPS_PACKAGE_DAY_HEADER_OFF_RECORD_COUNT 12
-#define LGPS_PACKAGE_DAY_HEADER_OFF_BEACON_COUNT 16
+#define LGPS_PACKAGE_DAY_HEADER_OFF_RESERVED0 16
 #define LGPS_PACKAGE_DAY_HEADER_OFF_TRAJ_RAW_LEN 20
 #define LGPS_PACKAGE_DAY_HEADER_OFF_TRAJ_PACKED_LEN 24
-#define LGPS_PACKAGE_DAY_HEADER_OFF_BEACON_RAW_LEN 28
-#define LGPS_PACKAGE_DAY_HEADER_OFF_BEACON_PACKED_LEN 32
+#define LGPS_PACKAGE_DAY_HEADER_OFF_RESERVED1 28
+#define LGPS_PACKAGE_DAY_HEADER_OFF_RESERVED2 32
 #define LGPS_PACKAGE_DAY_HEADER_OFF_PREV_DAY_ID 36
-#define LGPS_PACKAGE_DAY_HEADER_OFF_RESERVED 40
+#define LGPS_PACKAGE_DAY_HEADER_OFF_RESERVED3 40
 #define LGPS_PACKAGE_DAY_HEADER_OFF_FLAGS 44
 #define LGPS_PACKAGE_DAY_HEADER_OFF_HEADER_CRC16 46
 #define LGPS_PACKAGE_DAY_FOOTER_OFF_TRAJ_CRC32 0
-#define LGPS_PACKAGE_DAY_FOOTER_OFF_BEACON_CRC32 4
+#define LGPS_PACKAGE_DAY_FOOTER_OFF_RESERVED 4
 
 enum lgps_stream_id {
 	LGPS_STREAM_TRAJECTORY = 0x00,
-	LGPS_STREAM_BEACON = 0x01,
 	LGPS_STREAM_ARCHIVE_DAY = 0x02,
 	LGPS_STREAM_FLASH_RAW = 0x03,
 	LGPS_STREAM_LOG_REPLAY = 0x04,

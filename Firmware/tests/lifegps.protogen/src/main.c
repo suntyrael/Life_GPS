@@ -15,11 +15,8 @@
 ZTEST(lifegps_protogen, test_record_sizes)
 {
 	zassert_equal(LGPS_RECORD_TRAJECTORY_SIZE, 32, "trajectory record is 32 B");
-	zassert_equal(LGPS_RECORD_BEACON_SIZE, 16, "beacon record is 16 B");
 	zassert_equal(sizeof(struct lifegps_record_trajectory), LGPS_RECORD_TRAJECTORY_SIZE,
 		      "packed trajectory struct matches its size macro");
-	zassert_equal(sizeof(struct lifegps_record_beacon), LGPS_RECORD_BEACON_SIZE,
-		      "packed beacon struct matches its size macro");
 	zassert_equal(LGPS_RECORD_TRAJECTORY_OFF_CHECKSUM, 31, "checksum is the last byte");
 }
 
@@ -39,7 +36,11 @@ ZTEST(lifegps_protogen, test_package_contract)
 	zassert_equal(LGPS_PACKAGE_DAY_HEADER_SIZE, 48, "day header size");
 	zassert_equal(LGPS_PACKAGE_DAY_FOOTER_SIZE, 8, "day footer size");
 	zassert_equal(LGPS_PACKAGE_DAY_HEADER_OFF_MAGIC, 0, "day magic offset");
+	zassert_equal(LGPS_PACKAGE_DAY_HEADER_OFF_RESERVED0, 16, "reserved0 offset");
+	zassert_equal(LGPS_PACKAGE_DAY_HEADER_OFF_RESERVED1, 28, "reserved1 offset");
+	zassert_equal(LGPS_PACKAGE_DAY_HEADER_OFF_RESERVED2, 32, "reserved2 offset");
 	zassert_equal(LGPS_PACKAGE_DAY_HEADER_OFF_HEADER_CRC16, 46, "header CRC offset");
+	zassert_equal(LGPS_PACKAGE_DAY_FOOTER_OFF_RESERVED, 4, "footer reserved offset");
 	zassert_equal(LGPS_PACKAGE_DAY_MAGIC_LEN, 4, "day magic is four ASCII bytes");
 	zassert_equal(LGPS_PACKAGE_DAY_CODEC[0], 'b', "day codec string comes from the YAML");
 }
@@ -61,7 +62,6 @@ ZTEST(lifegps_protogen, test_opcode_contract)
 	zassert_equal(LGPS_CMD_SET_MODE, 0x10, "SET_MODE opcode");
 	zassert_equal(LGPS_CMD_DEBUG_UNLOCK, 0x7F, "DEBUG_UNLOCK opcode");
 	zassert_equal(LGPS_STREAM_TRAJECTORY, 0, "trajectory stream id");
-	zassert_equal(LGPS_STREAM_BEACON, 1, "beacon stream id");
 	zassert_equal(LGPS_TELEMETRY_GNSS, 0x01, "GNSS telemetry id");
 }
 

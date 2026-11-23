@@ -11,7 +11,7 @@ python3 tools/protocol-gen/validate.py
 校验内容：
 
 - UUID 格式与唯一性
-- 轨迹 32B / Beacon 16B / 帧头 / 日包头尺寸
+- 轨迹 32B / 帧头 / 日包头尺寸
 - 字段偏移连续、类型尺寸正确
 - stream / opcode / telemetry id 唯一
 - 命令方向合法

@@ -72,7 +72,7 @@ interface Transport {
 ## 存储
 
 - `files/devices/<id>/days/<dayId>.lgd`：AES-GCM 日包（真相源）。
-- Room：设备、日索引（bbox/简化折线）、Beacon、POI、同步记录。
+- Room：设备、日索引（bbox/简化折线）、POI、同步记录。
 - 地图概览用简化折线；选中某日/放大时解码原始日包（LRU）。
 
 详细设计见 [Android_App_Plan.md](../../Doc/Software/Android_App_Plan.md) §5～§6。

@@ -45,14 +45,14 @@
 | :--- | :--- |
 | **设备无屏幕，只有 2 键 + 3 色 LED** | App 是唯一富交互界面；设备状态、错误、电量、模式必须通过 BLE 完整暴露；App 需内置 LED 灯语说明与故障排查 |
 | **BLE，nRF54L15，2M PHY** | 目标 MTU 247、DLE 251；日同步（~10–12KB）应 <2s；64MB 全量转储约 15–40min，必须支持断点续传 |
-| **32B 定长轨迹 + 16B 定长 Beacon，双流解耦** | 解析器零拷贝、流式；App 数据模型也必须分表/分文件，不能把 Beacon 塞进轨迹点 |
+| **32B 定长轨迹** | 解析器零拷贝、流式；App 日包与索引按轨迹记录设计，轨迹点不保存周边蓝牙设备信息 |
 | **Life_GPS 2020 Epoch + 亚秒毫秒 + seq_id** | 需要统一时间工具与设备时钟漂移校正；`seq_id` 用于断点续传与去重 |
 | **32B 记录含 CRC8，日包含 CRC32** | 每块/每天校验后才提交；损坏可重传，不污染本地库 |
 | **夜间 delta + heatshrink 压缩归档，暂存区会被擦除** | **同步必须走“归档日包 + 当日暂存”双通道**；不能只按 seq 线性拉取历史 |
 | **Flash AES-128-CTR 静态加密，ECDH + PIN 导出** | 设备侧解密后经 BLE 下发；App 侧仍需 Keystore + 本地加密，导出需生物识别 |
 | **Zephyr RTOS / nRF Connect SDK** | OTA 选 **MCUboot + SMP（mcumgr）**；**内部 slot0 896KB + 外部 Flash 1MB slot1**；外部其余 **63MB 只存轨迹/归档**；App 镜像预算 **860KB** |
 | **DEBUG_UART 115200（7P 排针）** | Android 通过 USB-C OTG + USB-TTL（推荐 CP2102N）做早期 bring-up；产品期以 BLE Log 为主 |
-| **仅 Android，国内为主** | 不依赖 GMS；**允许地图瓦片联网并做磁盘/LRU 缓存**，可选离线区域；轨迹/信标数据仍只存本地，不上传 |
+| **仅 Android，国内为主** | 不依赖 GMS；**允许地图瓦片联网并做磁盘/LRU 缓存**，可选离线区域；轨迹数据仍只存本地，不上传 |
 | **单人软硬件开发** | App 与固件不能真正并行；调试工具优先、产品 UI 后置；CI 必须按路径分流，避免互相拖慢 |
 | **无电流计，只有 1M/330k 分压测电池电压** | App 只能显示电压/估算电量/充电状态；功耗闭环仍靠 PPK2 |
 
@@ -201,7 +201,7 @@ UUID 为**临时规划值**，冻结前统一分配：
 ```
 0     magic 0x5A
 1     ver
-2     stream        0=轨迹暂存, 1=Beacon暂存, 2=归档日包, 3=Flash原始, 4=日志回放
+2     stream        0=轨迹暂存, 2=归档日包, 3=Flash原始, 4=日志回放（1 预留）
 3     flags         bit0=first, bit1=last, bit2=error
 4..7  transfer_id   u32
 8..11 cursor        u32，字节偏移或 seq
@@ -209,7 +209,7 @@ UUID 为**临时规划值**，冻结前统一分配：
 14..  payload
 末尾  crc16
 ```
-- MTU 247 时 payload 最大 228B；轨迹记录 7 条/块（224B），Beacon 14 条/块（224B）。
+- MTU 247 时 payload 最大 228B；轨迹记录 7 条/块（224B）。
 - v1：App 发 `SYNC_READ` → 设备回一个 Data 通知；**天然背压**。
 - v1.1：`SYNC_WINDOW` 允许设备连续发 N 块，App 每 N 块 ACK，用于全量转储提速。
 
@@ -284,7 +284,7 @@ stateDiagram-v2
 1. `GET_STATUS` 取 `archive_index_ver`、`last_seq`、电量、容量。
 2. 若本地 `archive_index_ver` 落后 → `GET_DAY_INDEX` 分页拉取 → 与本地 `DayEntity` 对比，找出**缺失**与 **CRC 不一致**的 `day_id`。
 3. 历史日包：按“最近优先”下载 `GET_ARCHIVE`，逐块校验 CRC32，原子写临时文件 → 校验日包 header/块 CRC → 重命名 → 建索引。用户可切换“最旧优先/仅最近 N 天”。
-4. 当日暂存：`SYNC_BEGIN(stream=0, from=last_seq+1)` → 循环 `SYNC_READ` → 逐条 CRC8 校验 → 写入当日临时包 → 更新 `last_seq`；Beacon 流同理。
+4. 当日暂存：`SYNC_BEGIN(stream=0, from=last_seq+1)` → 循环 `SYNC_READ` → 逐条 CRC8 校验 → 写入当日临时包 → 更新 `last_seq`。
 5. `SYNC_END` 提交；设备可标记“已同步”，但**以 App 本地校验为准**。
 6. 下发 App 侧待发送 POI/配置；更新时间偏移。
 
@@ -311,20 +311,19 @@ header_ver          u16
 codec               u16   (0=raw, 1=byte-delta + heatshrink)
 day_id              u32   (自 2020-01-01 的天数)
 record_count        u32
-beacon_count        u32
+reserved0           u32   (必须为 0)
 traj_raw_len        u32
 traj_packed_len     u32
-beacon_raw_len      u32
-beacon_packed_len   u32
+reserved1           u32   (必须为 0)
+reserved2           u32   (必须为 0)
 prev_day_id         u32   (链式校验)
 reserved            u32   (必须写 0，未来扩展)
 flags               u16
 header_crc16        u16
 [Trajectory block: traj_packed_len 字节]
-[Beacon block: beacon_packed_len 字节]
 [Footer 8B]
 traj_crc32          u32
-beacon_crc32        u32
+reserved            u32   (必须为 0)
 ```
 
 - **Delta 编码**：首条记录原样 32B；后续每条与上一条**逐字节模 256 差分**，再 heatshrink。App 需实现逆差分；Golden Vectors 必须覆盖跨 0xFF/0x00 回绕。
@@ -448,8 +447,7 @@ Room（SQLCipher）只存**元数据与索引**：
 | 表 | 关键字段 | 用途 |
 | :--- | :--- | :--- |
 | `devices` | id, name, fw, proto, bondState, pubKeyFp, clockOffsetMs, lastSeq, archiveIndexVer, lastSyncAt | 设备与同步游标 |
-| `days` | deviceId, dayId, state, recordCount, beaconCount, crc32, bbox(min/max lat/lon), distanceM, startTs, endTs, flagsHistogram, simplifiedPolyline BLOB, packagePath | 日历/地图概览/视口查询 |
-| `beacons` | deviceId, ts, hash, major, minor, rssi, txPower, eventFlags, dayId | 信标地图/搜索（哈希，无明文 MAC） |
+| `days` | deviceId, dayId, state, recordCount, crc32, bbox(min/max lat/lon), distanceM, startTs, endTs, flagsHistogram, simplifiedPolyline BLOB, packagePath | 日历/地图概览/视口查询 |
 | `pois` | deviceId, ts, lat, lon, label, note, source, syncState | POI 列表/地图 |
 | `sync_runs` | id, deviceId, startedAt, bytes, days, retries, durationMs, result, errorCode | 诊断/指标 |
 | `pending_ops` | id, deviceId, type, payload, createdAt, retryCount | App 侧 POI/配置下发队列 |
@@ -461,14 +459,13 @@ Room（SQLCipher）只存**元数据与索引**：
 - 每日生成 Douglas-Peucker 简化折线（容差按 zoom 分级，例如 5m/15m/50m），存入 `days.simplifiedPolyline`。
 - 视口查询用 bbox 索引；全国/全球视图只画简化线；zoom ≥14 且选中单日时解码原始点。
 - 轨迹按 `status_flags` 分段渲染：GNSS 实线、PDR 虚线/琥珀色、POI 图钉、磁异常段红色警示、静止段淡化。
-- Beacon 用热力/聚合点，默认关闭（隐私与性能）。
-- 瓦片：MapLibre 在线瓦片 + 磁盘/LRU 缓存 + 可选离线区域；弱网/无网优先用已缓存区域；**只有地图瓦片请求联网**，轨迹/信标不上传。
+- 瓦片：MapLibre 在线瓦片 + 磁盘/LRU 缓存 + 可选离线区域；弱网/无网优先用已缓存区域；**只有地图瓦片请求联网**，轨迹不上传。
 
 ### 6.3 加密与备份
 
 - 日包：AES-256-GCM，每文件随机 nonce；密钥在 Keystore（StrongBox 优先）。
 - Room：SQLCipher，口令 32B 随机数由 Keystore 包裹；`android:allowBackup=false`，排除密钥与数据库。
-- 导出：默认明文 GPX/KML/GeoJSON（用户明确操作 + 生物识别）；可生成“脱敏导出”（裁剪起终点、家庭半径模糊、去除 Beacon）。
+- 导出：默认明文 GPX/KML/GeoJSON（用户明确操作 + 生物识别）；可生成“脱敏导出”（裁剪起终点、家庭半径模糊）。
 - 加密备份：zip（日包 + Room 导出 JSON + 设备元数据），口令由用户设置或恢复码派生；支持跨手机恢复。
 - 应用锁：BiometricPrompt；最近任务缩略图可选 `FLAG_SECURE`。
 
@@ -727,7 +724,7 @@ make release     # 签名产物 + SHA256SUMS
 | **Fake Transport（JVM）** | UI/同步/解析在 CI 与模拟器上跑 | 按脚本返回 Status/Data；可注入断线、CRC 错、BUSY、低电量 |
 | **Python BLE Simulator** | 真手机连“假设备”，验证 Android BLE 栈 | `bless` + BlueZ（Linux）/ macOS；同 UUID、同 MTU 247、同帧格式；合成 30 天轨迹与日包 |
 | **nRF54L15 DK 模拟固件** | 验证 2M PHY/DLE/真实 Zephyr 栈 | 固件加 `CONFIG_LGPS_MOCK_DATA`，用合成传感器/轨迹；与真机同协议 |
-| **Golden Vectors** | App 与固件解析结果逐字节一致 | `protocol/vectors/`：32B 记录、16B Beacon、命令帧、日包、跨 0xFF delta、heatshrink |
+| **Golden Vectors** | App 与固件解析结果逐字节一致 | `protocol/vectors/`：32B 记录、命令帧、日包、跨 0xFF delta、heatshrink |
 | **会话录制/回放** | 现场问题可复现 | `.lgpsr`（JSONL + 二进制附件）；回放驱动 UI 与单测 |
 | **协议代码生成** | 防止枚举/结构体漂移 | YAML → Kotlin + C header；CI 检查生成物是否最新 |
 | **USB-TTL 串口** | BLE 未就绪时的唯一可见通道 | 7P H1：DEBUG_TX `P0.00` / DEBUG_RX `P0.01`；CP2102N 小板 |
@@ -809,7 +806,7 @@ gantt
 - **地图**：10 万点概览 ≥50fps；单日 1 万点缩放/拖动流畅；同区域二次打开命中缓存，离线区域无网可用。
 - **稳定性**：7×24 压测无崩溃；同步失败可诊断；后台 30min FGS 不被杀（目标机型）。
 - **安全**：APK 内无明文密钥；数据库/日包无法直接读取；导出需生物识别。
-- **隐私**：除地图瓦片请求外无网络上传；轨迹/信标不上传；无 GMS 设备功能完整；权限拒绝时有降级路径。
+- **隐私**：除地图瓦片请求外无网络上传；轨迹不上传；无 GMS 设备功能完整；权限拒绝时有降级路径。
 - **数据正确性**：GPX 坐标回读误差 ≤1e-7°；时间校正开关行为可解释。
 - **固件体积/OTA**：app `.bin` ≤860KB；签名 image ≤896KB；MCUboot ≤64KB；外部 slot1 1MB 偏移/长度 CI 校验通过。
 - **CI/复现**：PR 通过 `ci-gate`（按路径运行 protocol/app/firmware，无失败即通过）；同一 tag 重跑产物 SHA256 一致或差异可解释。
@@ -850,7 +847,7 @@ gantt
 | 3 | 最低 Android | **minSdk 26（Android 8.0）**，target/compile 36 | ✅ 已确认 |
 | 4 | 分发 | 先内部 APK，后国内应用商店 + 可选 Google Play | ✅ 已确认 |
 | 5 | 仓库/构建 | **单仓 Monorepo + GitHub Actions 全量编译**（固件/App/协议/文档/Release） | ✅ 已确认 |
-| 6 | App 联网 | 允许地图瓦片联网 + 磁盘/LRU 缓存 + 可选离线区域；轨迹/信标数据不上传 | ✅ 已确认 |
+| 6 | App 联网 | 允许地图瓦片联网 + 磁盘/LRU 缓存 + 可选离线区域；轨迹数据不上传 | ✅ 已确认 |
 | 7 | 仓库可见性 | **公开仓** | ✅ 已确认 |
 | 8 | 开发人力 | **单人软硬件**；调试工具优先、产品 UI 后置 | ✅ 已确认 |
 
@@ -872,7 +869,7 @@ gantt
 
 ---
 
-## 附录 A：32B 轨迹记录与 16B Beacon 的 App 解析要点
+## 附录 A：32B 轨迹记录的 App 解析要点
 
 - 使用 `ByteBuffer.order(LITTLE_ENDIAN)`；字段偏移严格按 README §8.2，不做结构体映射。
 - `seq_id`：单调递增，用于去重/断点；允许回绕（u32）。
@@ -884,7 +881,6 @@ gantt
 - `battery_level`：0～100；异常值（>100）视为无效。
 - `floor_level`：`0` 地面，负数为地下；仅 `bit7` 或 PDR 室内段可信。
 - `checksum`：CRC-8 校验前 31B；失败记录隔离到 `quarantine`，不进入地图，可导出诊断。
-- Beacon：只存 `beacon_id_hash`，不存明文 MAC；`event_flags` 解码 iBeacon/Eddystone/固定基站；RSSI 用于热力/近远筛选。
 
 ## 附录 B：固件侧需要配合的工作包
 
