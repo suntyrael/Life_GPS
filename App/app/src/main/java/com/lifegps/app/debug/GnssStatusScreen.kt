@@ -1,17 +1,23 @@
 package com.lifegps.app.debug
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material3.Button
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -25,18 +31,33 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lifegps.app.ble.GnssCodec
 import com.lifegps.app.ui.components.CardBlock
 import com.lifegps.app.ui.components.DebugScaffold
-import com.lifegps.app.ui.components.MetricRow
-import com.lifegps.app.ui.components.SectionHeader
 import com.lifegps.app.ui.components.StatusPill
-import com.lifegps.app.ui.components.ValueBar
 import com.lifegps.app.ui.theme.Amber
-import com.lifegps.app.ui.theme.Cyan
 import com.lifegps.app.ui.theme.Green
 import com.lifegps.app.ui.theme.Red
 import com.lifegps.app.ui.theme.TextDim
 import com.lifegps.app.ui.theme.TextMain
 import java.util.Locale
 
+/**
+ * GPSTest layout, one screen: the 7x2 status block, the 7-column satellite table,
+ * two buttons at the bottom (NMEA, receiver settings).
+ *
+ * Labels, field order, units and number formats come from GPSTest
+ * (`LocationCard.kt` + `do_not_translate.xml` of barbeau/gpstest):
+ * `%.7f°`, `%.1f m`, `%.1f m/s`, `%.1f°`, `%.1f`, `%d/%d/%d`, `N sec`,
+ * satellite columns `ID | GNSS | CF | C/N0 | Flags | Elev | Azim`, C/N0 `%.1f`,
+ * `AEU` flags, `%.0f°`.
+ *
+ * A GPSTest field is printed as an empty string when the device does not report
+ * it - never as a fake zero. Every column is filled since 0.4.0: `CF` comes from
+ * NAV-SIG (the signal id behind the C/N0) and `Azim` from NAV-SAT, both reduced
+ * into the 7-byte satellite row of BLE_Wire_v1.md §5.1.
+ *
+ * The DOP pair is `pDOP` (NAV-PVT) next to `hDOP/vDOP` (UBX-NAV-DOP, requested at
+ * the same rate since 0.4.0). pDOP is not hDOP: it is never smaller, so the two
+ * columns are not interchangeable.
+ */
 @Composable
 fun GnssStatusScreen(
     repo: DebugRepository,
@@ -50,19 +71,14 @@ fun GnssStatusScreen(
     val device by repo.device.collectAsStateWithLifecycle()
 
     val fixColor = if (gnss.fix) Green else Red
-    val hdopColor = when {
-        gnss.hdop <= 1.0 -> Green
-        gnss.hdop <= 2.0 -> Amber
-        else -> Red
-    }
-    val used = gnss.satellites.count { it.used }
-    val avgCno = if (gnss.satellites.isEmpty()) 0 else gnss.satellites.sumOf { it.cno } / gnss.satellites.size
-    val sorted = gnss.satellites.sortedWith(
-        compareByDescending<SatelliteInfo> { it.used }.thenByDescending { it.cno }
-    )
+    val sessionOn = debug.flags != 0
+    val hint = diagnosticHint(gnss, link)
+
+    val inView = gnss.satellites.size
+    val sorted = gnss.satellites.sortedWith(compareBy<SatelliteInfo>({ it.system }, { it.svid }))
 
     DebugScaffold(
-        title = "GPS 状态",
+        title = "GPS",
         onBack = onBack,
         actions = {
             StatusPill(
@@ -70,86 +86,78 @@ fun GnssStatusScreen(
                 color = fixColor,
                 filled = true,
             )
+            /* The one control GPSTest does not have: without a held rail the module
+             * is cut 60 s after a cold start, so the table could never fill indoors.
+             */
+            TextButton(
+                onClick = {
+                    if (sessionOn) {
+                        repo.setGnssDebug(0, 0)
+                    } else {
+                        repo.setGnssDebug(
+                            GnssCodec.FLAG_HOLD_POWER or
+                                GnssCodec.FLAG_NAV_SAT or
+                                GnssCodec.FLAG_NMEA,
+                            300,
+                        )
+                    }
+                },
+            ) {
+                Text(
+                    text = if (sessionOn) "会话 ${debug.remainingSeconds}s" else "保持上电",
+                    color = if (sessionOn) Green else TextDim,
+                    fontSize = 12.sp,
+                )
+            }
         },
+        bottomBar = { GnssBottomBar(onOpenNmea, onOpenConfig) },
     ) { padding ->
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(padding),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatusPill(gnss.state, Cyan, filled = true)
-                    StatusPill("${gnss.sats} sats", if (gnss.sats >= 8) Green else Amber, filled = true)
-                    StatusPill(if (gnss.fix) "HDOP ${fmtOne(gnss.hdop)}" else "HDOP --", hdopColor, filled = true)
+                CardBlock {
+                    Row(Modifier.horizontalScroll(rememberScrollState())) {
+                        LabelColumn1()
+                        ValueColumn1(gnss)
+                        LabelColumn2()
+                        ValueColumn2(gnss, inView)
+                    }
                 }
             }
 
-            item {
-                CardBlock("定位概览") {
-                    MetricRow("状态机", gnss.state, Cyan)
-                    MetricRow("定位", if (gnss.fix) "YES" else "NO", fixColor)
-                    MetricRow("有效卫星", "${gnss.sats}", if (gnss.sats >= 8) Green else Amber)
-                    ValueBar("HDOP", gnss.hdop.toFloat(), 5f, hdopColor, fmtOne(gnss.hdop))
-                    MetricRow("参与解算", if (gnss.satellites.isEmpty()) "等待 NAV-SAT" else "$used / ${gnss.satellites.size}")
-                    MetricRow("平均 C/N0", if (gnss.satellites.isEmpty()) "等待 NAV-SAT" else "$avgCno dB-Hz")
-                    MetricRow("TTFF", gnss.ttff)
-                    MetricRow("UTC 时间", gnss.utcTime)
-                    MetricRow("设备", device.name)
-                }
-            }
-
-            /* Receive path, i.e. "is the receiver talking at all" (telemetry 0x01).
-             * Kept above the solution on purpose: when nothing works, these five
-             * counters say which of the five causes it is.
+            /* One line, only while something is actually wrong: the receive path is
+             * the first thing to look at when the table stays empty, but it has no
+             * business on screen while a fix is up. Full counters: NMEA 日志 page.
              */
-            item {
-                val linkColor = when {
-                    !link.received -> TextDim
-                    link.ubxFrames > 0 -> Green
-                    link.badChecksum > 0 -> Red
-                    link.rxBytes > 0 -> Amber
-                    else -> Red
-                }
-                CardBlock("接收链路（UBX / NMEA）") {
-                    MetricRow("判定", link.verdict, linkColor)
-                    MetricRow("状态机", link.state, Cyan)
-                    MetricRow("接收字节", "${link.rxBytes}")
-                    MetricRow("UBX 帧", "${link.ubxFrames}", if (link.ubxFrames > 0) Green else TextDim)
-                    MetricRow("校验错误", "${link.badChecksum}", if (link.badChecksum > 0) Red else TextDim)
-                    MetricRow("NMEA 起始符计数", "${link.nmeaStarts}")
-                    MetricRow("环形丢字节", "${link.rxDropped}", if (link.rxDropped > 0) Amber else TextDim)
-                    MetricRow("波特率", if (link.baud > 0) "${link.baud} 8N1" else "—")
-                    MetricRow("PVT 龄期", if (link.received) "${link.ageMs} ms" else "—")
+            if (hint != null) {
+                item {
+                    Text(
+                        text = hint,
+                        color = Amber,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(horizontal = 4.dp),
+                    )
                 }
             }
 
             item {
-                CardBlock("位置 / 运动") {
-                    MetricRow("纬度", if (gnss.fix) fmtSix(gnss.latitude) else "—")
-                    MetricRow("经度", if (gnss.fix) fmtSix(gnss.longitude) else "—")
-                    MetricRow("海拔", if (gnss.fix) "${fmtOne(gnss.altitudeM)} m" else "—")
-                    MetricRow("地速", if (gnss.fix) "${fmtOne(gnss.speedKmh)} km/h" else "—")
-                    MetricRow("航向", if (gnss.fix) "${fmtOne(gnss.headingDeg)}°" else "—")
-                }
-            }
-
-            item {
-                SectionHeader("卫星信息", "系统 / SVID / C/N0 / 仰角 / 状态")
                 CardBlock {
                     if (gnss.satellites.isEmpty()) {
                         Text(
-                            "单星信息来自 UBX-NAV-SAT，接收机上电后一直以 1 Hz 采集，不需要开调试会话。" +
-                                "这里为空只有三种可能：模组当前未上电（退避中）、还没有周视卫星（室内 / 天线未接），" +
-                                "或者接收机拒绝了 NAV-SAT 输出率（看串口日志里的 ACK-NAK）。",
+                            "还没有 NAV-SAT 行（接收机上电即 1 Hz 采集，不需要开调试会话）。" +
+                                "为空只有三种原因：模组未上电 / 周视无星（室内、天线未接）/ 接收机 NAK 了输出率。",
                             color = TextDim,
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
                         )
                     } else {
                         SatHeader()
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(2.dp))
                         sorted.forEach { satellite ->
                             SatRow(satellite)
                         }
@@ -157,74 +165,128 @@ fun GnssStatusScreen(
                 }
             }
 
-            /* The normal power policy cuts the rail 60 s after a cold start without a
-             * fix and retries minutes later, so the satellite table can never fill in
-             * while debugging indoors. A bounded session suspends that policy and
-             * switches the extra outputs on.
-             */
-            item {
-                CardBlock("调试会话") {
-                    MetricRow(
-                        "状态",
-                        if (debug.flags != 0) "运行中，剩余 ${debug.remainingSeconds} s" else "关闭",
-                        if (debug.flags != 0) Green else TextDim,
-                    )
-                    MetricRow("保持上电", if (debug.holdPower) "是" else "否")
-                    MetricRow("单星 NAV-SAT", "常开 1 Hz（bit1 已无作用）")
-                    MetricRow("NMEA 直通", if (debug.nmea) "是" else "否")
-                    debug.error?.let { message ->
-                        Text(message, color = Red, fontSize = 12.sp)
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = {
-                                repo.setGnssDebug(
-                                    GnssCodec.FLAG_HOLD_POWER or
-                                        GnssCodec.FLAG_NAV_SAT or
-                                        GnssCodec.FLAG_NMEA,
-                                    300,
-                                )
-                            },
-                            modifier = Modifier.weight(1f),
-                        ) { Text("开启 5 分钟") }
-                        OutlinedButton(
-                            onClick = { repo.setGnssDebug(0, 0) },
-                            modifier = Modifier.weight(1f),
-                        ) { Text("关闭") }
-                    }
-                    Text(
-                        "会话会让模组持续上电（不按 60 s 冷启动超时断电），到期自动恢复省电策略。",
-                        color = TextDim,
-                        fontSize = 11.sp,
-                    )
-                }
+            debug.error?.let { message ->
+                item { Text(message, color = Red, fontSize = 11.sp) }
             }
 
             item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = onOpenNmea,
-                        modifier = Modifier.weight(1f),
-                    ) { Text("NMEA 日志") }
-                    OutlinedButton(
-                        onClick = onOpenConfig,
-                        modifier = Modifier.weight(1f),
-                    ) { Text("GNSS 设置") }
+                val footer = buildString {
+                    if (link.ttffNote.isNotEmpty()) append(link.ttffNote).append(" · ")
+                    append("卫星 ${gnss.sats} 参与解算（NAV-PVT numSV） · 设备 ${device.name}")
                 }
-            }
-
-            item {
                 Text(
-                    "定位数值来自 Status 帧的 gnss_state / satellites / pdop / 位置字段；接收链路卡片来自 1 Hz 遥测组 0x01（rx/ubx/ckerr/nmea/丢字节/波特率）。单星 C/N0、仰角方位与 TTFF 仍不在当前帧内，因此显示 “—”，不伪造。",
+                    text = footer,
                     color = TextDim,
-                    fontSize = 11.sp,
-                    modifier = Modifier.padding(bottom = 20.dp),
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                )
+                Text(
+                    text = "空 = 接收机未上报该值，不补 0",
+                    color = TextDim,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
                 )
             }
         }
     }
 }
+
+/* --- GPSTest status block ------------------------------------------------- */
+
+@Composable
+private fun LabelColumn1() {
+    Column(
+        modifier = Modifier.padding(top = 2.dp, bottom = 2.dp, end = 4.dp),
+        horizontalAlignment = Alignment.End,
+    ) {
+        LocationLabel("Lat:")
+        LocationLabel("Long:")
+        LocationLabel("Alt:")
+        LocationLabel("Alt (MSL):")
+        LocationLabel("Speed:")
+        LocationLabel("S. Acc:")
+        LocationLabel("PDOP:")
+    }
+}
+
+@Composable
+private fun LabelColumn2() {
+    Column(
+        modifier = Modifier.padding(top = 2.dp, bottom = 2.dp, start = 10.dp, end = 4.dp),
+        horizontalAlignment = Alignment.End,
+    ) {
+        // GPSTest prints device-local time; this device only knows GNSS UTC.
+        LocationLabel("Time (UTC):")
+        LocationLabel("TTFF:")
+        LocationLabel("E H/V Acc:")
+        LocationLabel("# Sats:")
+        LocationLabel("Bearing:")
+        LocationLabel("B. Acc:")
+        LocationLabel("H/V DOP:")
+    }
+}
+
+@Composable
+private fun ValueColumn1(gnss: GnssStatus) {
+    Column(Modifier.padding(top = 2.dp, bottom = 2.dp)) {
+        LocationValue(if (gnss.fix) fmtLatLon(gnss.latitude) else "")
+        LocationValue(if (gnss.fix) fmtLatLon(gnss.longitude) else "")
+        // Ellipsoid height (HAE) - GPSTest's "Alt", not the MSL row below.
+        LocationValue(if (gnss.fix && gnss.hasAccuracy) "${fmtOne(gnss.ellipsoidAltM)} m" else "")
+        LocationValue(if (gnss.fix) "${fmtOne(gnss.altitudeM)} m" else "")
+        LocationValue(if (gnss.fix) "${fmtOne(speedMs(gnss))} m/s" else "")
+        LocationValue(if (gnss.hasAccuracy && gnss.sAccMs > 0.0) "${fmtOne(gnss.sAccMs)} m/s" else "")
+        LocationValue(if (gnss.pdop > 0.0) fmtOne(gnss.pdop) else "")
+    }
+}
+
+@Composable
+private fun ValueColumn2(gnss: GnssStatus, inView: Int) {
+    Column(Modifier.padding(top = 2.dp, bottom = 2.dp)) {
+        LocationValue(if (gnss.utcTime == "--") "" else gnss.utcTime)
+        LocationValue(gnss.ttff)
+        // GPSTest `%1$.1f/%2$.1f m`: horizontal first, vertical second.
+        LocationValue(
+            if (gnss.hasAccuracy && gnss.hAccM > 0.0 && gnss.vAccM > 0.0) {
+                "${fmtOne(gnss.hAccM)}/${fmtOne(gnss.vAccM)} m"
+            } else {
+                ""
+            },
+        )
+        LocationValue(numSats(gnss, inView))
+        LocationValue(if (gnss.fix) "${fmtOne(gnss.headingDeg)}°" else "")
+        LocationValue(if (gnss.hasAccuracy && gnss.bAccDeg > 0.0) "${fmtOne(gnss.bAccDeg)}°" else "")
+        // From UBX-NAV-DOP; absent on a 0.3.0 firmware.
+        LocationValue(
+            if (gnss.hdop > 0.0 && gnss.vdop > 0.0) "${fmtOne(gnss.hdop)}/${fmtOne(gnss.vdop)}" else "",
+        )
+    }
+}
+
+@Composable
+private fun LocationLabel(text: String) {
+    Text(
+        text = text,
+        fontWeight = FontWeight.Bold,
+        fontSize = 11.sp,
+        color = TextDim,
+        textAlign = TextAlign.End,
+        modifier = Modifier.padding(vertical = 2.dp),
+    )
+}
+
+@Composable
+private fun LocationValue(text: String) {
+    Text(
+        text = text,
+        fontSize = 12.sp,
+        fontFamily = FontFamily.Monospace,
+        color = TextMain,
+        modifier = Modifier.padding(vertical = 2.dp),
+    )
+}
+
+/* --- GPSTest satellite table --------------------------------------------- */
 
 @Composable
 private fun SatHeader() {
@@ -234,73 +296,113 @@ private fun SatHeader() {
             .padding(vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        SatCell("SVID", 0.8f, TextAlign.Start, TextDim, header = true)
-        SatCell("SYS", 0.7f, TextAlign.Start, TextDim, header = true)
-        SatCell("C/N0", 0.7f, TextAlign.End, TextDim, header = true)
-        SatCell("EL", 0.6f, TextAlign.End, TextDim, header = true)
-        SatCell("状态", 0.9f, TextAlign.End, TextDim, header = true)
-        SatCell("USED", 0.7f, TextAlign.End, TextDim, header = true)
+        SatCell("ID", 0.5f, TextAlign.Start)
+        SatCell("GNSS", 1.0f, TextAlign.Start)
+        SatCell("CF", 0.5f, TextAlign.Start)
+        SatCell("C/N0", 0.8f, TextAlign.Start)
+        SatCell("Flags", 0.8f, TextAlign.Start)
+        SatCell("Elev", 0.7f, TextAlign.Start)
+        SatCell("Azim", 0.7f, TextAlign.Start)
     }
 }
 
 @Composable
 private fun SatRow(satellite: SatelliteInfo) {
-    val cnoColor = when {
-        satellite.cno >= 35 -> Green
-        satellite.cno >= 25 -> Amber
-        else -> Red
-    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 2.dp),
+            .padding(vertical = 1.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        SatCell(
-            text = satellite.svid.toString().padStart(2, '0'),
-            weight = 0.8f,
-            align = TextAlign.Start,
-            color = TextMain,
-            bold = satellite.used,
-        )
-        SatCell(satellite.system, 0.7f, TextAlign.Start, TextDim)
-        SatCell("${satellite.cno}", 0.7f, TextAlign.End, cnoColor, bold = true)
-        SatCell("${satellite.elevation}°", 0.6f, TextAlign.End, TextMain)
-        SatCell(
-            text = satellite.tracking.ifBlank { "—" },
-            weight = 0.9f,
-            align = TextAlign.End,
-            color = if (satellite.used) Green else TextDim,
-        )
-        SatCell(
-            text = if (satellite.used) "YES" else "-",
-            weight = 0.7f,
-            align = TextAlign.End,
-            color = if (satellite.used) Green else TextDim,
-        )
+        SatCell("${satellite.svid}", 0.5f, TextAlign.Start)
+        SatCell(satellite.system, 1.0f, TextAlign.Start)
+        SatCell(satellite.carrier, 0.5f, TextAlign.Start)
+        SatCell(if (satellite.cno > 0) fmtOne(satellite.cno.toDouble()) else "", 0.8f, TextAlign.Start)
+        // GPSTest's AEU: almanac, ephemeris, used. All three are on the wire since
+        // v1.2 (NAV-SAT flags bits 12/11/3).
+        SatCell(aeu(satellite), 0.8f, TextAlign.Start)
+        SatCell(if (satellite.elevation >= 0) "${satellite.elevation}°" else "", 0.7f, TextAlign.Start)
+        SatCell(if (satellite.azimuth >= 0) "${satellite.azimuth}°" else "", 0.7f, TextAlign.Start)
     }
 }
 
 @Composable
-private fun androidx.compose.foundation.layout.RowScope.SatCell(
-    text: String,
-    weight: Float,
-    align: TextAlign,
-    color: androidx.compose.ui.graphics.Color,
-    header: Boolean = false,
-    bold: Boolean = false,
-) {
+private fun RowScope.SatCell(text: String, weight: Float, align: TextAlign) {
     Text(
         text = text,
         modifier = Modifier.weight(weight),
-        color = color,
-        fontSize = if (header) 10.sp else 11.sp,
+        color = TextMain,
+        fontSize = 12.sp,
         fontFamily = FontFamily.Monospace,
-        fontWeight = if (header || bold) FontWeight.SemiBold else FontWeight.Normal,
         textAlign = align,
+        maxLines = 1,
     )
 }
 
-private fun fmtOne(value: Double): String = String.format(Locale.US, "%.1f", value)
+/* --- helpers ------------------------------------------------------------- */
 
-private fun fmtSix(value: Double): String = String.format(Locale.US, "%.6f", value)
+/** GPSTest `AEU`: position 0 almanac, 1 ephemeris, 2 used; space when unknown. */
+private fun aeu(satellite: SatelliteInfo): String {
+    val flags = CharArray(3) { ' ' }
+    flags[0] = if (satellite.almAvail) 'A' else ' '
+    flags[1] = if (satellite.ephAvail) 'E' else ' '
+    flags[2] = if (satellite.used) 'U' else ' '
+    return String(flags)
+}
+
+/** GPSTest `%1$d/%2$d/%3$d`: used / in view / total. */
+private fun numSats(gnss: GnssStatus, inView: Int): String {
+    if (gnss.satTotal <= 0 && inView <= 0) return ""
+    val total = if (gnss.satTotal > 0) gnss.satTotal else inView
+    // No filter on this side, so "total" is just "in view" and the third number
+    // would repeat the second. GPSTest needs it only to count filtered-out rows.
+    return if (total != inView) "${gnss.sats}/$inView/$total" else "${gnss.sats}/$inView"
+}
+
+private fun speedMs(gnss: GnssStatus): Double = gnss.speedKmh / 3.6
+
+/**
+ * The receive path in one line, or null when the link is healthy.
+ *
+ * Same five causes the old counter card spelled out, in the order they can be
+ * proven: no telemetry -> rail off -> NMEA only -> UBX but no satellites.
+ */
+private fun diagnosticHint(gnss: GnssStatus, link: GnssLinkInfo): String? {
+    if (link.received && gnss.fix && gnss.satellites.isNotEmpty()) return null
+    return when {
+        !link.received -> "无蓝牙遥测：0x01 组没到（检查订阅/固件是否发布该组）"
+        link.rxBytes == 0L -> "rx 0 B：接收机可能未上电（断电退避中），点右上角「保持上电」"
+        link.ubxFrames == 0L ->
+            "rx ${link.rxBytes} B，无有效 UBX 帧：NMEA 起始 ${link.nmeaStarts}，校验错 ${link.badChecksum}，" +
+                "丢字节 ${link.rxDropped}"
+        else ->
+            "UBX ${link.ubxFrames} 帧正常，${link.state}：卫星 ${gnss.sats}，pDOP " +
+                (if (gnss.pdop > 0.0) fmtOne(gnss.pdop) else "") +
+                (if (gnss.satellites.isEmpty()) "，NAV-SAT 无行（室内 / 天线未接？）" else "")
+    }
+}
+
+@Composable
+private fun GnssBottomBar(onOpenNmea: () -> Unit, onOpenConfig: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.background, tonalElevation = 3.dp) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(onClick = onOpenNmea, modifier = Modifier.weight(1f)) {
+                Text("NMEA 日志")
+            }
+            OutlinedButton(onClick = onOpenConfig, modifier = Modifier.weight(1f)) {
+                Text("GPS 设置")
+            }
+        }
+    }
+}
+
+/** GPSTest `lat_or_lon` = `%1$.7f°`. */
+private fun fmtLatLon(value: Double): String = String.format(Locale.US, "%.7f°", value)
+
+private fun fmtOne(value: Double): String = String.format(Locale.US, "%.1f", value)

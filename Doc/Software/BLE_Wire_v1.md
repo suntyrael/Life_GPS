@@ -62,7 +62,7 @@ off  size  field
 | `0x05` | INTERNAL_ERROR | 内部失败（流程/CRC/存储错误） |
 | `0x06` | UNAUTHORIZED | 需要先 `DEBUG_UNLOCK` |
 
-## 4. Status 帧（100 字节，小端，固定偏移）
+## 4. Status 帧（116 字节，小端，固定偏移）
 
 | off | type | 字段 | 说明 |
 | :--- | :--- | :--- | :--- |
@@ -74,13 +74,13 @@ off  size  field
 | 5 | u8 | `key_levels` | bit0 KEY1 按下，bit1 KEY2 按下 |
 | 6 | u8 | `soc_pct` | **v1 恒为 0xFF（未知）**，App 由 `bat_mv` 自行换算 |
 | 7 | u8 | `reserved0` | 0 |
-| 8 | u16 | `pdop_1e2` | pDOP ×100 |
+| 8 | u16 | `pdop_1e2` | pDOP ×100（NAV-PVT；99.99 的“无解”哨兵值不出现，置 0） |
 | 10 | u16 | `speed_cms` | cm/s |
 | 12 | u16 | `heading_ddeg` | 0.1° |
 | 14 | u16 | `reserved1` | 0 |
 | 16 | i32 | `lat_e7` | 1e-7°，无效时为 0 |
 | 20 | i32 | `lon_e7` | 1e-7°，无效时为 0 |
-| 24 | i32 | `hmsl_mm` | 海拔 mm，**平均海平面**（UBX-NAV-PVT `hMSL`，偏移 36），不是椭球高；`0x42 action=2` 用的就是它 |
+| 24 | i32 | `hmsl_mm` | 海拔 mm，**平均海平面**（UBX-NAV-PVT `hMSL`，偏移 36），不是椭球高（椭球高在 100）；`0x42 action=2` 用的就是它 |
 | 28 | i32 | `bat_mv` | 电池 mV，无效时为 -1 |
 | 32 | u32 | `utc_epoch_s` | Life_GPS 2020 epoch 秒，0 = 未知 |
 | 36 | u32 | `uptime_ms` | 开机毫秒 |
@@ -99,6 +99,18 @@ off  size  field
 | 96 | i16 | `mag_temp_cc` | LIS2MDL 裸片温度，0.01 °C（8 LSB/°C，无偏置） |
 | 98 | u8 | `sensor_flags` | bit0 重力/线性有效，bit1 IMU 温度有效，bit2 磁力计温度有效，bit3 气压计温度有效 |
 | 99 | u8 | `reserved2` | 0 |
+| 100 | i32 | `height_mm` | **0.4.0 追加**：椭球高（HAE，NAV-PVT `height`，偏移 32）mm；与 `hmsl_mm` 是两回事 |
+| 104 | u16 | `h_acc_cm` | **0.4.0 追加**：1σ 水平定位精度，cm（NAV-PVT `hAcc` mm ÷10，四舍五入） |
+| 106 | u16 | `v_acc_cm` | **0.4.0 追加**：1σ 垂直定位精度，cm（NAV-PVT `vAcc` mm ÷10） |
+| 108 | u16 | `s_acc_mms` | **0.4.0 追加**：速度精度，mm/s（NAV-PVT `sAcc`） |
+| 110 | u16 | `head_acc_cdd` | **0.4.0 追加**：航向精度，0.01°（NAV-PVT `headAcc` 1e-5° ÷1000） |
+| 112 | u16 | `hdop_1e2` | **0.4.0 追加**：hDOP ×100（UBX-NAV-DOP `hDOP`，载荷偏移 12） |
+| 114 | u16 | `vdop_1e2` | **0.4.0 追加**：vDOP ×100（UBX-NAV-DOP `vDOP`，载荷偏移 10） |
+
+**100..115 的取值约定**：`0` 一律表示“接收机没给这个值”（无定位、整数字段装不下、NAV-PVT
+的 `0xFFFFFFFF` 未知标识）。主机**不得**把 0 当成真实的“精度 0 m / DOP 0”。
+NAV-DOP 与 NAV-PVT 描述同一个导航历元，所以两条消息谁先到都不会混历元；
+无定位时 GNSS 线程把 `hdop_1e2`/`vdop_1e2` 一起清 0，和 `pdop_1e2` 一条规则。
 
 **坐标系约定（这是 2026-11-19 修掉的一个真实缺陷）**：
 `acc_lsb`/`gyro_lsb` 是**传感器坐标系**的原始计数，供诊断用；
@@ -144,7 +156,7 @@ off type  field
 | `0x04` BARO | 20 B（整包 24 B） | 见下方字段表 | 1 Hz（仅订阅时） |
 | `0x05` PDR | 12 B（整包 16 B） | `i32 x_mm`（东）、`i32 y_mm`（北）、`i16 heading_ddeg`、`u16 steps` | 每完成一步 + 1 Hz 心跳 |
 | `0x08` NMEA | 1 B + 文本（整包 ≤ 133 B） | `u8 len`、`char text[len]`（ASCII，`$...*hh`，不含 CR/LF） | 每句一包，仅调试会话开启 NMEA 直通时 |
-| `0x09` SAT | 4 B + 5 B×N（整包 ≤ 168 B） | 见下方字段表 | 1 Hz，接收机上电即采集 |
+| `0x09` SAT | 4 B + 7 B×N（整包 ≤ 232 B） | 见下方字段表 | 1 Hz，接收机上电即采集 |
 
 **`0x04` BARO 字段表**（`LGPS_BLE_TELEM_BARO_PAYLOAD` / `BaroTelemetryOffset`，小端）：
 
@@ -195,21 +207,34 @@ App 侧 `GnssTelemetryOffset` 必须一致）：
 TTFF 从 `GPS_EN` 拉高那一刻起算，不是从收到第一帧 UBX 起算；`power_off_ms` 是把一个裸数字变成
 诊断信息的关键：断电 3 分钟后的 4 s 是热启动（V_BCKP 保住了历书），断电两小时后的 30 s 等于冷启动。
 
-**`0x09` SAT 字段表**（`u8 count`、`u8 total`、`u16 reserved`，随后每星 5 字节）：
+**`0x09` SAT 字段表**（`u8 count`、`u8 total`、`u16 reserved`，随后每星 **7 字节**；
+0.3.0 为 5 字节行，按载荷长度自动区分）：
 
 | off | type | 字段 | 说明 |
 | :--- | :--- | :--- | :--- |
 | 0 | u8 | `count` | 本包内的卫星行数（≤ 32） |
 | 1 | u8 | `total` | 接收机报告的卫星总数，与 `count` 不同表示被截断 |
 | 2 | u16 | `reserved` | 0 |
-| 4 + n·5 | u8 | `gnss_id` | 0 GPS / 1 SBAS / 2 GAL / 3 BDS / 5 QZSS / 6 GLO |
+| 4 + n·7 | u8 | `gnss_id` | 0 GPS / 1 SBAS / 2 GAL / 3 BDS / 5 QZSS / 6 GLO |
 | +1 | u8 | `sv_id` | 卫星号 |
-| +2 | u8 | `cno` | C/N0，dBHz |
-| +3 | i8 | `elev` | 仰角，度 |
-| +4 | u8 | `state` | bit2..0 = UBX `qualityInd`（0 无信号 / 1 搜索 / 2 已捕获 / 3 不可用 / 4..7 跟踪），bit3 = `svUsed` |
+| +2 | u8 | `sig_id` | **0.4.0 追加**：这颗星 C/N0 所属信号的 u-blox 信号号（§1.5.4）；`0xFF` = NAV-SIG 还没有这颗星的行 |
+| +3 | u8 | `cno` | C/N0，dBHz |
+| +4 | i8 | `elev` | 仰角，度 |
+| +5 | u8 | `azim_d2` | **0.4.0 追加**：方位角，整 2 度为单位（0..180 → 0..360°），`0xFF` = 未上报 |
+| +6 | u8 | `state` | bit2..0 = UBX `qualityInd`（0 无信号 / 1 搜索 / 2 已捕获 / 3 不可用 / 4..7 跟踪），bit3 = `svUsed`，bit4 = `ephAvail`，bit5 = `almAvail`（NAV-SAT flags bit 11/12）；bit6..7 未用 |
 
-方位角、星历可用位、健康位**不在本版本**，App 显示 “—”，不补零。
-`0x08` / `0x09` 只在调试会话期间有流量；会话关闭后接收机不再输出 NAV-SAT，也没有 NMEA 直通。
+`sig_id` 与 `azim_d2` 合起来就是 GPSTest 表的 `CF` 与 `Azim` 两列：`sig_id` 来自 `UBX-NAV-SIG`，
+`azim` 来自 `UBX-NAV-SAT`，两者在固件里按 `(gnss_id, sv_id)` 合并成一行。
+**本机一行一星**（MAX-M10S 单频：L1/E1/B1/G1）；一颗星同时跟踪两个信号时（如北斗 B1I + B1C）
+本行携带较强的那个。GPSTest 在双频机上会一星两行，那是它的数据源（Android GnssStatus）本来就按信号给行。
+
+整包大小：`4 + 4 + 7×32 = 232 B`，是单条 notify。固件与 Log 通道同一个假设：MTU 247
+（→ ATT 载荷 244 B，Log 已按 240 B 发包）。若链路协商到更小的 MTU，这条 232 B 的包会在
+ATT 层被截/丢——那时应在主机侧改用轮询式短包，或固件按 `bt_gatt_get_mtu()` 截断 `count`；
+两条都未实现，且本机目标是 MTU 247。
+
+健康位、`basebandCno`、`freqId`（GLONASS 频点）**不在本版本**。App 显示空，不补零。
+`0x08` / `0x09` 中 `0x09` 是接收机上电常开输出（不依赖调试会话）；`0x08` NMEA 直通仍需会话。
 
 `GET_CAPS.telemetry_mask`（§6.1 off 16）的 bit n 表示 **id = n 的遥测组已实现**：
 bit1 GNSS、bit2 IMU、bit3 MAG、bit4 BARO、bit5 PDR、bit6 POWER、bit7 SYSTEM、bit8 NMEA、bit9 SAT（bit0 未用）。
@@ -257,14 +282,14 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
 | off | type | 字段 |
 | :--- | :--- | :--- |
 | 0 | u8 | `ver` = 1 |
-| 1 | u8 | `proto_major` / 2 `proto_minor` / 3 `proto_patch`（来自生成头；0.2.0 只追加了 `0x43` 与校准响应字段） |
-| 4 | u8 | `fw_major` / 5 `fw_minor` / 6 `fw_patch`（v1 = 0.3.0） |
+| 1 | u8 | `proto_major` / 2 `proto_minor` / 3 `proto_patch`（来自生成头；当前 1.0.0，历史 0.2.0 曾追加 `0x43` 与校准响应字段） |
+| 4 | u8 | `fw_major` / 5 `fw_minor` / 6 `fw_patch`（0.4.0） |
 | 7 | u8 | `reserved` |
 | 8 | u16 | `att_mtu`（固件配置的 L2CAP TX MTU，247） |
 | 10 | u16 | `max_cmd_payload`（235） |
 | 12 | u32 | `caps`：bit0 Status notify，bit1 Log notify，bit2 POI，bit3 FLASH_INFO，bit4 REBOOT，bit5 DEBUG_UNLOCK，bit6 Data 同步（v1 = 0），bit7 MAG_CAL，bit8 ACCEL_CAL，bit9 BARO_BASELINE（三位置位条件见 6.3~6.5），bit10 GNSS_DEBUG，bit11 GNSS_CFG |
 | 16 | u32 | `telemetry_mask`（v1 = `0x26`：bit1 GNSS、bit2 IMU、bit5 PDR，语义见 §5.1） |
-| 20 | u16 | `status_size` = 100 |
+| 20 | u16 | `status_size` = 116（0.4.0 起；0.3.0 为 100，v1 为 82） |
 | 22 | u16 | `reserved` |
 
 ### 6.2 FLASH_INFO 响应（20 字节）
@@ -458,7 +483,8 @@ NMEA 输出关掉，会话期间会临时重新打开，会话结束再关掉）
 ### 6.8 链路速率、10 Hz 画像与失联自救（固件侧，无报文）
 
 每次上电两侧都从 **38400 8N1** 起步（设备树 `current-speed` = `LGPS_GNSS_BAUD_DEFAULT`），
-并且 **NAV-SAT 一直开着**（1 Hz，RAM 层，每次上电重写），卫星表不再依赖调试会话。
+并且 **NAV-SAT / NAV-DOP / NAV-SIG 三路一直开着**（1 Hz 与导航历元同频，RAM 层，每次上电重写）：
+卫星表、hDOP/vDOP、CF 列都不再依赖调试会话。
 `CONFIG_LGPS_GNSS_FAST_LINK=y` 时，链路在 NAV-PVT 回读确认之后按画像抬升，`CFG-RATE-MEAS`
 与 `CFG-UART1OUTPROT-NMEA` 两条都等 ACK，**只有波特率那一条不等**：
 
@@ -487,8 +513,12 @@ NAV-PVT 回读验证新速率。
 | :--- | ---: | ---: |
 | NAV-PVT | 100 B | 1.0 kB/s |
 | + NAV-SAT(32) | 400 B | 5.0 kB/s |
-| + NAV-SIG(40 信号) | 656 B | 11.6 kB/s |
+| + NAV-DOP（0.4.0 起常开） | 26 B | 0.3 kB/s |
+| + NAV-SIG(40 信号，0.4.0 起常开) | 656 B | 11.6 kB/s |
 | + 出厂 NMEA 集 | 1250 B | 24 kB/s（**只在 460800 下可行**；38400 上限 3.84 kB/s）|
+
+合计 ≈ 18 kB/s（≈ 39 % 的 460800 链路），留出 NMEA 与配置响应后的余量；38400 画像下
+`CONFIG_LGPS_GNSS_FAST_LINK=n`，这三路按 1 Hz 输出，占比可忽略。
 
 
 #### 6.8.1 接收机失联自救

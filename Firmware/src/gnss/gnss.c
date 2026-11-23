@@ -164,6 +164,13 @@ static uint8_t debug_applied_flags;
 static struct lgps_gnss_sat sat_list[LGPS_GNSS_SAT_MAX];
 static uint8_t sat_count;
 static uint32_t sat_uptime_ms;
+/* Newest UBX-NAV-SIG list, same producer. NAV-SIG names the signal behind each
+ * C/N0 (L1/E1/B1I/B1C), which is what the App's CF column needs; the two lists are
+ * joined in lgps_gnss_get_satellites() by (gnss_id, sv_id).
+ */
+static struct lgps_ubx_nav_sig sig_list[LGPS_UBX_NAV_SIG_MAX];
+static uint8_t sig_count;
+static uint32_t sig_uptime_ms;
 /* The GNSS thread writes the list, the main loop copies it for the BLE frame. */
 static struct k_spinlock sat_lock;
 #define GNSS_SAT_STALE_MS 5000U
@@ -776,6 +783,36 @@ static void gnss_apply_nav_sat_rate(bool enable)
 }
 
 /*
+ * Message output rate of NAV-DOP, the only message that carries hDOP/vDOP.
+ *
+ * Same policy as NAV-SAT: RAM layer only, re-asserted after every power-up
+ * because RXM-PMREQ clears the RAM configuration. 18 bytes per navigation epoch
+ * is 180 B/s in the 10 Hz profile, well inside the 460800 link budget.
+ */
+static void gnss_apply_nav_dop_rate(bool enable)
+{
+	if (gnss_send_cfg_item(LGPS_UBX_CFG_KEY_MSGOUT_NAV_DOP_UART1, enable ? 1U : 0U, 1U,
+			       LGPS_UBX_LAYER_RAM) != 0U) {
+		LOG_INF("NAV-DOP output rate -> %u (RAM layer)", enable ? 1U : 0U);
+	}
+}
+
+/*
+ * Message output rate of NAV-SIG, the only message that names a satellite's signal.
+ *
+ * Same policy as NAV-SAT/NAV-DOP: RAM layer, re-asserted after every power-up.
+ * 8 + 16*n bytes per epoch is ~500 B at 30 signals, i.e. 5 kB/s at 10 Hz - about
+ * 11 % of the 460800 link, which is why the fast-link profile leaves room for it.
+ */
+static void gnss_apply_nav_sig_rate(bool enable)
+{
+	if (gnss_send_cfg_item(LGPS_UBX_CFG_KEY_MSGOUT_NAV_SIG_UART1, enable ? 1U : 0U, 1U,
+			       LGPS_UBX_LAYER_RAM) != 0U) {
+		LOG_INF("NAV-SIG output rate -> %u (RAM layer)", enable ? 1U : 0U);
+	}
+}
+
+/*
  * NMEA output on UART1, as one protocol-level switch (CFG-UART1OUTPROT-NMEA).
  *
  * With CONFIG_LGPS_GNSS_FAST_LINK the power-up profile turns the factory NMEA set
@@ -1059,6 +1096,41 @@ uint8_t lgps_gnss_get_satellites(struct lgps_gnss_sat *out, uint8_t max)
 
 	count = (sat_count < max) ? sat_count : max;
 	memcpy(out, sat_list, (size_t)count * sizeof(sat_list[0]));
+
+	/* Join the signal list onto the satellite rows.
+	 *
+	 * NAV-SAT has no signal id and NAV-SIG has no elevation/azimuth, so one row per
+	 * satellite is all this firmware can build: when an SV tracks two signals (e.g.
+	 * BeiDou B1I and B1C) the row carries the strongest one. The receiver is
+	 * single-band (MAX-M10S: L1/E1/B1/G1), so a satellite never appears twice - a
+	 * dual-frequency host would need the per-signal rows GPSTest lists instead.
+	 */
+	bool sig_fresh = (sig_count != 0U) &&
+			 ((uint32_t)(now_ms - sig_uptime_ms) <= GNSS_SAT_STALE_MS);
+
+	for (uint8_t index = 0U; index < count; index++) {
+		out[index].sig_id = LGPS_GNSS_SAT_SIG_ID_UNKNOWN;
+
+		if (!sig_fresh) {
+			continue;
+		}
+
+		uint8_t best_cno = 0U;
+
+		for (uint8_t sig = 0U; sig < sig_count; sig++) {
+			if ((sig_list[sig].gnss_id != out[index].gnss_id) ||
+			    (sig_list[sig].sv_id != out[index].sv_id)) {
+				continue;
+			}
+
+			if ((out[index].sig_id == LGPS_GNSS_SAT_SIG_ID_UNKNOWN) ||
+			    (sig_list[sig].cno > best_cno)) {
+				best_cno = sig_list[sig].cno;
+				out[index].sig_id = sig_list[sig].sig_id;
+			}
+		}
+	}
+
 	k_spin_unlock(&sat_lock, key);
 
 	return count;
@@ -1474,13 +1546,21 @@ static void handle_nav_pvt(const struct lgps_nav_pvt *pvt)
 	/*
 	 * pDOP 99.99 is the receiver's "no solution" sentinel, not a DOP value; it
 	 * must not reach the status frame, where the App would render it as a real
-	 * HDOP of 99.99.
+	 * DOP of 99.99. hDOP/vDOP come from NAV-DOP and carry the same sentinel.
 	 */
 	current_fix.pdop_1e2 = (fix_valid && (pvt->pdop_1e2 < 9999U)) ? pvt->pdop_1e2 : 0U;
+	if (!fix_valid) {
+		current_fix.hdop_1e2 = 0U;
+		current_fix.vdop_1e2 = 0U;
+	}
 	current_fix.lat_e7 = pvt->lat_e7;
 	current_fix.lon_e7 = pvt->lon_e7;
+	current_fix.height_mm = pvt->height_mm;
 	current_fix.hmsl_mm = pvt->hmsl_mm;
+	current_fix.h_acc_mm = pvt->hacc_mm;
 	current_fix.v_acc_mm = pvt->vacc_mm;
+	current_fix.s_acc_mms = pvt->sacc_mms;
+	current_fix.head_acc_1e5 = pvt->headacc_1e5;
 	current_fix.speed_cms = (uint16_t)(pvt->gspeed_mms / 10);
 	/*
 	 * headMot is 1e-5 deg in [-180, +180]; heading_ddeg wants 1e-2 deg in
@@ -1625,6 +1705,26 @@ static void handle_cfg_valget(void)
 	}
 }
 
+/*
+ * UBX-NAV-DOP: hDOP and vDOP, the two numbers NAV-PVT does not carry.
+ *
+ * Written from the GNSS thread like every other fix field, so no lock is needed.
+ * Both messages describe the same navigation epoch; gating on current_fix.valid
+ * keeps one rule for every DOP the App shows - no fix, no DOP - no matter which
+ * of the two messages lands first.
+ */
+static void handle_nav_dop(const struct lgps_ubx_nav_dop *dop)
+{
+	if (!current_fix.valid || (dop->hdop_1e2 >= 9999U) || (dop->vdop_1e2 >= 9999U)) {
+		current_fix.hdop_1e2 = 0U;
+		current_fix.vdop_1e2 = 0U;
+		return;
+	}
+
+	current_fix.hdop_1e2 = dop->hdop_1e2;
+	current_fix.vdop_1e2 = dop->vdop_1e2;
+}
+
 static void gnss_process_rx(void)
 {
 	uint8_t byte;
@@ -1671,12 +1771,39 @@ static void gnss_process_rx(void)
 					sat_list[index].sv_id = decoded[index].sv_id;
 					sat_list[index].cno = decoded[index].cno;
 					sat_list[index].elev = decoded[index].elev;
+					sat_list[index].azim = decoded[index].azim;
 					sat_list[index].quality = decoded[index].quality;
 					sat_list[index].used = decoded[index].used;
+					sat_list[index].eph_avail = decoded[index].eph_avail;
+					sat_list[index].alm_avail = decoded[index].alm_avail;
 				}
 
 				sat_count = count;
 				sat_uptime_ms = lgps_diag_uptime_ms();
+				k_spin_unlock(&sat_lock, key);
+			}
+		} else if (parser.msg_class == LGPS_UBX_CLASS_NAV &&
+			   parser.msg_id == LGPS_UBX_ID_NAV_DOP) {
+			struct lgps_ubx_nav_dop dop;
+
+			if (lgps_ubx_decode_nav_dop(&parser, &dop) == 0) {
+				handle_nav_dop(&dop);
+			}
+		} else if (parser.msg_class == LGPS_UBX_CLASS_NAV &&
+			   parser.msg_id == LGPS_UBX_ID_NAV_SIG) {
+			struct lgps_ubx_nav_sig decoded[LGPS_UBX_NAV_SIG_MAX];
+			uint8_t count = 0U;
+
+			if (lgps_ubx_decode_nav_sig(&parser, decoded, (uint8_t)ARRAY_SIZE(decoded),
+						    &count) == 0) {
+				k_spinlock_key_t key = k_spin_lock(&sat_lock);
+
+				for (uint8_t index = 0U; index < count; index++) {
+					sig_list[index] = decoded[index];
+				}
+
+				sig_count = count;
+				sig_uptime_ms = lgps_diag_uptime_ms();
 				k_spin_unlock(&sat_lock, key);
 			}
 		} else if (parser.msg_class == LGPS_UBX_CLASS_ACK) {
@@ -1787,6 +1914,7 @@ static void gnss_power_up(void)
 		k_spinlock_key_t key = k_spin_lock(&sat_lock);
 
 		sat_count = 0U;
+		sig_count = 0U;
 		k_spin_unlock(&sat_lock, key);
 	}
 	next_reconfig_ms = 0U;
@@ -1801,6 +1929,10 @@ static void gnss_power_up(void)
 	 * profile - about 9 % of the 460800 link.
 	 */
 	gnss_apply_nav_sat_rate(true);
+	/* hDOP/vDOP only exist in NAV-DOP; pDOP (NAV-PVT) cannot be split into them. */
+	gnss_apply_nav_dop_rate(true);
+	/* The signal id behind each C/N0 (CF column): NAV-SAT/NAV-SIG join. */
+	gnss_apply_nav_sig_rate(true);
 	(void)gnss_request_rate_readback();
 	/* The bandwidth profile (NMEA off / rate / line rate) stays disarmed until a
 	 * NAV-PVT readback proves the receiver answers at the boot rate; the cold-start
@@ -2045,6 +2177,8 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 				 * after the rail, which can be before the module is listening.
 				 */
 				gnss_apply_nav_sat_rate(true);
+				gnss_apply_nav_dop_rate(true);
+				gnss_apply_nav_sig_rate(true);
 				(void)gnss_request_rate_readback();
 			}
 

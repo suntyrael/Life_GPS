@@ -410,8 +410,15 @@ static size_t build_nav_sat_frame(uint8_t *frame, uint8_t declared_svs, uint8_t 
 		group[1] = (uint8_t)(index == 0U ? 7U : 21U);
 		group[2] = (uint8_t)(index == 0U ? 42U : 28U);
 		group[3] = (uint8_t)(index == 0U ? 55 : -12);
+		/* azim is I2 at group offset 4; the second SV leaves it out of range
+		 * (-1), which is how the receiver reports "unknown".
+		 */
+		put_le16(&group[LGPS_UBX_NAV_SAT_SV_OFF_AZIM],
+			 (uint16_t)(index == 0U ? 219U : 0xFFFFU));
 		put_le16(&group[6], 0U); /* prRes */
-		flags = (uint32_t)(index == 0U ? (LGPS_UBX_NAV_SAT_FLAG_SV_USED | 4U) : 1U);
+		flags = (uint32_t)(index == 0U
+					   ? (LGPS_UBX_NAV_SAT_FLAG_SV_USED | LGPS_UBX_NAV_SAT_FLAG_EPH_AVAIL | 4U)
+					   : LGPS_UBX_NAV_SAT_FLAG_ALM_AVAIL | 1U);
 		put_le32(&group[8], flags);
 	}
 
@@ -455,17 +462,160 @@ ZTEST(lifegps_ubx, test_nav_sat_decode)
 	zassert_equal(sats[0].sv_id, 7U, "GPS PRN 7");
 	zassert_equal(sats[0].cno, 42U, "C/N0");
 	zassert_equal(sats[0].elev, 55, "elevation");
+	zassert_equal(sats[0].azim, 219, "azimuth at group offset 4");
 	zassert_equal(sats[0].quality, 4U, "qualityInd 4 = code locked");
 	zassert_true(sats[0].used, "svUsed bit");
+	zassert_true(sats[0].eph_avail, "ephAvail is flags bit 11");
+	zassert_false(sats[0].alm_avail, "almAvail is flags bit 12");
 
 	zassert_equal(sats[1].gnss_id, 3U, "BeiDou");
 	zassert_equal(sats[1].elev, -12, "negative elevation is sign-extended");
+	zassert_equal(sats[1].azim, -1, "out-of-range azimuth stays unknown");
 	zassert_false(sats[1].used, "not used for navigation");
+	zassert_false(sats[1].eph_avail, "no ephemeris for this SV");
+	zassert_true(sats[1].alm_avail, "almanac-only SV");
 
 	/* max_sv caps the list without failing the decode. */
 	count = 0xFFU;
 	zassert_equal(lgps_ubx_decode_nav_sat(&parser, sats, 1U, &count), 0, "capped decode");
 	zassert_equal(count, 1U, "cap respected");
+}
+
+/* UBX-NAV-DOP (section 3.15.4): 18-byte payload, every DOP scaled by 100. */
+ZTEST(lifegps_ubx, test_nav_dop_decode)
+{
+	uint8_t frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_NAV_DOP_PAYLOAD_LEN + LGPS_UBX_TRAILER_LEN];
+	struct lgps_ubx_parser parser;
+	struct lgps_ubx_nav_dop dop;
+	uint8_t ck_a = 0U;
+	uint8_t ck_b = 0U;
+	size_t index;
+
+	memset(frame, 0, sizeof(frame));
+	frame[0] = LGPS_UBX_SYNC1;
+	frame[1] = LGPS_UBX_SYNC2;
+	frame[2] = LGPS_UBX_CLASS_NAV;
+	frame[3] = LGPS_UBX_ID_NAV_DOP;
+	put_le16(&frame[4], (uint16_t)LGPS_UBX_NAV_DOP_PAYLOAD_LEN);
+	put_le32(&frame[LGPS_UBX_HEADER_LEN + 0U], 0x11223344U); /* iTOW */
+	put_le16(&frame[LGPS_UBX_HEADER_LEN + 4U], 140U);        /* gDOP 1.40 */
+	put_le16(&frame[LGPS_UBX_HEADER_LEN + 6U], 80U);         /* pDOP 0.80 */
+	put_le16(&frame[LGPS_UBX_HEADER_LEN + 8U], 60U);         /* tDOP 0.60 */
+	put_le16(&frame[LGPS_UBX_HEADER_LEN + 10U], 70U);        /* vDOP 0.70 */
+	put_le16(&frame[LGPS_UBX_HEADER_LEN + 12U], 50U);        /* hDOP 0.50 */
+	put_le16(&frame[LGPS_UBX_HEADER_LEN + 14U], 40U);        /* nDOP 0.40 */
+	put_le16(&frame[LGPS_UBX_HEADER_LEN + 16U], 30U);        /* eDOP 0.30 */
+
+	for (index = 2U; index < LGPS_UBX_HEADER_LEN + LGPS_UBX_NAV_DOP_PAYLOAD_LEN; index++) {
+		ck_a = (uint8_t)(ck_a + frame[index]);
+		ck_b = (uint8_t)(ck_b + ck_a);
+	}
+
+	frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_NAV_DOP_PAYLOAD_LEN] = ck_a;
+	frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_NAV_DOP_PAYLOAD_LEN + 1U] = ck_b;
+
+	lgps_ubx_parser_reset(&parser);
+	feed_expect_ready(frame, sizeof(frame), &parser);
+	zassert_equal(lgps_ubx_decode_nav_dop(&parser, &dop), 0, "NAV-DOP must decode");
+	zassert_equal(dop.pdop_1e2, 80U, "pDOP at offset 6");
+	zassert_equal(dop.vdop_1e2, 70U, "vDOP at offset 10");
+	zassert_equal(dop.hdop_1e2, 50U, "hDOP at offset 12");
+
+	/* A NAV-PVT frame must not be decoded as NAV-DOP. */
+	parser.msg_id = LGPS_UBX_ID_NAV_PVT;
+	zassert_equal(lgps_ubx_decode_nav_dop(&parser, &dop), -EINVAL, "wrong message id");
+
+	/* Truncated payload: 16 of the 18 bytes carry no hDOP/eDOP. */
+	parser.msg_id = LGPS_UBX_ID_NAV_DOP;
+	parser.payload_len = (uint16_t)(LGPS_UBX_NAV_DOP_PAYLOAD_LEN - 2U);
+	zassert_equal(lgps_ubx_decode_nav_dop(&parser, &dop), -EINVAL, "short payload");
+}
+
+/* UBX-NAV-SIG (section 3.15.15): 8-byte header, 16 bytes per signal. */
+static size_t build_nav_sig_frame(uint8_t *frame, uint8_t declared_sigs, uint8_t payload_sigs,
+				  size_t frame_len)
+{
+	size_t payload_len = LGPS_UBX_NAV_SIG_HEADER_LEN +
+			     ((size_t)payload_sigs * LGPS_UBX_NAV_SIG_SIG_LEN);
+	size_t index;
+
+	memset(frame, 0, frame_len);
+	frame[0] = LGPS_UBX_SYNC1;
+	frame[1] = LGPS_UBX_SYNC2;
+	frame[2] = LGPS_UBX_CLASS_NAV;
+	frame[3] = LGPS_UBX_ID_NAV_SIG;
+	put_le16(&frame[4], (uint16_t)payload_len);
+	put_le32(&frame[LGPS_UBX_HEADER_LEN + 0U], 0x11223344U);
+	frame[LGPS_UBX_HEADER_LEN + 4U] = 0x00U; /* version */
+	frame[LGPS_UBX_HEADER_LEN + 5U] = declared_sigs;
+
+	for (index = 0U; index < payload_sigs; index++) {
+		uint8_t *group = &frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_NAV_SIG_HEADER_LEN +
+				       (index * LGPS_UBX_NAV_SIG_SIG_LEN)];
+
+		group[0] = (uint8_t)(index == 0U ? 0U : 3U);  /* GPS, then BeiDou */
+		group[1] = (uint8_t)(index == 0U ? 7U : 21U);
+		group[2] = (uint8_t)(index == 0U ? 0U : 5U);  /* L1C/A, B1 Cp */
+		group[6] = (uint8_t)(index == 0U ? 42U : 28U); /* cno at offset 6 */
+		group[7] = (uint8_t)(index == 0U ? 4U : 2U);  /* qualityInd */
+		put_le16(&group[10], (uint16_t)(index == 0U ? LGPS_UBX_NAV_SIG_FLAG_PR_USED : 0U));
+	}
+
+	{
+		uint8_t ck_a = 0U;
+		uint8_t ck_b = 0U;
+
+		for (index = 2U; index < LGPS_UBX_HEADER_LEN + payload_len; index++) {
+			ck_a = (uint8_t)(ck_a + frame[index]);
+			ck_b = (uint8_t)(ck_b + ck_a);
+		}
+
+		frame[LGPS_UBX_HEADER_LEN + payload_len] = ck_a;
+		frame[LGPS_UBX_HEADER_LEN + payload_len + 1U] = ck_b;
+	}
+
+	return LGPS_UBX_HEADER_LEN + payload_len + LGPS_UBX_TRAILER_LEN;
+}
+
+ZTEST(lifegps_ubx, test_nav_sig_decode)
+{
+	uint8_t frame[LGPS_UBX_HEADER_LEN + LGPS_UBX_NAV_SIG_HEADER_LEN +
+		      (2U * LGPS_UBX_NAV_SIG_SIG_LEN) + LGPS_UBX_TRAILER_LEN];
+	struct lgps_ubx_parser parser;
+	struct lgps_ubx_nav_sig sigs[LGPS_UBX_NAV_SIG_MAX];
+	uint8_t count = 0xFFU;
+	size_t len;
+
+	len = build_nav_sig_frame(frame, 2U, 2U, sizeof(frame));
+	lgps_ubx_parser_reset(&parser);
+	feed_expect_ready(frame, len, &parser);
+
+	zassert_equal(lgps_ubx_decode_nav_sig(&parser, sigs, ARRAY_SIZE(sigs), &count), 0,
+		      "NAV-SIG must decode");
+	zassert_equal(count, 2U, "two signals");
+
+	zassert_equal(sigs[0].gnss_id, 0U, "GPS");
+	zassert_equal(sigs[0].sv_id, 7U, "GPS PRN 7");
+	zassert_equal(sigs[0].sig_id, 0U, "GPS L1C/A");
+	zassert_equal(sigs[0].cno, 42U, "cno at group offset 6");
+	zassert_equal(sigs[0].quality, 4U, "qualityInd");
+	zassert_true(sigs[0].used, "prUsed is sigFlags bit 3");
+
+	zassert_equal(sigs[1].gnss_id, 3U, "BeiDou");
+	zassert_equal(sigs[1].sig_id, 5U, "B1 Cp");
+	zassert_false(sigs[1].used, "not used for the solution");
+
+	/* Declared above the payload: store what exists, never read past it. */
+	len = build_nav_sig_frame(frame, 5U, 2U, sizeof(frame));
+	lgps_ubx_parser_reset(&parser);
+	feed_expect_ready(frame, len, &parser);
+	zassert_equal(lgps_ubx_decode_nav_sig(&parser, sigs, ARRAY_SIZE(sigs), &count), 0,
+		      "declared count above the payload must not fail");
+	zassert_equal(count, 2U, "only the signals really present are stored");
+
+	parser.msg_id = LGPS_UBX_ID_NAV_SAT;
+	zassert_equal(lgps_ubx_decode_nav_sig(&parser, sigs, ARRAY_SIZE(sigs), &count), -EINVAL,
+		      "a non-NAV-SIG frame must be refused");
 }
 
 ZTEST(lifegps_ubx, test_nav_sat_truncated_and_wrong_class)

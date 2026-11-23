@@ -42,10 +42,20 @@ object StatusOffset {
     const val IMU_TEMP_CC = 94
     const val MAG_TEMP_CC = 96
     const val SENSOR_FLAGS = 98
+    const val HEIGHT_MM = 100
+    const val H_ACC_CM = 104
+    const val V_ACC_CM = 106
+    const val S_ACC_MMS = 108
+    const val HEAD_ACC_CDD = 110
+    const val HDOP_1E2 = 112
+    const val VDOP_1E2 = 114
 
     /** Old firmware bodies stop here; the fields above are always present. */
     const val BASE_SIZE = 82
-    const val SIZE = 100
+
+    /** 0.3.0 firmware: the motion/temperature block ends here. */
+    const val MOTION_SIZE = 100
+    const val SIZE = 116
 }
 
 /** Offset table of the GET_CAPS response body (`BLE_Wire_v1.md` §6.1). */
@@ -225,7 +235,15 @@ data class StatusFrame(
     val imuTempCc: Int,
     val magTempCc: Int,
     val sensorFlags: Int,
+    val heightMm: Int,
+    val hAccCm: Int,
+    val vAccCm: Int,
+    val sAccMms: Int,
+    val headAccCdd: Int,
+    val hdop1e2: Int,
+    val vdop1e2: Int,
     val extendedFields: Boolean,
+    val accuracyFields: Boolean,
 ) {
     val gnssFixValid: Boolean get() = flags and StatusFlags.GNSS_FIX_VALID != 0
     val charging: Boolean get() = flags and StatusFlags.CHARGING != 0
@@ -244,6 +262,9 @@ data class StatusFrame(
     /** True when the firmware sent the appended motion/thermal fields. */
     val hasMotionFields: Boolean get() = extendedFields
     val hasTempFields: Boolean get() = extendedFields
+
+    /** True when the firmware sent the appended height/accuracy/DOP block (0.4.0). */
+    val hasAccuracyFields: Boolean get() = accuracyFields
 }
 
 /** Decoded GET_CAPS response body (status byte already stripped). */
@@ -302,8 +323,12 @@ object TelemetryId {
  * Satellite table packet (telemetry 0x09): `u8 count, u8 total, u16 reserved`,
  * then [SatTelemetry.SIZE_ENTRY] bytes per satellite.
  *
- * [state] packs `qualityInd` in bits 2..0 and the `svUsed` flag in bit 3, exactly
- * as UBX-NAV-SAT reports them.
+ * [state] packs `qualityInd` in bits 2..0, the `svUsed` flag in bit 3 and (since
+ * v1.2) `ephAvail`/`almAvail` in bits 4/5, exactly as UBX-NAV-SAT reports them.
+ *
+ * Since 0.4.0 a row is 7 bytes: `sig_id` names the signal behind the C/N0 (UBX
+ * signal identifiers §1.5.4) and `azim_d2` carries the azimuth in whole
+ * 2-degree steps, 0xFF meaning "not reported".
  */
 data class SatTelemetry(
     val rows: List<SatTelemetryRow>,
@@ -311,20 +336,32 @@ data class SatTelemetry(
 ) {
     companion object {
         const val HEADER = 4
-        const val SIZE_ENTRY = 5
+        const val SIZE_ENTRY = 7
+        const val LEGACY_ENTRY = 5
         const val MAX = 32
+        const val AZIM_UNKNOWN = 0xFF
     }
 }
 
 data class SatTelemetryRow(
     val gnssId: Int,
     val svId: Int,
+    val sigId: Int,
     val cno: Int,
     val elevation: Int,
+    /** Azimuth in whole 2-degree steps, [SatTelemetry.AZIM_UNKNOWN] when absent. */
+    val azimD2: Int,
     val state: Int,
 ) {
+    /** Azimuth in degrees, -1 when the receiver did not report one. */
+    val azimuth: Int get() = if (azimD2 == SatTelemetry.AZIM_UNKNOWN) -1 else azimD2 * 2
+
     val quality: Int get() = state and 0x07
     val used: Boolean get() = state and 0x08 != 0
+
+    /** NAV-SAT flags bit 11 / bit 12, the table's `A` and `E` columns. */
+    val ephAvail: Boolean get() = state and 0x10 != 0
+    val almAvail: Boolean get() = state and 0x20 != 0
 
     /** Human wording for `qualityInd` (UBX-NAV-SAT §3.15.13.1), never "fix". */
     val qualityLabel: String
@@ -579,7 +616,8 @@ object BleFrame {
     /** Parses the Status body; base-only (old firmware) bodies keep zero extension fields. */
     fun parseStatus(bytes: ByteArray): StatusFrame? {
         if (bytes.size < StatusOffset.BASE_SIZE) return null
-        val extended = bytes.size >= StatusOffset.SIZE
+        val extended = bytes.size >= StatusOffset.MOTION_SIZE
+        val accuracy = bytes.size >= StatusOffset.SIZE
         return StatusFrame(
             ver = u8(bytes, StatusOffset.VER),
             flags = u8(bytes, StatusOffset.FLAGS),
@@ -611,7 +649,15 @@ object BleFrame {
             imuTempCc = if (extended) i16(bytes, StatusOffset.IMU_TEMP_CC) else 0,
             magTempCc = if (extended) i16(bytes, StatusOffset.MAG_TEMP_CC) else 0,
             sensorFlags = if (extended) u8(bytes, StatusOffset.SENSOR_FLAGS) else 0,
+            heightMm = if (accuracy) i32(bytes, StatusOffset.HEIGHT_MM) else 0,
+            hAccCm = if (accuracy) u16(bytes, StatusOffset.H_ACC_CM) else 0,
+            vAccCm = if (accuracy) u16(bytes, StatusOffset.V_ACC_CM) else 0,
+            sAccMms = if (accuracy) u16(bytes, StatusOffset.S_ACC_MMS) else 0,
+            headAccCdd = if (accuracy) u16(bytes, StatusOffset.HEAD_ACC_CDD) else 0,
+            hdop1e2 = if (accuracy) u16(bytes, StatusOffset.HDOP_1E2) else 0,
+            vdop1e2 = if (accuracy) u16(bytes, StatusOffset.VDOP_1E2) else 0,
             extendedFields = extended,
+            accuracyFields = accuracy,
         )
     }
 
@@ -747,17 +793,31 @@ object BleFrame {
         if (payload.size < SatTelemetry.HEADER) return null
         val count = u8(payload, 0)
         val total = u8(payload, 1)
-        val available = (payload.size - SatTelemetry.HEADER) / SatTelemetry.SIZE_ENTRY
+
+        /* Row width is inferred from the payload length: 0.4.0+ sends 7-byte rows,
+         * 0.3.0 sent 5-byte rows (no sig_id / azim). Guessing wrong would shift
+         * every row by 2 bytes, so the arithmetic decides, not a version number.
+         */
+        val body = payload.size - SatTelemetry.HEADER
+        val entry = when {
+            body % SatTelemetry.SIZE_ENTRY == 0 -> SatTelemetry.SIZE_ENTRY
+            body % SatTelemetry.LEGACY_ENTRY == 0 -> SatTelemetry.LEGACY_ENTRY
+            else -> SatTelemetry.SIZE_ENTRY
+        }
+        val available = body / entry
         val rows = (minOf(count, available)).coerceAtMost(SatTelemetry.MAX)
         val out = ArrayList<SatTelemetryRow>(rows)
         for (index in 0 until rows) {
-            val base = SatTelemetry.HEADER + index * SatTelemetry.SIZE_ENTRY
+            val base = SatTelemetry.HEADER + index * entry
+            val legacy = entry == SatTelemetry.LEGACY_ENTRY
             out += SatTelemetryRow(
                 gnssId = u8(payload, base),
                 svId = u8(payload, base + 1),
-                cno = u8(payload, base + 2),
-                elevation = payload[base + 3].toInt(),
-                state = u8(payload, base + 4),
+                sigId = if (legacy) -1 else u8(payload, base + 2),
+                cno = u8(payload, base + if (legacy) 2 else 3),
+                elevation = payload[base + if (legacy) 3 else 4].toInt(),
+                azimD2 = if (legacy) SatTelemetry.AZIM_UNKNOWN else u8(payload, base + 5),
+                state = u8(payload, base + if (legacy) 4 else 6),
             )
         }
         return SatTelemetry(rows = out, total = if (total == 0) rows else total)

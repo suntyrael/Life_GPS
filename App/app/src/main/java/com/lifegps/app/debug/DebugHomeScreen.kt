@@ -151,7 +151,7 @@ fun DebugHomeScreen(
                         if (gnss.fix) Green else Red,
                         Modifier.weight(1f),
                     )
-                    StatTile("HDOP", if (gnss.fix) String.format("%.1f", gnss.hdop) else "--", "", Cyan, Modifier.weight(1f))
+                    StatTile("pDOP", if (gnss.fix) String.format("%.1f", gnss.pdop) else "--", "", Cyan, Modifier.weight(1f))
                     StatTile("步数", if (device.connected) "${imu.steps}" else "--", "", Amber, Modifier.weight(1f))
                 }
             }
@@ -176,7 +176,7 @@ fun DebugHomeScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     ToolCard(
                         "GPS 状态",
-                        "六状态机 / 星数 / HDOP\n经纬度 / 时间",
+                        "六状态机 / 星数 / pDOP\n经纬度 / 时间 / 卫星表",
                         { onNavigate(Routes.GNSS) },
                         Modifier.weight(1f),
                         Green,

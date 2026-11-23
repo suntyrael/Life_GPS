@@ -515,10 +515,20 @@ static void publish_sat(void)
 	for (uint8_t index = 0U; index < count; index++) {
 		entries[index].gnss_id = sats[index].gnss_id;
 		entries[index].sv_id = sats[index].sv_id;
+		entries[index].sig_id = sats[index].sig_id;
 		entries[index].cno = sats[index].cno;
 		entries[index].elev = sats[index].elev;
+		/* Whole 2-degree steps on the wire; anything outside 0..358 deg is "not
+		 * reported" so a negative/garbage receiver value never wraps into a bearing.
+		 */
+		entries[index].azim_d2 =
+			((sats[index].azim >= 0) && (sats[index].azim < 360))
+				? (uint8_t)((sats[index].azim + 1) / 2)
+				: (uint8_t)LGPS_BLE_TELEM_SAT_AZIM_UNKNOWN;
 		entries[index].state = (uint8_t)(sats[index].quality |
-						 (sats[index].used ? 0x08U : 0U));
+						 (sats[index].used ? 0x08U : 0U) |
+						 (sats[index].eph_avail ? 0x10U : 0U) |
+						 (sats[index].alm_avail ? 0x20U : 0U));
 	}
 
 	lgps_ble_publish_sat(entries, count, count);

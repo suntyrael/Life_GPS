@@ -502,7 +502,7 @@ private fun BaroBaselineCard(
     // device is still the authority and adds the vertical accuracy it knows.
     val gnssUsable = gnss.fix &&
         gnss.sats >= 8 &&
-        gnss.hdop <= 2.0 &&
+        gnss.pdop <= 2.0 &&
         gnss.speedKmh < 1.08
 
     CardBlock(

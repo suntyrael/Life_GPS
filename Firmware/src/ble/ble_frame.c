@@ -200,6 +200,17 @@ int lgps_ble_status_encode(const struct lgps_ble_status *status, uint8_t *out, s
 	out[98] = status->sensor_flags;
 	out[99] = 0U;
 
+	/* Appended in v1.2: ellipsoid height, the four 1-sigma accuracies and the
+	 * hDOP/vDOP pair. Offsets 100..115, see BLE_Wire_v1.md section 4.
+	 */
+	put_i32(&out[100], status->height_mm);
+	put_u16(&out[104], status->h_acc_cm);
+	put_u16(&out[106], status->v_acc_cm);
+	put_u16(&out[108], status->s_acc_mms);
+	put_u16(&out[110], status->head_acc_cdd);
+	put_u16(&out[112], status->hdop_1e2);
+	put_u16(&out[114], status->vdop_1e2);
+
 	return (int)LGPS_BLE_STATUS_SIZE;
 }
 
@@ -373,9 +384,11 @@ int lgps_ble_telem_sat_encode(uint16_t seq, const struct lgps_ble_telem_sat_entr
 
 		entry[0] = entries[index].gnss_id;
 		entry[1] = entries[index].sv_id;
-		entry[2] = entries[index].cno;
-		entry[3] = (uint8_t)entries[index].elev;
-		entry[4] = entries[index].state;
+		entry[2] = entries[index].sig_id;
+		entry[3] = entries[index].cno;
+		entry[4] = (uint8_t)entries[index].elev;
+		entry[5] = entries[index].azim_d2;
+		entry[6] = entries[index].state;
 	}
 
 	return lgps_ble_telem_encode((uint8_t)LGPS_BLE_TELEM_SAT, seq, payload,

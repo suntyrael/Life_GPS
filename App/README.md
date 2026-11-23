@@ -12,11 +12,11 @@
 
 | 页面 | 内容 |
 | :--- | :--- |
-| 硬件调试首页 | 设备状态、电量、GNSS 星数/HDOP、步数、快捷操作、最近日志 |
+| 硬件调试首页 | 设备状态、电量、GNSS 星数/pDOP、步数、快捷操作、最近日志 |
 | 设备扫描/连接 | BLE 扫描列表（MAC + RSSI）、按 Service UUID 过滤、连接/断开 |
 | 串口日志 | BLE 日志 + App 内部事件、级别过滤、搜索、暂停、清空、导出 |
 | 传感器状态 | IMU 加速度/角速度/四元数、磁力计、气压计、ZUPT |
-| GPS 状态 | 六状态机、星数、HDOP、经纬度、海拔、速度、航向（C/N0、TTFF 不在 v1 帧内，显示“—”） |
+| GPS | 与 GPSTest 同一套字段和格式：Lat/Long `%.7f°`、Alt（椭球高）、Alt (MSL)、Speed `%.1f m/s`、S. Acc、PDOP、Time (UTC)、TTFF `N sec`、E H/V Acc `h/v m`、# Sats `used/inView/total`、Bearing、B. Acc、H/V DOP；卫星表 `ID/GNSS/CF/C-N0/Flags/Elev/Azim`，C/N0 `%.1f`、Flags `AEU`、`%.0f°`，CF 由 NAV-SIG 信号号映射（L1/E1/B1I/B1C/G1…）。底部只有「NMEA 日志」「GPS 设置」；“保持上电”会话开关在顶栏。接收机未上报的格子留空，不用 0 伪造 |
 | 硬件自检 | MCU/Flash/IMU/磁/气压/GNSS/天线/ADC/充电/按键/LED/BLE |
 | Flash 检查 | 63MB 轨迹区 + 1MB OTA slot1、16 扇区图、Journal |
 | 命令终端 | opcode 选择、hex payload、响应历史 |

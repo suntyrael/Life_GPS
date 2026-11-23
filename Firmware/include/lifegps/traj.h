@@ -41,7 +41,7 @@ struct lgps_traj_sample {
 	uint16_t speed_cms;
 	uint16_t heading_ddeg;  /* 0..3599 */
 	uint16_t step_count;
-	uint8_t hdop_d1;        /* 0.1 resolution */
+	uint8_t hdop_d1;        /* 0.1 resolution; before 0.4.0 this byte held pDOP */
 	uint8_t satellites;
 	uint8_t status_flags;
 	uint8_t battery_pct;

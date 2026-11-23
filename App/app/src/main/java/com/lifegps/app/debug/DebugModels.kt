@@ -35,16 +35,46 @@ data class DeviceSummary(
 data class GnssStatus(
     val state: String,
     val fix: Boolean,
+    /** NAV-PVT numSV: the satellites that are actually used in the solution. */
     val sats: Int,
-    val hdop: Double,
+    /**
+     * pDOP x100 from UBX-NAV-PVT (`/100`), 0.0 when the receiver reports 99.99
+     * (= no solution). It is **not** hDOP: the firmware never requests
+     * UBX-NAV-DOP, so hDOP/vDOP are simply not on the wire.
+     */
+    val pdop: Double,
     val latitude: Double,
     val longitude: Double,
+    /** Height above mean sea level (NAV-PVT hMSL). The ellipsoid height is not on
+     *  the wire, which is why GPSTest's `Alt:` row stays empty. */
     val altitudeM: Double,
     val speedKmh: Double,
     val headingDeg: Double,
+    /** `HH:mm:ss` in UTC (the device has no sub-second time on the wire). */
     val utcTime: String,
+    /** GPSTest shape: `N sec`, empty until the first fix. */
     val ttff: String,
     val satellites: List<SatelliteInfo>,
+    /** NAV-SAT `total`: every satellite the receiver knows about, not only the
+     *  ones that fit in one packet (`satellites.size` <= 32). */
+    val satTotal: Int = 0,
+    /**
+     * v1.2 Status block (offsets 100..115): ellipsoid height, the four 1-sigma
+     * accuracies and the hDOP/vDOP pair. False on a 0.3.0 firmware, and then every
+     * value below stays 0 and the UI prints an empty cell instead of "0.0 m".
+     *
+     * 0 inside the block also means "the receiver did not report it".
+     */
+    val hasAccuracy: Boolean = false,
+    /** Ellipsoid height (HAE, NAV-PVT `height`), the value GPSTest calls `Alt`. */
+    val ellipsoidAltM: Double = 0.0,
+    val hAccM: Double = 0.0,
+    val vAccM: Double = 0.0,
+    val sAccMs: Double = 0.0,
+    val bAccDeg: Double = 0.0,
+    /** From UBX-NAV-DOP, not derivable from pDOP. 0.0 = not reported. */
+    val hdop: Double = 0.0,
+    val vdop: Double = 0.0,
 )
 
 data class SatelliteInfo(
@@ -54,7 +84,12 @@ data class SatelliteInfo(
     val elevation: Int,
     /** -1 when the receiver does not report an azimuth for this satellite. */
     val azimuth: Int = -1,
+    /** GPSTest `CF`: L1 / L2 / L5 / E1 / E5a / B1I / B1C / G1 ...; empty when unknown. */
+    val carrier: String = "",
     val used: Boolean = false,
+    /** NAV-SAT flags bit 11 / bit 12: the table's `E` and `A` columns. */
+    val ephAvail: Boolean = false,
+    val almAvail: Boolean = false,
     /** UBX-NAV-SAT `qualityInd` rendered as words: 搜索中 / 已捕获 / 跟踪 / 不可用. */
     val tracking: String = "",
 )
@@ -79,6 +114,8 @@ data class GnssLinkInfo(
     val nmeaStarts: Long = 0,
     val rxDropped: Long = 0,
     val baud: Int = 0,
+    /** Hot/cold-start context for the TTFF cell; GPSTest has no equivalent field. */
+    val ttffNote: String = "",
 ) {
     /**
      * One-line verdict on the receive path, derived only from the counters.
@@ -183,7 +220,6 @@ data class FlashStatus(
     val usedMb: Float,
     val totalMb: Float,
     val recordCount: Int,
-    val beaconCount: Int,
     val journal: String,
     val sectors: List<String>,
 )

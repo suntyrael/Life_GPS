@@ -235,6 +235,13 @@ ZTEST(lifegps_ble, test_status_offsets_match_wire_doc)
 		.imu_temp_cc = 2345,
 		.mag_temp_cc = -125,
 		.sensor_flags = 0x0FU,
+		.height_mm = -12345,
+		.h_acc_cm = 106U,
+		.v_acc_cm = 62U,
+		.s_acc_mms = 100U,
+		.head_acc_cdd = 560U,
+		.hdop_1e2 = 50U,
+		.vdop_1e2 = 70U,
 	};
 	uint8_t out[LGPS_BLE_STATUS_SIZE];
 	int len;
@@ -242,7 +249,8 @@ ZTEST(lifegps_ble, test_status_offsets_match_wire_doc)
 	len = lgps_ble_status_encode(&status, out, sizeof(out));
 	zassert_equal(len, LGPS_BLE_STATUS_SIZE, "status frame size");
 	zassert_equal(LGPS_BLE_STATUS_BASE_SIZE, 82, "the v1 fields stay at 0..81");
-	zassert_equal(LGPS_BLE_STATUS_SIZE, 100, "appended motion/temperature block");
+	zassert_equal(LGPS_BLE_STATUS_MOTION_SIZE, 100, "appended motion/temperature block");
+	zassert_equal(LGPS_BLE_STATUS_SIZE, 116, "appended height/accuracy/DOP block");
 
 	/* Offsets are the ones printed in Doc/Software/BLE_Wire_v1.md section 4. */
 	zassert_equal(out[0], 0x01U, "off 0 ver");
@@ -298,6 +306,24 @@ ZTEST(lifegps_ble, test_status_offsets_match_wire_doc)
 	zassert_equal(out[97], 0xFFU, "off 96 mag_temp_cc high");
 	zassert_equal(out[98], 0x0FU, "off 98 sensor_flags");
 	zassert_equal(out[99], 0x00U, "off 99 reserved");
+
+	/* Appended block, offsets 100..115. */
+	zassert_equal(out[100], 0xC7U, "off 100 height_mm byte 0");
+	zassert_equal(out[101], 0xCFU, "off 100 height_mm byte 1");
+	zassert_equal(out[102], 0xFFU, "off 100 height_mm byte 2 (negative)");
+	zassert_equal(out[103], 0xFFU, "off 100 height_mm byte 3 (negative)");
+	zassert_equal(out[104], 106U, "off 104 h_acc_cm low");
+	zassert_equal(out[105], 0x00U, "off 104 h_acc_cm high");
+	zassert_equal(out[106], 62U, "off 106 v_acc_cm low");
+	zassert_equal(out[107], 0x00U, "off 106 v_acc_cm high");
+	zassert_equal(out[108], 100U, "off 108 s_acc_mms low");
+	zassert_equal(out[109], 0x00U, "off 108 s_acc_mms high");
+	zassert_equal(out[110], 0x30U, "off 110 head_acc_cdd low");
+	zassert_equal(out[111], 0x02U, "off 110 head_acc_cdd high");
+	zassert_equal(out[112], 0x32U, "off 112 hdop_1e2 low");
+	zassert_equal(out[113], 0x00U, "off 112 hdop_1e2 high");
+	zassert_equal(out[114], 0x46U, "off 114 vdop_1e2 low");
+	zassert_equal(out[115], 0x00U, "off 114 vdop_1e2 high");
 
 	/* A 240-byte ATT payload cannot be written into an 81-byte buffer. */
 	zassert_equal(lgps_ble_status_encode(&status, out, LGPS_BLE_STATUS_SIZE - 1U), -ENOMEM,
@@ -504,8 +530,10 @@ ZTEST(lifegps_ble, test_telemetry_generic_encoder_bounds)
 ZTEST(lifegps_ble, test_telemetry_sat_packet_layout)
 {
 	const struct lgps_ble_telem_sat_entry entries[2] = {
-		{ .gnss_id = 0U, .sv_id = 7U, .cno = 42U, .elev = 55, .state = 0x0CU },
-		{ .gnss_id = 3U, .sv_id = 21U, .cno = 28U, .elev = -12, .state = 0x01U },
+		{ .gnss_id = 0U, .sv_id = 7U, .sig_id = 0U, .cno = 42U, .elev = 55,
+		  .azim_d2 = 110U, .state = 0x3CU },
+		{ .gnss_id = 3U, .sv_id = 21U, .sig_id = 5U, .cno = 28U, .elev = -12,
+		  .azim_d2 = LGPS_BLE_TELEM_SAT_AZIM_UNKNOWN, .state = 0x01U },
 	};
 	uint8_t out[LGPS_BLE_TELEM_HEADER_SIZE + LGPS_BLE_TELEM_SAT_HEADER +
 		    (2U * LGPS_BLE_TELEM_SAT_ENTRY)];
@@ -514,18 +542,23 @@ ZTEST(lifegps_ble, test_telemetry_sat_packet_layout)
 	len = lgps_ble_telem_sat_encode(0x0005U, entries, 2U, 2U, out, sizeof(out));
 
 	zassert_equal(len, (int)sizeof(out), "satellite packet length");
+	zassert_equal(len, 22, "4 + 4 + 2*7: 232 bytes at 32 rows still fits one notify");
 	zassert_equal(out[0], 0x09U, "telemetry id SAT");
 	zassert_equal(out[4], 2U, "count");
 	zassert_equal(out[5], 2U, "total");
 	zassert_equal(out[6], 0U, "reserved low");
 	zassert_equal(out[8], 0U, "entry 0 gnssId");
 	zassert_equal(out[9], 7U, "entry 0 svId");
-	zassert_equal(out[10], 42U, "entry 0 cno");
-	zassert_equal(out[11], 55U, "entry 0 elev");
-	zassert_equal(out[12], 0x0CU, "entry 0 state (quality 4 | used)");
-	zassert_equal(out[13], 3U, "entry 1 gnssId");
-	zassert_equal(out[16], 0xF4U, "entry 1 elev is i8 (-12)");
-	zassert_equal(out[17], 0x01U, "entry 1 state");
+	zassert_equal(out[10], 0U, "entry 0 sigId (GPS L1C/A)");
+	zassert_equal(out[11], 42U, "entry 0 cno");
+	zassert_equal(out[12], 55U, "entry 0 elev");
+	zassert_equal(out[13], 110U, "entry 0 azim in 2-degree steps");
+	zassert_equal(out[14], 0x3CU, "entry 0 state (quality 4 | used | eph bit4 | alm bit5)");
+	zassert_equal(out[15], 3U, "entry 1 gnssId");
+	zassert_equal(out[17], 5U, "entry 1 sigId (BeiDou B1 Cp)");
+	zassert_equal(out[19], 0xF4U, "entry 1 elev is i8 (-12)");
+	zassert_equal(out[20], LGPS_BLE_TELEM_SAT_AZIM_UNKNOWN, "entry 1 without azimuth");
+	zassert_equal(out[21], 0x01U, "entry 1 state");
 
 	zassert_equal(lgps_ble_telem_sat_encode(0U, NULL, 1U, 1U, out, sizeof(out)), -EINVAL,
 		      "NULL entries with a non-zero count");

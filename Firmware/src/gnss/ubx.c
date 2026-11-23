@@ -67,6 +67,32 @@ enum ubx_nav_pvt_offset {
 	PVT_OFF_FLAGS3 = 78,
 };
 
+/* UBX-NAV-DOP payload offsets in bytes, table in section 3.15.4.1. */
+enum ubx_nav_dop_offset {
+	DOP_OFF_ITOW = 0,
+	DOP_OFF_GDOP = 4,
+	DOP_OFF_PDOP = 6,
+	DOP_OFF_TDOP = 8,
+	DOP_OFF_VDOP = 10,
+	DOP_OFF_HDOP = 12,
+	DOP_OFF_NDOP = 14,
+	DOP_OFF_EDOP = 16,
+};
+
+/* UBX-NAV-SIG payload offsets in bytes, table in section 3.15.15.1. */
+enum ubx_nav_sig_sig_offset {
+	SIG_OFF_GNSS_ID = 0,
+	SIG_OFF_SV_ID = 1,
+	SIG_OFF_SIG_ID = 2,
+	SIG_OFF_FREQ_ID = 3,
+	SIG_OFF_PR_RES = 4,
+	SIG_OFF_CNO = 6,
+	SIG_OFF_QUALITY = 7,
+	SIG_OFF_CORR_SOURCE = 8,
+	SIG_OFF_IONO_MODEL = 9,
+	SIG_OFF_SIG_FLAGS = 10,
+};
+
 /* UBX-RXM-PMREQ payload offsets in bytes, table in section 3.16.6. */
 enum ubx_rxm_pmreq_offset {
 	PMREQ_OFF_VERSION = 0,
@@ -524,8 +550,73 @@ int lgps_ubx_decode_nav_sat(const struct lgps_ubx_parser *parser, struct lgps_na
 		out[index].sv_id = group[1];
 		out[index].cno = group[2];
 		out[index].elev = (int8_t)group[3];
+		/* azim is I2 and the receiver leaves it out of range when the elevation is
+		 * unknown; keep it signed and let the App show an empty cell for -1.
+		 */
+		out[index].azim = (int16_t)get_le16(&group[LGPS_UBX_NAV_SAT_SV_OFF_AZIM]);
 		out[index].quality = (uint8_t)(flags & LGPS_UBX_NAV_SAT_QUALITY_MASK);
 		out[index].used = (flags & LGPS_UBX_NAV_SAT_FLAG_SV_USED) != 0U;
+		out[index].eph_avail = (flags & LGPS_UBX_NAV_SAT_FLAG_EPH_AVAIL) != 0U;
+		out[index].alm_avail = (flags & LGPS_UBX_NAV_SAT_FLAG_ALM_AVAIL) != 0U;
+	}
+
+	*count = stored;
+
+	return 0;
+}
+
+int lgps_ubx_decode_nav_dop(const struct lgps_ubx_parser *parser, struct lgps_ubx_nav_dop *out)
+{
+	if ((parser == NULL) || (out == NULL)) {
+		return -EINVAL;
+	}
+
+	if ((parser->msg_class != LGPS_UBX_CLASS_NAV) || (parser->msg_id != LGPS_UBX_ID_NAV_DOP) ||
+	    (parser->payload_len < LGPS_UBX_NAV_DOP_PAYLOAD_LEN)) {
+		return -EINVAL;
+	}
+
+	out->pdop_1e2 = get_le16(&parser->payload[DOP_OFF_PDOP]);
+	out->vdop_1e2 = get_le16(&parser->payload[DOP_OFF_VDOP]);
+	out->hdop_1e2 = get_le16(&parser->payload[DOP_OFF_HDOP]);
+
+	return 0;
+}
+
+int lgps_ubx_decode_nav_sig(const struct lgps_ubx_parser *parser, struct lgps_ubx_nav_sig *out,
+			    uint8_t max, uint8_t *count)
+{
+	uint8_t declared;
+	uint8_t available;
+	uint8_t stored;
+
+	if ((parser == NULL) || (out == NULL) || (count == NULL)) {
+		return -EINVAL;
+	}
+
+	if ((parser->msg_class != LGPS_UBX_CLASS_NAV) || (parser->msg_id != LGPS_UBX_ID_NAV_SIG) ||
+	    (parser->payload_len < LGPS_UBX_NAV_SIG_HEADER_LEN)) {
+		return -EINVAL;
+	}
+
+	/* Byte 5 is numSigs; the rest of the header is iTOW, version and reserved. */
+	declared = parser->payload[5];
+	available = (uint8_t)((parser->payload_len - LGPS_UBX_NAV_SIG_HEADER_LEN) /
+			      LGPS_UBX_NAV_SIG_SIG_LEN);
+	stored = min_u8(declared, available);
+	stored = min_u8(stored, max);
+
+	for (uint8_t index = 0U; index < stored; index++) {
+		const uint8_t *group = &parser->payload[LGPS_UBX_NAV_SIG_HEADER_LEN +
+						   ((size_t)index * LGPS_UBX_NAV_SIG_SIG_LEN)];
+		uint16_t flags = get_le16(&group[SIG_OFF_SIG_FLAGS]);
+
+		out[index].gnss_id = group[SIG_OFF_GNSS_ID];
+		out[index].sv_id = group[SIG_OFF_SV_ID];
+		out[index].sig_id = group[SIG_OFF_SIG_ID];
+		out[index].cno = group[SIG_OFF_CNO];
+		out[index].quality = (uint8_t)(group[SIG_OFF_QUALITY] & LGPS_UBX_NAV_SAT_QUALITY_MASK);
+		out[index].used = (flags & LGPS_UBX_NAV_SIG_FLAG_PR_USED) != 0U;
 	}
 
 	*count = stored;

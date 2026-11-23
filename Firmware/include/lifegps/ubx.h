@@ -24,8 +24,10 @@
 #define LGPS_UBX_TRAILER_LEN 2U
 
 #define LGPS_UBX_CLASS_NAV 0x01U
+#define LGPS_UBX_ID_NAV_DOP 0x04U
 #define LGPS_UBX_ID_NAV_PVT 0x07U
 #define LGPS_UBX_ID_NAV_SAT 0x35U
+#define LGPS_UBX_ID_NAV_SIG 0x43U
 #define LGPS_UBX_CLASS_RXM 0x02U
 #define LGPS_UBX_ID_RXM_PMREQ 0x41U
 #define LGPS_UBX_CLASS_ACK 0x05U
@@ -37,15 +39,32 @@
 #define LGPS_UBX_ID_CFG_VALDEL 0x8CU
 
 #define LGPS_UBX_NAV_PVT_PAYLOAD_LEN 92U
+#define LGPS_UBX_NAV_DOP_PAYLOAD_LEN 18U
 #define LGPS_UBX_RXM_PMREQ_PAYLOAD_LEN 16U
 
 /* UBX-NAV-SAT (section 3.15.13): 8-byte header, then 12 bytes per satellite. */
 #define LGPS_UBX_NAV_SAT_HEADER_LEN 8U
 #define LGPS_UBX_NAV_SAT_SV_LEN 12U
+/* Offset of `azim` (I2, deg) inside one 12-byte group. */
+#define LGPS_UBX_NAV_SAT_SV_OFF_AZIM 4U
 
-/* NAV-SAT flags (12-byte group, offset +8) bit masks and field positions. */
+/* UBX-NAV-SIG (section 3.15.15): 8-byte header, then 16 bytes per signal. */
+#define LGPS_UBX_NAV_SIG_HEADER_LEN 8U
+#define LGPS_UBX_NAV_SIG_SIG_LEN 16U
+/* sigFlags (X2 at group offset 10), section 3.15.15.1: bit 3 = prUsed. */
+#define LGPS_UBX_NAV_SIG_FLAG_PR_USED 0x0008U
+
+/* NAV-SAT flags (12-byte group, offset +8) bit masks and field positions.
+ *
+ * Table in interface description section 3.15.13.1: bits 2..0 qualityInd, bit 3
+ * svUsed, bits 5..4 health, bit 6 diffCorr, bit 7 smoothed, bits 10..8
+ * orbitSource, bit 11 ephAvail, bit 12 almAvail. The two availability bits are
+ * what the App table's "A E" columns need.
+ */
 #define LGPS_UBX_NAV_SAT_QUALITY_MASK 0x07U
 #define LGPS_UBX_NAV_SAT_FLAG_SV_USED 0x08U
+#define LGPS_UBX_NAV_SAT_FLAG_EPH_AVAIL 0x00000800U
+#define LGPS_UBX_NAV_SAT_FLAG_ALM_AVAIL 0x00001000U
 
 /*
  * UBX-CFG-VALSET / UBX-CFG-VALGET (interface description sections 3.10.5 and
@@ -104,6 +123,8 @@
  * in gnss.c, never an arbitrary key from the air.
  */
 #define LGPS_UBX_CFG_KEY_MSGOUT_NAV_SAT_UART1 0x20910016U /* U1, section 4.9.11 */
+#define LGPS_UBX_CFG_KEY_MSGOUT_NAV_DOP_UART1 0x20910039U /* U1, section 4.9.11, default 0 */
+#define LGPS_UBX_CFG_KEY_MSGOUT_NAV_SIG_UART1 0x20910346U /* U1, section 4.9.11, default 0 */
 #define LGPS_UBX_CFG_KEY_ANA_USE 0x10230001U              /* L, section 4.9.1 */
 #define LGPS_UBX_CFG_KEY_ANA_ORBMAXERR 0x30230002U        /* U2, section 4.9.1 */
 #define LGPS_UBX_CFG_KEY_DYNMODEL 0x20110021U             /* E1, section 4.9.13 */
@@ -363,8 +384,11 @@ struct lgps_nav_sat {
 	uint8_t sv_id;
 	uint8_t cno;    /* dBHz */
 	int8_t elev;    /* deg, unknown if out of range */
+	int16_t azim;   /* deg, -1 when the receiver leaves it unknown */
 	uint8_t quality; /* qualityInd 0..7, bit 3 of the flags field carries svUsed */
 	bool used;
+	bool eph_avail; /* flags bit 11 */
+	bool alm_avail; /* flags bit 12 */
 };
 
 /*
@@ -376,6 +400,51 @@ struct lgps_nav_sat {
  */
 int lgps_ubx_decode_nav_sat(const struct lgps_ubx_parser *parser, struct lgps_nav_sat *out,
 			    uint8_t max_sv, uint8_t *count);
+
+/*
+ * The three DOP fields the App shows next to pDOP (interface description section
+ * 3.15.4.1, 18-byte payload). pDOP itself comes from NAV-PVT; hDOP/vDOP only
+ * exist in this message, which is why the firmware has to ask for it separately.
+ */
+struct lgps_ubx_nav_dop {
+	uint16_t pdop_1e2;
+	uint16_t vdop_1e2;
+	uint16_t hdop_1e2;
+};
+
+/*
+ * Decode a UBX-NAV-DOP payload previously reported as MSG_READY.
+ *
+ * Returns 0 on success, -EINVAL on a NULL argument, another message class/id or a
+ * payload shorter than LGPS_UBX_NAV_DOP_PAYLOAD_LEN.
+ */
+int lgps_ubx_decode_nav_dop(const struct lgps_ubx_parser *parser, struct lgps_ubx_nav_dop *out);
+
+/*
+ * One tracked signal (interface description section 3.15.15.1, 16-byte group).
+ * NAV-SIG is the only message that names the signal behind a C/N0 value, so it is
+ * what turns the App's `CF` column into L1/E1/B1I/B1C instead of a guess.
+ */
+#define LGPS_UBX_NAV_SIG_MAX 32U
+
+struct lgps_ubx_nav_sig {
+	uint8_t gnss_id;
+	uint8_t sv_id;
+	uint8_t sig_id; /* new style signal id, section 1.5.4 */
+	uint8_t cno;    /* dBHz */
+	uint8_t quality; /* qualityInd 0..7 */
+	bool used;      /* sigFlags bit 3: pseudorange used in the solution */
+};
+
+/*
+ * Decode a UBX-NAV-SIG payload previously reported as MSG_READY.
+ *
+ * Returns 0 on success and writes the number of signals to @p count; at most
+ * @p max entries are stored. -EINVAL on a NULL argument, another message, or a
+ * payload too short for the declared signal count.
+ */
+int lgps_ubx_decode_nav_sig(const struct lgps_ubx_parser *parser, struct lgps_ubx_nav_sig *out,
+			    uint8_t max, uint8_t *count);
 
 /*
  * Build UBX-RXM-PMREQ (16-byte payload, version 0).

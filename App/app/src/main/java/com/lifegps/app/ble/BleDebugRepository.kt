@@ -94,7 +94,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
     // Latest telemetry: the firmware owns the attitude filter and the PDR, this
     // side only renders what it publishes.
     /** TTFF as text, refreshed by telemetry 0x01 at 1 Hz and kept across Status frames. */
-    private var latestTtff = "--"
+    private var latestTtff = ""
 
     private var latestQw = 1f
     private var latestQx = 0f
@@ -375,7 +375,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
             state = BleFrame.gnssStateName(frame.gnssState),
             fix = frame.gnssFixValid,
             sats = frame.satellites,
-            hdop = frame.pdop1e2 / 100.0,
+            pdop = frame.pdop1e2 / 100.0,
             latitude = latitude,
             longitude = longitude,
             altitudeM = frame.hmslMm / 1000.0,
@@ -388,6 +388,18 @@ class BleDebugRepository(context: Context) : DebugRepository {
             // arrives once per second, so the last known rows are kept instead of
             // being blanked - otherwise the table flickers between rows and empty.
             satellites = _gnss.value.satellites,
+            satTotal = _gnss.value.satTotal,
+            // v1.2 block. A 0.3.0 firmware sends 100 bytes and every value below
+            // stays 0 with hasAccuracy = false, so the UI blanks the cell instead of
+            // claiming "0.0 m" accuracy.
+            hasAccuracy = frame.hasAccuracyFields,
+            ellipsoidAltM = frame.heightMm / 1000.0,
+            hAccM = frame.hAccCm / 100.0,
+            vAccM = frame.vAccCm / 100.0,
+            sAccMs = frame.sAccMms / 1000.0,
+            bAccDeg = frame.headAccCdd / 100.0,
+            hdop = frame.hdop1e2 / 100.0,
+            vdop = frame.vdop1e2 / 100.0,
         )
 
         val acc = frame.accLsb
@@ -487,25 +499,28 @@ class BleDebugRepository(context: Context) : DebugRepository {
             nmeaStarts = telemetry.nmeaStarts,
             rxDropped = telemetry.rxDropped,
             baud = telemetry.baud,
+            ttffNote = ttffNote(telemetry),
         )
     }
 
     /**
-     * TTFF as the log would read it. The power-off time is what turns a bare number
-     * into a diagnosis: a few seconds after a 3 minute break is a hot start (V_BCKP
-     * kept the almanac), 30 s after two hours away is as good as a cold start.
+     * TTFF in GPSTest's shape (`N sec`, empty until the first fix). The power-off
+     * time stays available as [ttffNote]: a few seconds after a 3 minute break is a
+     * hot start (V_BCKP kept the almanac), 30 s after two hours away is as good as
+     * a cold start.
      */
     private fun formatTtff(telemetry: GnssTelemetry): String {
-        if (telemetry.ttffMs == 0L) return "等待首次定位"
+        if (telemetry.ttffMs == 0L) return ""
+        // GPSTest prints whole seconds only: `formatTtff()` = "N sec".
+        return "${telemetry.ttffMs / 1000L} sec"
+    }
 
-        val seconds = "%.1f s".format(telemetry.ttffMs / 1000.0)
-        val kind = when {
-            telemetry.powerOffMs == GnssTelemetry.UINT32_MAX -> "上电后首次"
-            telemetry.powerOffMs < 30 * 60_000L ->
-                "热启动，断电 ${formatSpan(telemetry.powerOffMs)}"
-            else -> "冷启动，断电 ${formatSpan(telemetry.powerOffMs)}"
-        }
-        return "$seconds（$kind）"
+    /** Which kind of start the TTFF above belongs to; GPSTest has no such field. */
+    private fun ttffNote(telemetry: GnssTelemetry): String = when {
+        telemetry.ttffMs == 0L -> "等待首次定位"
+        telemetry.powerOffMs == GnssTelemetry.UINT32_MAX -> "上电后首次"
+        telemetry.powerOffMs < 30 * 60_000L -> "热启动，断电 ${formatSpan(telemetry.powerOffMs)}"
+        else -> "冷启动，断电 ${formatSpan(telemetry.powerOffMs)}"
     }
 
     private fun formatSpan(ms: Long): String = when {
@@ -530,8 +545,11 @@ class BleDebugRepository(context: Context) : DebugRepository {
                     system = gnssSystemName(row.gnssId),
                     cno = row.cno,
                     elevation = row.elevation,
-                    azimuth = -1,
+                    azimuth = row.azimuth,
                     used = row.used,
+                    ephAvail = row.ephAvail,
+                    almAvail = row.almAvail,
+                    carrier = carrierLabel(row.gnssId, row.sigId),
                     tracking = row.qualityLabel,
                 )
             }
@@ -541,7 +559,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
          * reports, which is a larger number. Overwriting both would make the
          * header pill flip between the two rates.
          */
-        _gnss.update { it.copy(satellites = rows) }
+        _gnss.update { it.copy(satellites = rows, satTotal = telemetry.total) }
     }
 
     private fun onNmea(telemetry: NmeaTelemetry) {
@@ -588,6 +606,57 @@ class BleDebugRepository(context: Context) : DebugRepository {
         5 -> "QZSS"
         6 -> "GLO"
         else -> "ID$gnssId"
+    }
+
+    /**
+     * Carrier-frequency label for the GPSTest `CF` column.
+     *
+     * The wire carries the u-blox signal id (interface description §1.5.4), not a
+     * frequency, because the receiver is what knows which signal a C/N0 belongs
+     * to. Labels match GPSTest's `CarrierFreqUtils` for the same signal.
+     * `-1` (no NAV-SIG row) and unknown ids render as "".
+     */
+    private fun carrierLabel(gnssId: Int, sigId: Int): String = when (gnssId) {
+        // GPS: 0 L1C/A, 3 L2 CL, 4 L2 CM, 6 L5 I, 7 L5 Q
+        0 -> when (sigId) {
+            0 -> "L1"
+            3, 4 -> "L2"
+            6, 7 -> "L5"
+            else -> ""
+        }
+        // SBAS: L1C/A only
+        1 -> if (sigId == 0) "L1" else ""
+        // Galileo: 0 E1 C, 1 E1 B, 3/4 E5a, 5/6 E5b
+        2 -> when (sigId) {
+            0, 1 -> "E1"
+            3, 4 -> "E5a"
+            5, 6 -> "E5b"
+            else -> ""
+        }
+        // BeiDou: 0/1 B1I, 2/3 B2I, 5/6 B1C, 7/8 B2a
+        3 -> when (sigId) {
+            0, 1 -> "B1I"
+            2, 3 -> "B2I"
+            5, 6 -> "B1C"
+            7, 8 -> "B2a"
+            else -> ""
+        }
+        // QZSS: 0 L1C/A, 1 L1S, 4/5 L2, 8/9 L5
+        5 -> when (sigId) {
+            0, 1 -> "L1"
+            4, 5 -> "L2"
+            8, 9 -> "L5"
+            else -> ""
+        }
+        // GLONASS: 0 L1OF, 2 L2OF
+        6 -> when (sigId) {
+            0 -> "L1"
+            2 -> "L2"
+            else -> ""
+        }
+        // NavIC: 0 L5 A
+        7 -> if (sigId == 0) "L5" else ""
+        else -> ""
     }
 
     // --- GNSS debug session and receiver settings ------------------------------
@@ -935,13 +1004,12 @@ class BleDebugRepository(context: Context) : DebugRepository {
             emptyList()
         }
         _flash.value = FlashStatus(
-            // FLASH_INFO reports capacity/records only; no JEDEC, used bytes,
-            // beacon count or journal state exists in the v1 response.
+            // FLASH_INFO reports capacity/records only; no JEDEC, used bytes or
+            // journal state exists in the v1 response.
             jedec = "",
             usedMb = 0f,
             totalMb = info.flashBytes / (1024f * 1024f),
             recordCount = info.recordsWritten.toInt(),
-            beaconCount = 0,
             journal = "",
             sectors = sectors,
         )
@@ -1995,14 +2063,14 @@ class BleDebugRepository(context: Context) : DebugRepository {
         state = "OFF",
         fix = false,
         sats = 0,
-        hdop = 0.0,
+        pdop = 0.0,
         latitude = 0.0,
         longitude = 0.0,
         altitudeM = 0.0,
         speedKmh = 0.0,
         headingDeg = 0.0,
         utcTime = "--",
-        ttff = "--",
+        ttff = "",
         satellites = emptyList(),
     )
 
@@ -2058,7 +2126,6 @@ class BleDebugRepository(context: Context) : DebugRepository {
         usedMb = 0f,
         totalMb = 0f,
         recordCount = 0,
-        beaconCount = 0,
         journal = "",
         sectors = emptyList(),
     )
@@ -2124,6 +2191,6 @@ class BleDebugRepository(context: Context) : DebugRepository {
         const val LIFEGPS_EPOCH_UNIX_OFFSET_S = 1_577_836_800L
 
         val UTC_FORMAT: DateTimeFormatter =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneOffset.UTC)
+            DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneOffset.UTC)
     }
 }

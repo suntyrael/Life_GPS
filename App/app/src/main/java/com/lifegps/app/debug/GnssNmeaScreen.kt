@@ -25,7 +25,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lifegps.app.ui.components.CardBlock
 import com.lifegps.app.ui.components.DebugScaffold
 import com.lifegps.app.ui.components.EmptyHint
+import com.lifegps.app.ui.components.MetricRow
+import com.lifegps.app.ui.theme.Amber
 import com.lifegps.app.ui.theme.Cyan
+import com.lifegps.app.ui.theme.Green
+import com.lifegps.app.ui.theme.Red
 import com.lifegps.app.ui.theme.TextDim
 import com.lifegps.app.ui.theme.TextMain
 
@@ -43,6 +47,7 @@ fun GnssNmeaScreen(
 ) {
     val lines by repo.nmea.collectAsStateWithLifecycle()
     val debug by repo.gnssDebug.collectAsStateWithLifecycle()
+    val link by repo.gnssLink.collectAsStateWithLifecycle()
     var paused by remember { mutableStateOf(false) }
     var talker by remember { mutableStateOf<String?>(null) }
 
@@ -89,11 +94,27 @@ fun GnssNmeaScreen(
                         if (debug.nmea) {
                             "正在转发（调试会话剩余 ${debug.remainingSeconds} s，保留最近 ${lines.size} 句）"
                         } else {
-                            "未开启。NMEA 直通属于调试会话的一部分，请在「GPS 状态」页开启调试会话（保持上电 + NMEA）。"
+                            "未开启。NMEA 直通属于调试会话的一部分，请在「GPS」页右上角点「保持上电」（会话 300 s）。"
                         },
                         color = if (debug.nmea) TextMain else TextDim,
                         fontSize = 12.sp,
                     )
+                }
+            }
+
+            /* The receive-path counters live here, not on the GPS page: they answer
+             * "is the receiver talking at all", which is the question this page is
+             * for. Same source as before, telemetry group 0x01.
+             */
+            item {
+                CardBlock("接收链路") {
+                    MetricRow("判定", link.verdict, if (link.ubxFrames > 0) Green else TextDim)
+                    MetricRow("接收字节", "${link.rxBytes}")
+                    MetricRow("UBX 帧", "${link.ubxFrames}", if (link.ubxFrames > 0) Green else TextDim)
+                    MetricRow("校验错误", "${link.badChecksum}", if (link.badChecksum > 0) Red else TextDim)
+                    MetricRow("NMEA 起始符", "${link.nmeaStarts}")
+                    MetricRow("环形丢字节", "${link.rxDropped}", if (link.rxDropped > 0) Amber else TextDim)
+                    MetricRow("波特率", if (link.baud > 0) "${link.baud} 8N1" else "—")
                 }
             }
 

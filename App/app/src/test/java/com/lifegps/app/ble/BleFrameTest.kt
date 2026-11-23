@@ -146,8 +146,16 @@ class BleFrameTest {
         assertEquals(94, StatusOffset.IMU_TEMP_CC)
         assertEquals(96, StatusOffset.MAG_TEMP_CC)
         assertEquals(98, StatusOffset.SENSOR_FLAGS)
+        assertEquals(100, StatusOffset.HEIGHT_MM)
+        assertEquals(104, StatusOffset.H_ACC_CM)
+        assertEquals(106, StatusOffset.V_ACC_CM)
+        assertEquals(108, StatusOffset.S_ACC_MMS)
+        assertEquals(110, StatusOffset.HEAD_ACC_CDD)
+        assertEquals(112, StatusOffset.HDOP_1E2)
+        assertEquals(114, StatusOffset.VDOP_1E2)
         assertEquals(82, StatusOffset.BASE_SIZE)
-        assertEquals(100, StatusOffset.SIZE)
+        assertEquals(100, StatusOffset.MOTION_SIZE)
+        assertEquals(116, StatusOffset.SIZE)
     }
 
     @Test
@@ -190,6 +198,15 @@ class BleFrameTest {
         writeU16(raw, StatusOffset.IMU_TEMP_CC, 3456)
         writeU16(raw, StatusOffset.MAG_TEMP_CC, -500)
         raw[StatusOffset.SENSOR_FLAGS] = 0x0F
+
+        // v1.2 block: ellipsoid height and the accuracy/DOP pair.
+        writeU32(raw, StatusOffset.HEIGHT_MM, 0xFFFFCFC7L) // -12345 mm
+        writeU16(raw, StatusOffset.H_ACC_CM, 106)
+        writeU16(raw, StatusOffset.V_ACC_CM, 62)
+        writeU16(raw, StatusOffset.S_ACC_MMS, 100)
+        writeU16(raw, StatusOffset.HEAD_ACC_CDD, 560)
+        writeU16(raw, StatusOffset.HDOP_1E2, 50)
+        writeU16(raw, StatusOffset.VDOP_1E2, 70)
 
         val status = BleFrame.parseStatus(raw)
         assertNotNull(status)
@@ -236,6 +253,14 @@ class BleFrameTest {
         assertTrue(status.imuTempValid)
         assertTrue(status.magTempValid)
         assertTrue(status.baroTempValid)
+        assertTrue(status.accuracyFields)
+        assertEquals(-12345, status.heightMm)
+        assertEquals(106, status.hAccCm)
+        assertEquals(62, status.vAccCm)
+        assertEquals(100, status.sAccMms)
+        assertEquals(560, status.headAccCdd)
+        assertEquals(50, status.hdop1e2)
+        assertEquals(70, status.vdop1e2)
 
         // Old firmware stops after ring_records: the extension stays zero/invalid.
         val baseOnly = BleFrame.parseStatus(raw.copyOf(StatusOffset.BASE_SIZE))
@@ -243,12 +268,26 @@ class BleFrameTest {
         baseOnly!!
         assertFalse(baseOnly.hasMotionFields)
         assertFalse(baseOnly.hasTempFields)
+        assertFalse(baseOnly.hasAccuracyFields)
         assertEquals(listOf(0, 0, 0), baseOnly.gravityMg)
         assertEquals(listOf(0, 0, 0), baseOnly.linearMg)
         assertEquals(0, baseOnly.imuTempCc)
         assertEquals(0, baseOnly.magTempCc)
         assertEquals(0, baseOnly.sensorFlags)
         assertFalse(baseOnly.gravityValid)
+
+        // 0.3.0 firmware stops after sensor_flags: motion fields are present, the
+        // accuracy/DOP block is not, and its offsets are never read past the body.
+        val motionOnly = BleFrame.parseStatus(raw.copyOf(StatusOffset.MOTION_SIZE))
+        assertNotNull(motionOnly)
+        motionOnly!!
+        assertTrue(motionOnly.hasMotionFields)
+        assertFalse(motionOnly.hasAccuracyFields)
+        assertEquals(3456, motionOnly.imuTempCc)
+        assertEquals(0, motionOnly.heightMm)
+        assertEquals(0, motionOnly.hAccCm)
+        assertEquals(0, motionOnly.hdop1e2)
+        assertEquals(0, motionOnly.vdop1e2)
 
         // Anything shorter than the base contract is "missing", never partially parsed.
         assertNull(BleFrame.parseStatus(raw.copyOf(StatusOffset.BASE_SIZE - 1)))
@@ -488,15 +527,19 @@ class BleFrameTest {
         payload[1] = 2                     // total
         payload[SatTelemetry.HEADER + 0] = 0     // gnssId GPS
         payload[SatTelemetry.HEADER + 1] = 7     // svId
-        payload[SatTelemetry.HEADER + 2] = 42    // cno
-        payload[SatTelemetry.HEADER + 3] = 55    // elev
-        payload[SatTelemetry.HEADER + 4] = 0x0C  // quality 4 | used
+        payload[SatTelemetry.HEADER + 2] = 0     // sigId L1C/A
+        payload[SatTelemetry.HEADER + 3] = 42    // cno
+        payload[SatTelemetry.HEADER + 4] = 55    // elev
+        payload[SatTelemetry.HEADER + 5] = 110   // azim in 2-degree steps = 220 deg
+        payload[SatTelemetry.HEADER + 6] = 0x0C  // quality 4 | used
         val second = SatTelemetry.HEADER + SatTelemetry.SIZE_ENTRY
         payload[second + 0] = 3
         payload[second + 1] = 21
-        payload[second + 2] = 28
-        payload[second + 3] = 0xF4.toByte()      // -12
-        payload[second + 4] = 0x01               // quality 1, not used
+        payload[second + 2] = 5                  // B1 Cp
+        payload[second + 3] = 28
+        payload[second + 4] = 0xF4.toByte()      // -12
+        payload[second + 5] = SatTelemetry.AZIM_UNKNOWN.toByte()
+        payload[second + 6] = 0x01               // quality 1, not used
 
         val sat = BleFrame.parseSatTelemetry(payload)
         assertNotNull(sat)
@@ -505,12 +548,16 @@ class BleFrameTest {
         assertEquals(2, sat.rows.size)
         assertEquals(0, sat.rows[0].gnssId)
         assertEquals(7, sat.rows[0].svId)
+        assertEquals(0, sat.rows[0].sigId)
         assertEquals(42, sat.rows[0].cno)
         assertEquals(55, sat.rows[0].elevation)
+        assertEquals(110, sat.rows[0].azimD2)
+        assertEquals(220, sat.rows[0].azimuth)
         assertEquals(4, sat.rows[0].quality)
         assertTrue(sat.rows[0].used)
         assertEquals("跟踪", sat.rows[0].qualityLabel)
         assertEquals(-12, sat.rows[1].elevation)
+        assertEquals(-1, sat.rows[1].azimuth)
         assertFalse(sat.rows[1].used)
         assertEquals("搜索中", sat.rows[1].qualityLabel)
 
@@ -521,6 +568,31 @@ class BleFrameTest {
         assertEquals(2, truncated!!.rows.size)
 
         assertNull(BleFrame.parseSatTelemetry(ByteArray(3)))
+    }
+
+    @Test
+    fun parseSatTelemetryStillReadsTheLegacyFiveByteRow() {
+        // 0.3.0 firmware: 5-byte rows without sig_id / azim. The row width is
+        // inferred from the payload length, so the same parser keeps working.
+        val legacy = ByteArray(SatTelemetry.HEADER + SatTelemetry.LEGACY_ENTRY)
+        legacy[0] = 1
+        legacy[1] = 1
+        legacy[SatTelemetry.HEADER + 0] = 0      // gnssId
+        legacy[SatTelemetry.HEADER + 1] = 12     // svId
+        legacy[SatTelemetry.HEADER + 2] = 31     // cno
+        legacy[SatTelemetry.HEADER + 3] = 61     // elev
+        legacy[SatTelemetry.HEADER + 4] = 0x09   // quality 1 | used
+
+        val sat = BleFrame.parseSatTelemetry(legacy)
+        assertNotNull(sat)
+        sat!!
+        assertEquals(1, sat.rows.size)
+        assertEquals(12, sat.rows[0].svId)
+        assertEquals(31, sat.rows[0].cno)
+        assertEquals(61, sat.rows[0].elevation)
+        assertEquals(-1, sat.rows[0].sigId)
+        assertEquals(-1, sat.rows[0].azimuth)
+        assertTrue(sat.rows[0].used)
     }
 
     @Test

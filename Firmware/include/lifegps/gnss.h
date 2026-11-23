@@ -110,14 +110,25 @@ enum lgps_gnss_state {
 /* Largest satellite list the firmware caches (UBX-NAV-SAT, section 3.15.13). */
 #define LGPS_GNSS_SAT_MAX 32U
 
+/* Unknown signal id: no NAV-SIG row matched this satellite yet. */
+#define LGPS_GNSS_SAT_SIG_ID_UNKNOWN 0xFFU
+
 /* One satellite for the App table (UBX-NAV-SAT, interface description 3.15.13). */
 struct lgps_gnss_sat {
 	uint8_t gnss_id;
 	uint8_t sv_id;
 	uint8_t cno;
 	int8_t elev;
+	int16_t azim; /* deg, -1 = not reported */
+	/* Signal behind the C/N0 above, taken from NAV-SIG (section 1.5.4 numbering).
+	 * LGPS_GNSS_SAT_SIG_ID_UNKNOWN when NAV-SIG has no row for this satellite.
+	 */
+	uint8_t sig_id;
 	uint8_t quality;
 	bool used;
+	/* NAV-SAT flags bits 11/12: the App table's "A" and "E" columns. */
+	bool eph_avail;
+	bool alm_avail;
 };
 
 /* A whitelisted receiver configuration item with its current value. */
@@ -137,14 +148,26 @@ struct lgps_gnss_fix {
 	uint8_t satellites;
 	/* NAV-PVT carries pDOP, not hDOP (hDOP only exists in UBX-NAV-DOP). */
 	uint16_t pdop_1e2;
+	/* UBX-NAV-DOP (0x01 0x04), requested at the same rate as NAV-PVT because the
+	 * 18-byte message is the only place hDOP/vDOP exist. 0 = not reported.
+	 */
+	uint16_t hdop_1e2;
+	uint16_t vdop_1e2;
 	int32_t lat_e7;
 	int32_t lon_e7;
-	int32_t hmsl_mm;
-	/* NAV-PVT vAcc: 1-sigma vertical accuracy estimate in mm. The barometric
-	 * calibration uses it to refuse a height that is noisier than the sensor it
-	 * is supposed to calibrate (see lifegps/baro.h).
+	/* NAV-PVT height: ellipsoid height (HAE), the value GPSTest prints as "Alt".
+	 * hMSL is the mean-sea-level height, printed as "Alt (MSL)".
 	 */
+	int32_t height_mm;
+	int32_t hmsl_mm;
+	/* NAV-PVT 1-sigma accuracy estimates. vAcc is also what the barometric
+	 * calibration uses to refuse a height noisier than the sensor it calibrates
+	 * (see lifegps/baro.h); hAcc/sAcc/headAcc are reported to the App as is.
+	 */
+	uint32_t h_acc_mm;
 	uint32_t v_acc_mm;
+	uint32_t s_acc_mms;
+	uint32_t head_acc_1e5;
 	uint16_t speed_cms;
 	uint16_t heading_ddeg;
 	uint32_t utc_epoch_s; /* Life_GPS epoch, 0 when unknown */

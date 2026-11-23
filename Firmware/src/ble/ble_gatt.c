@@ -405,6 +405,27 @@ static ssize_t control_write(struct bt_conn *conn, const struct bt_gatt_attr *at
 
 /* --- command dispatch ------------------------------------------------------ */
 
+/* Clamp the 1-sigma accuracies into the wire fields.
+ *
+ * NAV-PVT reports them as u32 millimetres; the Status frame has u16 centimetres
+ * for the heights and u16 raw units for speed/heading. A value the field cannot
+ * hold (including the receiver's "unknown" 0xFFFFFFFF) becomes 0 = "not
+ * available", never a wrapped or saturated number the host would believe.
+ */
+static uint16_t cm_from_mm(uint32_t mm)
+{
+	if ((mm == 0U) || (mm > ((uint32_t)0xFFFFU * 10U))) {
+		return 0U;
+	}
+
+	return (uint16_t)((mm + 5U) / 10U);
+}
+
+static uint16_t narrow_u16(uint32_t value)
+{
+	return (value > 0xFFFFU) ? 0U : (uint16_t)value;
+}
+
 static void status_from_fix(struct lgps_ble_status *status,
 			    const struct lgps_telemetry_snapshot *snap)
 {
@@ -501,6 +522,23 @@ static void status_from_fix(struct lgps_ble_status *status,
 
 	status->imu_temp_cc = snap->imu_temp_valid ? snap->imu_temp_cc : 0;
 	status->mag_temp_cc = snap->mag_temp_valid ? snap->mag_temp_cc : 0;
+
+	/* Appended height/accuracy/DOP block (offsets 100..115).
+	 *
+	 * Only the fix block owns these numbers: without a fix the receiver's NAV-PVT
+	 * accuracies are meaningless (they are the full-scale value) and the DOP pair
+	 * is already zeroed by the GNSS thread. The 1-sigma values are converted to
+	 * the width the wire has room for; anything that does not fit becomes 0.
+	 */
+	if (snap->fix.valid) {
+		status->height_mm = snap->fix.height_mm;
+		status->h_acc_cm = cm_from_mm(snap->fix.h_acc_mm);
+		status->v_acc_cm = cm_from_mm(snap->fix.v_acc_mm);
+		status->s_acc_mms = narrow_u16(snap->fix.s_acc_mms);
+		status->head_acc_cdd = narrow_u16(snap->fix.head_acc_1e5 / 1000U);
+		status->hdop_1e2 = snap->fix.hdop_1e2;
+		status->vdop_1e2 = snap->fix.vdop_1e2;
+	}
 }
 
 static uint8_t reply_not_supported(uint8_t opcode)
@@ -671,7 +709,20 @@ static uint8_t cmd_poi_mark(uint8_t *payload, size_t capacity, size_t *out_len)
 	sample.speed_cms = fix.speed_cms;
 	sample.heading_ddeg = fix.heading_ddeg;
 	sample.step_count = (uint16_t)atomic_get(&published_steps);
-	sample.hdop_d1 = (uint8_t)((fix.pdop_1e2 + 5U) / 10U);
+	/* The record field is hDOP (traj.h: hdop_d1, 0.1 resolution). Before 0.4.0 the
+	 * firmware had no hDOP at all and stored pDOP/10 here; NAV-DOP now supplies the
+	 * real value, and pDOP is only the fallback for the first epochs after a fix
+	 * where NAV-DOP has not arrived yet. The u8 cast is clamped, not wrapped.
+	 */
+	{
+		uint16_t dop_1e2 = (fix.hdop_1e2 != 0U) ? fix.hdop_1e2 : fix.pdop_1e2;
+
+		if (dop_1e2 > 2550U) {
+			dop_1e2 = 2550U;
+		}
+
+		sample.hdop_d1 = (uint8_t)((dop_1e2 + 5U) / 10U);
+	}
 	sample.satellites = fix.satellites;
 	sample.status_flags = (uint8_t)(LGPS_FLAG_FIX_VALID | LGPS_FLAG_POI_EVENT);
 	sample.battery_pct = 0U;

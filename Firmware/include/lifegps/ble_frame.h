@@ -38,7 +38,7 @@
  * a phone reads cannot disagree with the layout it parses.
  */
 #define LGPS_BLE_FW_VERSION_MAJOR 0U
-#define LGPS_BLE_FW_VERSION_MINOR 3U
+#define LGPS_BLE_FW_VERSION_MINOR 4U
 #define LGPS_BLE_FW_VERSION_PATCH 0U
 
 /* Largest command frame: header + max payload + crc16. */
@@ -116,11 +116,13 @@ enum lgps_ble_status_code {
  */
 #define LGPS_BLE_SOC_UNKNOWN 0xFFU
 
-/* Status body: 0..81 as v1, then the appended motion/temperature block. The size
- * grew from 82 to 100; older hosts must treat a short body as "fields absent".
+/* Status body: 0..81 as v1, then the appended motion/temperature block, then the
+ * appended height/accuracy/DOP block. The size grew 82 -> 100 -> 116; older hosts
+ * must treat a short body as "fields absent" instead of reading past it.
  */
 #define LGPS_BLE_STATUS_BASE_SIZE 82U
-#define LGPS_BLE_STATUS_SIZE 100U
+#define LGPS_BLE_STATUS_MOTION_SIZE 100U
+#define LGPS_BLE_STATUS_SIZE 116U
 #define LGPS_BLE_CAPS_SIZE 24U
 #define LGPS_BLE_FLASH_INFO_SIZE 24U
 #define LGPS_BLE_LOG_MAX_PACKET 240U
@@ -144,10 +146,20 @@ enum lgps_ble_status_code {
 #define LGPS_BLE_TELEM_GNSS_PAYLOAD 42U
 #define LGPS_BLE_TELEM_GNSS_SIZE (LGPS_BLE_TELEM_HEADER_SIZE + LGPS_BLE_TELEM_GNSS_PAYLOAD)
 
-/* Satellite table: 8-byte payload header, then 5 bytes per satellite. */
+/* Satellite table: 4-byte payload header, then 7 bytes per satellite.
+ *
+ * 0.4.0 grew the row from 5 to 7 bytes: `sig_id` names the signal behind
+ * the C/N0 (L1/E1/B1I/B1C) and `azim` is the azimuth, both of which the App's
+ * CF/Azim columns need. 4 + 4 + 7*32 = 232 bytes still fits one notification at
+ * MTU 247 (the log channel already sends up to 240).
+ */
 #define LGPS_BLE_TELEM_SAT_HEADER 4U
-#define LGPS_BLE_TELEM_SAT_ENTRY 5U
+#define LGPS_BLE_TELEM_SAT_ENTRY 7U
 #define LGPS_BLE_TELEM_SAT_MAX 32U
+/* Azimuth is carried in whole 2-degree steps (0..180, 0xFF = not reported); the
+ * App multiplies by 2, so the table shows the receiver's value within 1 degree.
+ */
+#define LGPS_BLE_TELEM_SAT_AZIM_UNKNOWN 0xFFU
 #define LGPS_BLE_TELEM_SAT_PAYLOAD(sat_count)                                                 \
 	((uint16_t)(LGPS_BLE_TELEM_SAT_HEADER + ((uint16_t)(sat_count) * LGPS_BLE_TELEM_SAT_ENTRY)))
 
@@ -210,9 +222,17 @@ struct lgps_ble_telem_pdr {
 struct lgps_ble_telem_sat_entry {
 	uint8_t gnss_id;
 	uint8_t sv_id;
+	/* Signal id behind the C/N0 below (UBX signal identifiers, section 1.5.4);
+	 * 0xFF when NAV-SIG has no row for this satellite.
+	 */
+	uint8_t sig_id;
 	uint8_t cno;
 	int8_t elev;
-	uint8_t state; /* bits 2..0 qualityInd, bit 3 svUsed */
+	/* Azimuth in whole 2-degree steps, LGPS_BLE_TELEM_SAT_AZIM_UNKNOWN when the
+	 * receiver reports none.
+	 */
+	uint8_t azim_d2;
+	uint8_t state; /* bits 2..0 qualityInd, bit 3 svUsed, bit 4 eph, bit 5 alm */
 };
 
 struct lgps_ble_telem_gnss {
@@ -283,6 +303,17 @@ struct lgps_ble_status {
 	int16_t imu_temp_cc;
 	int16_t mag_temp_cc;
 	uint8_t sensor_flags;
+	/* Appended block (offsets 100..115): the height and the accuracy/DOP values
+	 * GPSTest shows next to the fix. Each width is the smallest whose full range
+	 * is physically meaningful, and 0 always means "not reported".
+	 */
+	int32_t height_mm;    /* ellipsoid height (HAE) */
+	uint16_t h_acc_cm;    /* 1-sigma horizontal accuracy, cm */
+	uint16_t v_acc_cm;    /* 1-sigma vertical accuracy, cm */
+	uint16_t s_acc_mms;   /* speed accuracy, mm/s */
+	uint16_t head_acc_cdd; /* heading accuracy, 0.01 deg */
+	uint16_t hdop_1e2;    /* from UBX-NAV-DOP */
+	uint16_t vdop_1e2;    /* from UBX-NAV-DOP */
 };
 
 /* Parsed view of an incoming command frame; payload points into the caller's
@@ -314,7 +345,7 @@ struct lgps_ble_flash_info {
 };
 
 /**
- * Calibration commands (Doc/Software/BLE_Wire_v1.md 6.3~6.5, protocol 0.2.0).
+ * Calibration commands (Doc/Software/BLE_Wire_v1.md 6.3~6.5; originally added in protocol 0.2.0).
  *
  * The bodies are byte-wise like every other payload in this header; the field
  * order below is the offset map and nothing here may be reordered without a
