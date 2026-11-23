@@ -31,6 +31,7 @@ import com.lifegps.app.debug.PoiMarker
 import com.lifegps.app.debug.SatelliteInfo
 import com.lifegps.app.debug.ScannedDevice
 import com.lifegps.app.debug.TrailPoint
+import com.lifegps.app.debug.sortSatellites
 import java.io.File
 import java.time.Instant
 import java.time.LocalTime
