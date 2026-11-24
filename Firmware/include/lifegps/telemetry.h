@@ -21,7 +21,7 @@
  *        9.2/9.3; rel_alt_mm is metres above the reference, alt_msl_mm is above
  *        mean sea level and only exists after a GNSS height calibration)
  *   SYS  bat_mv=<n|---> chg=<0|1> keys=<k1>,<k2> zupt=<locked|move> var_mg2=<n>
- *        steps=<n> ring_seq=<n> ring_rec=<n>
+ *        steps=<n> ring_seq=<n> ring_rec=<n> clk=<HH:MM:SS+08:00|---> sync=<0|1>
  *
  * Two conventions keep the frame readable when hardware is missing:
  * - a value that is not available is printed as "---" and the field count never

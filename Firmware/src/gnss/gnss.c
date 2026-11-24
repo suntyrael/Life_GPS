@@ -67,6 +67,8 @@ static struct lgps_gnss_fix current_fix;
 static enum lgps_gnss_state gnss_state = LGPS_GNSS_STATE_OFF;
 static uint32_t state_since_ms;
 static uint32_t last_pvt_log_ms;
+/* One bad UTC must not turn into a WRN at the PVT rate; one line per 5 s. */
+static uint32_t last_clock_reject_ms;
 static uint32_t next_reconfig_ms;
 static uint32_t current_baud = LGPS_GNSS_BAUD_DEFAULT;
 static bool baud_fallback_done;
@@ -1658,6 +1660,20 @@ static void handle_nav_pvt(const struct lgps_nav_pvt *pvt)
 	}
 	current_fix.utc_epoch_s = epoch_s;
 	current_fix.last_pvt_uptime_ms = now_ms;
+
+	/* Every valid UTC re-anchors the software clock; losing the fix later does
+	 * not stop it. lgps_time_sync() rejects an implausible value (0, or more
+	 * than ten years away from the running clock) and leaves the clock alone.
+	 */
+	if (utc_ok && !lgps_time_sync(epoch_s, now_ms)) {
+		if ((last_clock_reject_ms == 0U) ||
+		    ((uint32_t)(now_ms - last_clock_reject_ms) >= GNSS_PVT_LOG_PERIOD_MS)) {
+			last_clock_reject_ms = now_ms;
+			LOG_WRN("GNSS UTC %u rejected as clock anchor (implausible epoch "
+				"or more than ten years from the running clock)",
+				(unsigned int)epoch_s);
+		}
+	}
 
 	/* TTFF of this power cycle, and a receiver that answers is not wedged. */
 	if (fix_valid) {

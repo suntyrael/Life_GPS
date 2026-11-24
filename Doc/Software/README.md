@@ -7,6 +7,7 @@
 | [BLE_Protocol.md](BLE_Protocol.md) | 协议基线（最终由 `protocol/lifegps_protocol.yaml` 生成） | 草案 |
 | [GNSS_Accuracy_Tuning.md](GNSS_Accuracy_Tuning.md) | 不改硬件怎么加卫星数、压 h/v/p DOP（依据 MAX-M10S 集成手册/接口说明） | v0.1 |
 | [../../Firmware/README.md](../../Firmware/README.md) | 固件工程、Zephyr 构建、分区表 | 规划 |
+| [TIME.md](../../Firmware/docs/TIME.md) | 系统时钟（软件 RTC）：编译时间播种、GNSS UTC 同步、本地时区、诊断字段 | v0.1 |
 | [../../protocol/README.md](../../protocol/README.md) | 协议 SSOT、校验器、Golden Vectors | v0.1 |
 
 ## 软件工作流

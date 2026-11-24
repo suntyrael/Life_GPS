@@ -215,6 +215,7 @@ PDR 需要四个量，缺一不可：姿态/航向（四元数，且要用地磁
 | | `keys` | 消抖后的电平 | `K1,K2`，`1` = 按下（用来看按键是否卡死） |
 | | `zupt` `var_mg2` | ZUPT 状态机 | `locked/move` 与加速度模长方差（mg²） |
 | | `steps` `ring_seq` `ring_rec` | PDR / 暂存环形 | 步数、当前扇区序号、累计写入条数 |
+| | `clk` `sync` | 软件时钟（`src/util/time.c`） | 本地 `HH:MM:SS+08:00`，以及本次上电是否已由 GNSS UTC 同步（`1`）；未同步时来自镜像编译时间，语义见 [TIME.md](TIME.md) |
 
 不可用的值统一打印 `---`，字段个数与顺序永不变动，便于 `awk`/`grep` 取用：
 
@@ -229,7 +230,7 @@ grep 'lgps_tele: GNSS' log.txt | sed -n 's/.*fix=\([0-9]*\).*/\1/p'
 [00:00:08.225] <inf> lgps_tele: IMU id=0x6b acc_lsb=115,-25,9016 gyro_lsb=19,-13,-151 acc_g=0.014,-0.003,1.100 gyro_dps=0.67,-0.46,-5.29
 [00:00:08.240] <inf> lgps_tele: MAG lsb=1234,-567,890 ut=185.1,-85.0,133.5
 [00:00:08.255] <inf> lgps_tele: BARO press_pa=101177 temp_C=23.00 rel_alt_mm=--- alt_msl_mm=--- press_raw=7277088 temp_raw=8535808 (TPG compensated, BMP388 9.2/9.3)
-[00:00:08.270] <inf> lgps_tele: SYS bat_mv=4021 chg=1 keys=0,0 zupt=move var_mg2=30 steps=0 ring_seq=1 ring_rec=0
+[00:00:08.270] <inf> lgps_tele: SYS bat_mv=4021 chg=1 keys=0,0 zupt=move var_mg2=30 steps=0 ring_seq=1 ring_rec=0 clk=15:20:01+08:00 sync=0
 ```
 
 > 样例中的数值仅示意字段位置；真实值必须由板子产生。`BARO` 一行的 `press_raw`/`temp_raw` 取自

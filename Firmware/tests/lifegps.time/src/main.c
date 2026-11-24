@@ -205,4 +205,141 @@ ZTEST(lifegps_time, test_to_utc_rejects_null)
 	zassert_equal(lgps_time_to_utc(0U, NULL), -EINVAL, "NULL output");
 }
 
-ZTEST_SUITE(lifegps_time, NULL, NULL, NULL, NULL, NULL);
+static void time_before(void *fixture)
+{
+	ARG_UNUSED(fixture);
+
+	/* Every clock test starts from the same state as a fresh boot. */
+	lgps_time_init();
+}
+
+ZTEST(lifegps_time, test_build_time_parse)
+{
+	struct lgps_utc utc;
+	uint32_t epoch_s = 0U;
+
+	zassert_equal(lgps_time_build_utc(NULL), -EINVAL, "NULL output");
+	zassert_ok(lgps_time_build_utc(&utc), "__DATE__/__TIME__ must parse");
+
+	zassert_true(utc.year >= 2020U, "build date is inside the Life_GPS epoch");
+	zassert_true(utc.year <= 2156U, "build date is inside the Life_GPS epoch");
+	zassert_true((utc.month >= 1U) && (utc.month <= 12U), "month range");
+	zassert_true((utc.day >= 1U) && (utc.day <= 31U), "day range");
+	zassert_true(utc.hour <= 23U, "hour range");
+	zassert_true(utc.minute <= 59U, "minute range");
+	zassert_true(utc.second <= 59U, "second range");
+
+	zassert_ok(lgps_time_from_utc(&utc, &epoch_s), "parsed date must convert");
+	zassert_equal(lgps_time_now_utc_s(0U), epoch_s,
+		      "boot value is the build timestamp at uptime 0");
+}
+
+ZTEST(lifegps_time, test_clock_runs_from_build_then_gnss_overrides)
+{
+	struct lgps_utc build;
+	uint32_t build_s = 0U;
+
+	zassert_ok(lgps_time_build_utc(&build), "build timestamp");
+	zassert_ok(lgps_time_from_utc(&build, &build_s), "build epoch");
+
+	zassert_false(lgps_time_synced(), "seeding from build time is not a sync");
+	zassert_equal(lgps_time_now_utc_s(0U), build_s, "seed value");
+	zassert_equal(lgps_time_now_utc_s(4999U), build_s + 4U, "sub-second uptime");
+	zassert_equal(lgps_time_now_utc_s(5000U), build_s + 5U, "five seconds later");
+
+	zassert_true(lgps_time_sync(200000000U, 60000U), "GNSS override accepted");
+	zassert_true(lgps_time_synced(), "accepted sync sets the flag");
+	zassert_equal(lgps_time_now_utc_s(60000U), 200000000U, "anchored exactly");
+	zassert_equal(lgps_time_now_utc_s(60999U), 200000000U, "still the same second");
+	zassert_equal(lgps_time_now_utc_s(61000U), 200000001U, "clock advances");
+
+	/* Losing the fix only stops re-anchoring; the clock keeps running. */
+	zassert_equal(lgps_time_now_utc_s(161000U), 200000101U,
+		      "no fix, still running on uptime");
+}
+
+ZTEST(lifegps_time, test_local_offset)
+{
+	uint32_t utc_s = 200000000U;
+	struct lgps_utc local;
+	uint32_t expected_local_s;
+
+	zassert_equal(lgps_time_local_offset_s(), LGPS_TIME_LOCAL_OFFSET_DEFAULT_S,
+		      "default offset is UTC+8");
+	zassert_true(lgps_time_sync(utc_s, 1000U), "sync for local-time test");
+
+	zassert_equal(lgps_time_now_local_s(1000U),
+		      utc_s + (uint32_t)LGPS_TIME_LOCAL_OFFSET_DEFAULT_S, "default local");
+
+	zassert_ok(lgps_time_set_local_offset_s(0), "UTC offset");
+	zassert_equal(lgps_time_now_local_s(1000U), utc_s, "UTC local time");
+
+	zassert_ok(lgps_time_set_local_offset_s(3600), "UTC+1");
+	zassert_equal(lgps_time_now_local_s(1000U), utc_s + 3600U, "UTC+1 local time");
+
+	zassert_ok(lgps_time_set_local_offset_s(-7200), "UTC-2");
+	zassert_equal(lgps_time_now_local_s(1000U), utc_s - 7200U, "UTC-2 local time");
+
+	zassert_ok(lgps_time_set_local_offset_s(LGPS_TIME_LOCAL_OFFSET_MIN_S),
+		   "minimum offset accepted");
+	zassert_ok(lgps_time_set_local_offset_s(LGPS_TIME_LOCAL_OFFSET_MAX_S),
+		   "maximum offset accepted");
+
+	expected_local_s = utc_s + (uint32_t)LGPS_TIME_LOCAL_OFFSET_MAX_S;
+	zassert_true(lgps_time_now_local(&local, 1000U), "decompose local time");
+	zassert_equal((uint32_t)local.year, 2026U, "local year");
+	zassert_equal((uint32_t)local.month, 5U, "local month");
+	zassert_equal((uint32_t)local.day, 4U, "local day");
+
+	zassert_equal(lgps_time_set_local_offset_s(LGPS_TIME_LOCAL_OFFSET_MIN_S - 1),
+		      -EINVAL, "below UTC-12h rejected");
+	zassert_equal(lgps_time_set_local_offset_s(LGPS_TIME_LOCAL_OFFSET_MAX_S + 1),
+		      -EINVAL, "above UTC+14h rejected");
+	zassert_false(lgps_time_now_local(NULL, 1000U), "NULL local output");
+	zassert_equal(lgps_time_now_local_s(1000U), expected_local_s,
+		      "offset stays at the last accepted value");
+}
+
+ZTEST(lifegps_time, test_uptime_wraparound)
+{
+	/* Anchor just before the 32-bit uptime wrap: the unsigned difference is
+	 * 0x1000 ms = 4 s, not a huge number.
+	 */
+	zassert_true(lgps_time_sync(220000000U, 0xFFFFFF00U), "wrap anchor");
+	zassert_equal(lgps_time_now_utc_s(0xFFFFFF00U), 220000000U, "at the anchor");
+	zassert_equal(lgps_time_now_utc_s(0xFFFFFFFFU), 220000000U, "255 ms later");
+	zassert_equal(lgps_time_now_utc_s(0x00000000U), 220000000U, "256 ms later");
+	zassert_equal(lgps_time_now_utc_s(0x00000F00U), 220000004U,
+		      "0x1000 ms across the wrap is four seconds");
+}
+
+ZTEST(lifegps_time, test_sync_rejects_invalid_anchor)
+{
+	struct lgps_utc build;
+	uint32_t build_s = 0U;
+	uint32_t before_s;
+
+	zassert_ok(lgps_time_build_utc(&build), "build timestamp");
+	zassert_ok(lgps_time_from_utc(&build, &build_s), "build epoch");
+
+	before_s = lgps_time_now_utc_s(0U);
+	zassert_equal(before_s, build_s, "still on the build clock");
+
+	zassert_false(lgps_time_sync(0U, 1000U), "epoch 0 is not a date");
+	zassert_false(lgps_time_synced(), "rejected sync leaves the flag clear");
+	zassert_equal(lgps_time_now_utc_s(0U), before_s, "and leaves the clock alone");
+
+	/* Both cases are anchored at uptime 0 so the running clock is exactly
+	 * build_s: at uptime 1000 the clock has already advanced by one second and
+	 * the "+1" case would sit exactly on the limit instead of one past it.
+	 */
+	zassert_false(lgps_time_sync(build_s + (uint32_t)LGPS_TIME_MAX_SYNC_SKEW_S + 1U, 0U),
+		      "more than ten years away is untrusted");
+	zassert_false(lgps_time_synced(), "second rejection leaves the flag clear");
+
+	zassert_true(lgps_time_sync(build_s + (uint32_t)LGPS_TIME_MAX_SYNC_SKEW_S, 0U),
+		     "exactly ten years is still accepted");
+	zassert_true(lgps_time_synced(), "accepted boundary sync");
+}
+
+ZTEST_SUITE(lifegps_time, NULL, NULL, time_before, NULL, NULL);

@@ -46,6 +46,7 @@
 #include <lifegps/nav.h>
 #include <lifegps/power_sm.h>
 #include <lifegps/telemetry.h>
+#include <lifegps/time.h>
 #include <lifegps/wdt.h>
 
 LOG_MODULE_REGISTER(lgps_main, LOG_LEVEL_INF);
@@ -609,6 +610,12 @@ int main(void)
 	bool bat_valid = false;
 	bool imu_valid = false;
 	struct lgps_imu_sample sample = { 0 };
+
+	/* Seed the software clock from the image build time before anything can
+	 * stamp a record. The logging backend is already up (Zephyr initialises it
+	 * before main), so this also precedes every timestamped log line below.
+	 */
+	lgps_time_init();
 
 	lgps_diag_banner();
 

@@ -12,8 +12,10 @@
 #include <math.h>
 #include <stdint.h>
 
+#include <lifegps/diag.h>
 #include <lifegps/gnss.h>
 #include <lifegps/telemetry.h>
+#include <lifegps/time.h>
 
 LOG_MODULE_REGISTER(lgps_tele, LOG_LEVEL_INF);
 
@@ -86,6 +88,30 @@ static const char *fmt_cc(char *buf, size_t size, int16_t cc, bool valid)
 	return buf;
 }
 
+/* Local wall clock as HH:MM:SS+08:00, or "---" before the clock is usable. */
+static const char *fmt_clock(char *buf, size_t size)
+{
+	struct lgps_utc local;
+	int32_t offset_s;
+	uint32_t magnitude_s;
+	char sign;
+
+	if (!lgps_time_now_local(&local, lgps_diag_uptime_ms())) {
+		return "---";
+	}
+
+	offset_s = lgps_time_local_offset_s();
+	sign = (offset_s < 0) ? '-' : '+';
+	magnitude_s = (uint32_t)((offset_s < 0) ? -offset_s : offset_s);
+
+	(void)snprintk(buf, size, "%02u:%02u:%02u%c%02u:%02u", (unsigned int)local.hour,
+		       (unsigned int)local.minute, (unsigned int)local.second, sign,
+		       (unsigned int)(magnitude_s / 3600U),
+		       (unsigned int)((magnitude_s % 3600U) / 60U));
+
+	return buf;
+}
+
 void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 {
 	char pdop[8];
@@ -98,6 +124,7 @@ void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 	char imu_txt[10];
 	char mag_txt[10];
 	char baro_txt[10];
+	char clk_txt[24];
 
 	if (snap == NULL) {
 		return;
@@ -237,21 +264,23 @@ void lgps_telemetry_emit(const struct lgps_telemetry_snapshot *snap)
 
 	if (snap->bat_valid) {
 		LOG_INF("SYS bat_mv=%d chg=%d keys=%u,%u zupt=%s var_mg2=%d steps=%u ring_seq=%u "
-			"ring_rec=%u",
+			"ring_rec=%u clk=%s sync=%u",
 			snap->bat_mv, snap->charging ? 1 : 0,
 			(unsigned int)(snap->key_levels & 0x01U),
 			(unsigned int)((snap->key_levels >> 1) & 0x01U),
 			snap->zupt_locked ? "locked" : "move",
 			(int32_t)var_mg2_int(snap), snap->steps,
-			snap->ring_sector_seq, snap->ring_records);
+			snap->ring_sector_seq, snap->ring_records,
+			fmt_clock(clk_txt, sizeof(clk_txt)), lgps_time_synced() ? 1U : 0U);
 	} else {
 		LOG_INF("SYS bat_mv=--- chg=%d keys=%u,%u zupt=%s var_mg2=%d steps=%u ring_seq=%u "
-			"ring_rec=%u",
+			"ring_rec=%u clk=%s sync=%u",
 			snap->charging ? 1 : 0,
 			(unsigned int)(snap->key_levels & 0x01U),
 			(unsigned int)((snap->key_levels >> 1) & 0x01U),
 			snap->zupt_locked ? "locked" : "move",
 			(int32_t)var_mg2_int(snap), snap->steps,
-			snap->ring_sector_seq, snap->ring_records);
+			snap->ring_sector_seq, snap->ring_records,
+			fmt_clock(clk_txt, sizeof(clk_txt)), lgps_time_synced() ? 1U : 0U);
 	}
 }
