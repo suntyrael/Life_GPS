@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.MaterialTheme
@@ -200,6 +201,26 @@ fun GnssStatusScreen(
 
 /* --- GPSTest status block ------------------------------------------------- */
 
+/*
+ * Width of one value column, fixed on purpose.
+ *
+ * The block is rewritten at 10 Hz and every cell is a plain Text, so its width
+ * used to follow its own content: a latitude gaining a digit, an accuracy pair
+ * that the receiver did not report in this epoch going empty, a TTFF growing to
+ * three digits, or "# Sats" switching from "15/29" to "15/29/32" all moved the
+ * second label column - and everything right of it - by a few dp, ten times a
+ * second. That is the "slight
+ * jitter" the GPS screen showed once a fix came up: the numbers were fine, the
+ * layout was not.
+ *
+ * The widths are sized for the longest value each column can hold in 12sp
+ * monospace: "-108.8730074°" (13 chars) on the left, "3.8/2.7 m" / "15/29/32"
+ * (9 chars) on the right. Values never wrap (maxLines = 1, softWrap = false), so
+ * a row can never change height either.
+ */
+private val VALUE_COLUMN_1_WIDTH = 108.dp
+private val VALUE_COLUMN_2_WIDTH = 76.dp
+
 @Composable
 private fun LabelColumn1() {
     Column(
@@ -237,7 +258,11 @@ private fun LabelColumn2() {
 
 @Composable
 private fun ValueColumn1(gnss: GnssStatus) {
-    Column(Modifier.padding(top = 2.dp, bottom = 2.dp)) {
+    Column(
+        Modifier
+            .padding(top = 2.dp, bottom = 2.dp)
+            .width(VALUE_COLUMN_1_WIDTH),
+    ) {
         LocationValue(if (gnss.fix) fmtLatLon(gnss.latitude) else "")
         LocationValue(if (gnss.fix) fmtLatLon(gnss.longitude) else "")
         // Ellipsoid height (HAE) - GPSTest's "Alt", not the MSL row below.
@@ -251,7 +276,11 @@ private fun ValueColumn1(gnss: GnssStatus) {
 
 @Composable
 private fun ValueColumn2(gnss: GnssStatus, inView: Int) {
-    Column(Modifier.padding(top = 2.dp, bottom = 2.dp)) {
+    Column(
+        Modifier
+            .padding(top = 2.dp, bottom = 2.dp)
+            .width(VALUE_COLUMN_2_WIDTH),
+    ) {
         LocationValue(if (gnss.utcTime == "--") "" else gnss.utcTime)
         LocationValue(gnss.ttff)
         // GPSTest `%1$.1f/%2$.1f m`: horizontal first, vertical second.
@@ -291,6 +320,10 @@ private fun LocationValue(text: String) {
         fontSize = 12.sp,
         fontFamily = FontFamily.Monospace,
         color = TextMain,
+        // One line, never wrapped: a value that does not fit is clipped, it must
+        // not wrap into a second line and move every row below it.
+        maxLines = 1,
+        softWrap = false,
         modifier = Modifier.padding(vertical = 2.dp),
     )
 }
