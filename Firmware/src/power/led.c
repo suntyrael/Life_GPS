@@ -15,7 +15,12 @@
 LOG_MODULE_REGISTER(lgps_led, LOG_LEVEL_INF);
 
 #define LED_STACK_SIZE 1024
-#define LED_PRIORITY 7
+/*
+ * Cooperative priority keeps GPIO edge timing independent of main (priority 0)
+ * and GNSS (priority 6): each wake-up only writes three GPIO output registers
+ * and blocks again until the next edge.
+ */
+#define LED_PRIORITY K_PRIO_COOP(7)
 
 static const struct gpio_dt_spec led_specs[LGPS_LED_COLOR_COUNT] = {
 	[LGPS_LED_RED] = GPIO_DT_SPEC_GET(DT_NODELABEL(led_red), gpios),
@@ -83,8 +88,14 @@ K_MSGQ_DEFINE(led_pattern_queue, sizeof(enum lgps_led_pattern), 4, 4);
  */
 static atomic_t led_generation;
 
-/* Cancellation is honoured inside a blink, so a 500 ms step cannot delay it. */
-#define LED_CANCEL_SLICE_MS 50U
+/*
+ * Semaphore pair:
+ *   led_ready_sem  holds the thread until lgps_led_init() has configured all pins.
+ *   led_cancel_sem wakes a running step immediately on lgps_led_off_all() instead
+ *                  of slicing each blink into 50 ms relative sleeps.
+ */
+static K_SEM_DEFINE(led_ready_sem, 0, 1);
+static K_SEM_DEFINE(led_cancel_sem, 0, 1);
 
 int lgps_led_set(enum lgps_led_color color, bool on)
 {
@@ -117,6 +128,7 @@ int lgps_led_off_all(void)
 	 */
 	(void)atomic_inc(&led_generation);
 	k_msgq_purge(&led_pattern_queue);
+	k_sem_give(&led_cancel_sem);
 
 	for (uint8_t color = 0U; color < LGPS_LED_COLOR_COUNT; color++) {
 		int err = lgps_led_set((enum lgps_led_color)color, false);
@@ -142,30 +154,32 @@ static bool cancelled(atomic_val_t generation)
 }
 
 /*
- * Sleep in slices so a cancellation is noticed within LED_CANCEL_SLICE_MS.
- * Returns false when the sequence must stop.
+ * Block until @p deadline_ms (k_uptime_get_32() domain) or until lgps_led_off_all()
+ * increments led_generation and signals led_cancel_sem. Signed subtraction keeps
+ * the comparison valid across the 49-day 32-bit wrap.
  */
-static bool sleep_unless_cancelled(uint16_t duration_ms, atomic_val_t generation)
+static bool wait_until_or_cancelled(uint32_t deadline_ms, atomic_val_t generation)
 {
-	uint16_t remaining_ms = duration_ms;
-
-	while (remaining_ms > 0U) {
-		uint16_t slice_ms = (uint16_t)MIN((uint32_t)remaining_ms, LED_CANCEL_SLICE_MS);
-
-		k_msleep((int32_t)slice_ms);
-		remaining_ms = (uint16_t)(remaining_ms - slice_ms);
+	for (;;) {
+		int32_t remaining_ms;
 
 		if (cancelled(generation)) {
 			return false;
 		}
-	}
 
-	return true;
+		remaining_ms = (int32_t)(deadline_ms - k_uptime_get_32());
+		if (remaining_ms <= 0) {
+			return !cancelled(generation);
+		}
+
+		(void)k_sem_take(&led_cancel_sem, K_MSEC(remaining_ms));
+	}
 }
 
 static void run_sequence(enum lgps_led_pattern pattern, atomic_val_t generation)
 {
 	const struct lgps_led_sequence *seq = &sequences[pattern];
+	uint32_t deadline_ms = k_uptime_get_32();
 
 	for (uint8_t i = 0U; i < seq->step_count; i++) {
 		const struct lgps_led_step *step = &seq->steps[i];
@@ -176,16 +190,21 @@ static void run_sequence(enum lgps_led_pattern pattern, atomic_val_t generation)
 			}
 
 			apply_colors(step->colors);
+			deadline_ms += step->on_ms;
 
-			if (!sleep_unless_cancelled(step->on_ms, generation)) {
+			if ((step->on_ms > 0U) &&
+			    !wait_until_or_cancelled(deadline_ms, generation)) {
 				goto done;
 			}
 
 			apply_colors(0U);
 
-			if ((step->off_ms > 0U) &&
-			    !sleep_unless_cancelled(step->off_ms, generation)) {
-				goto done;
+			if (step->off_ms > 0U) {
+				deadline_ms += step->off_ms;
+
+				if (!wait_until_or_cancelled(deadline_ms, generation)) {
+					goto done;
+				}
 			}
 		}
 	}
@@ -201,6 +220,10 @@ static void led_thread(void *arg1, void *arg2, void *arg3)
 	ARG_UNUSED(arg2);
 	ARG_UNUSED(arg3);
 
+	if (k_sem_take(&led_ready_sem, K_FOREVER) != 0) {
+		return;
+	}
+
 	for (;;) {
 		enum lgps_led_pattern pattern;
 		atomic_val_t generation;
@@ -208,6 +231,8 @@ static void led_thread(void *arg1, void *arg2, void *arg3)
 		if (k_msgq_get(&led_pattern_queue, &pattern, K_FOREVER) != 0) {
 			continue;
 		}
+
+		(void)k_sem_take(&led_cancel_sem, K_NO_WAIT);
 
 		/* Snapshot before playing: an off_all() that lands later must win. */
 		generation = atomic_get(&led_generation);
@@ -255,6 +280,8 @@ int lgps_led_init(void)
 	}
 
 	LOG_INF("LED ready: RED=P1.10 GREEN=P2.07 BLUE=P1.12, active high");
+
+	k_sem_give(&led_ready_sem);
 
 	return 0;
 }

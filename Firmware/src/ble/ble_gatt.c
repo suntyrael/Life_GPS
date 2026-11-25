@@ -1441,6 +1441,9 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	link_up = true;
 	log_conn_params(conn);
 
+	/* README section 9.1: single 50 ms blue flash confirms BLE connection ready. */
+	(void)lgps_led_play(LGPS_LED_PATTERN_BLE_READY);
+
 #if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
 	{
 		int ret = bt_conn_le_data_len_update(conn, BT_LE_DATA_LEN_PARAM_MAX);
@@ -1760,11 +1763,6 @@ int lgps_ble_init(void)
 	}
 
 	LOG_INF("advertising as %s", device_name);
-
-	/* README section 9.1: one blue flash means "advertising, ready to pair".
-	 * It is the only feedback the device can give without a screen.
-	 */
-	(void)lgps_led_play(LGPS_LED_PATTERN_BLE_READY);
 
 	return 0;
 }
