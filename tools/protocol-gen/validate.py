@@ -231,6 +231,147 @@ def check_telemetry(doc: dict) -> None:
         seen.add(item_id)
 
 
+def check_day_package_extras(doc: dict) -> None:
+    day = (doc.get("packages") or {}).get("day") or {}
+    if not isinstance(day, dict):
+        return
+    hs = day.get("heatshrink")
+    if hs is not None:
+        if not isinstance(hs, dict):
+            error("packages.day.heatshrink must be a mapping")
+        else:
+            w = hs.get("window_sz2")
+            la = hs.get("lookahead_sz2")
+            if not isinstance(w, int) or not (4 <= w <= 15):
+                error(f"packages.day.heatshrink.window_sz2 invalid: {w!r}")
+            if not isinstance(la, int) or not (3 <= la < (w if isinstance(w, int) else 0)):
+                error(f"packages.day.heatshrink.lookahead_sz2 invalid: {la!r}")
+    codec_values = day.get("codec_values")
+    if codec_values is not None:
+        if not isinstance(codec_values, dict) or not codec_values:
+            error("packages.day.codec_values must be a non-empty mapping")
+        else:
+            seen_vals: set[int] = set()
+            for cname, cval in codec_values.items():
+                if not isinstance(cval, int) or not 0 <= cval <= 0xFFFF:
+                    error(f"packages.day.codec_values.{cname} invalid: {cval!r}")
+                elif cval in seen_vals:
+                    error(f"packages.day.codec_values duplicates value {cval}")
+                else:
+                    seen_vals.add(cval)
+
+
+def check_status_codes(doc: dict) -> None:
+    codes = doc.get("status_codes")
+    if codes is None:
+        return
+    seen_codes: set[int] = set()
+    seen_names: set[str] = set()
+    for item in codes:
+        if not isinstance(item, dict):
+            error("status_codes entry must be a mapping")
+            continue
+        code = item.get("code")
+        name = item.get("name", "<unnamed>")
+        if not isinstance(code, int) or not 0 <= code <= 0xFF:
+            error(f"status_code {name!r} has invalid code {code!r}")
+        elif code in seen_codes:
+            error(f"status_code 0x{code:02X} is duplicated")
+        else:
+            seen_codes.add(code)
+        if name in seen_names:
+            error(f"status_code name {name!r} is duplicated")
+        seen_names.add(name)
+
+
+def check_caps_bits(doc: dict) -> None:
+    caps = doc.get("caps_bits")
+    if caps is None:
+        return
+    seen_bits: set[int] = set()
+    seen_names: set[str] = set()
+    for item in caps:
+        if not isinstance(item, dict):
+            error("caps_bits entry must be a mapping")
+            continue
+        bit = item.get("bit")
+        name = item.get("name", "<unnamed>")
+        if not isinstance(bit, int) or not 0 <= bit <= 31:
+            error(f"caps_bits {name!r} has invalid bit {bit!r}")
+        elif bit in seen_bits:
+            error(f"caps_bits bit {bit} is duplicated")
+        else:
+            seen_bits.add(bit)
+        if name in seen_names:
+            error(f"caps_bits name {name!r} is duplicated")
+        seen_names.add(name)
+
+
+def check_config_tlv(doc: dict) -> None:
+    tlvs = doc.get("config_tlv")
+    if tlvs is None:
+        return
+    seen_keys: set[int] = set()
+    seen_names: set[str] = set()
+    for item in tlvs:
+        if not isinstance(item, dict):
+            error("config_tlv entry must be a mapping")
+            continue
+        key = item.get("key")
+        name = item.get("name", "<unnamed>")
+        ftype = item.get("type")
+        if not isinstance(key, int) or not 1 <= key <= 0xFF:
+            error(f"config_tlv {name!r} has invalid key {key!r}")
+        elif key in seen_keys:
+            error(f"config_tlv key 0x{key:02X} is duplicated")
+        else:
+            seen_keys.add(key)
+        if name in seen_names:
+            error(f"config_tlv name {name!r} is duplicated")
+        seen_names.add(name)
+        if ftype not in TYPE_SIZES:
+            error(f"config_tlv {name!r} has unknown type {ftype!r}")
+
+
+def check_adv_manufacturer_data(doc: dict) -> None:
+    adv = doc.get("adv_manufacturer_data")
+    if adv is None:
+        return
+    if not isinstance(adv, dict):
+        error("adv_manufacturer_data must be a mapping")
+        return
+    if not isinstance(adv.get("company_id"), int) or not 0 <= adv["company_id"] <= 0xFFFF:
+        error(f"adv_manufacturer_data.company_id invalid: {adv.get('company_id')!r}")
+    check_fields("adv_manufacturer_data", adv.get("fields"), adv.get("size"))
+
+
+def check_status_extension(doc: dict) -> None:
+    ext = doc.get("status_extension")
+    if ext is None:
+        return
+    if not isinstance(ext, dict):
+        error("status_extension must be a mapping")
+        return
+    acc_size = ext.get("accuracy_size")
+    sync_size = ext.get("sync_size")
+    if not isinstance(acc_size, int) or not isinstance(sync_size, int) or sync_size < acc_size:
+        error("status_extension sizes are invalid")
+        return
+    cursor = acc_size
+    for field in ext.get("sync_fields") or []:
+        name = field.get("name", "<unnamed>")
+        ftype = field.get("type")
+        offset = field.get("offset")
+        if ftype not in TYPE_SIZES:
+            error(f"status_extension.{name} has unknown type {ftype!r}")
+            continue
+        if offset != cursor:
+            error(f"status_extension.{name} offset {offset}, expected {cursor}")
+        cursor += TYPE_SIZES[ftype]
+    if cursor != sync_size:
+        error(f"status_extension sync_fields end at {cursor}, declared {sync_size}")
+
+
 def main() -> int:
     doc = load(PROTOCOL)
     check_meta(doc)
@@ -239,9 +380,15 @@ def main() -> int:
     check_records(doc)
     check_frames(doc)
     check_packages(doc)
+    check_day_package_extras(doc)
     check_streams(doc)
     check_commands(doc)
     check_telemetry(doc)
+    check_status_codes(doc)
+    check_caps_bits(doc)
+    check_config_tlv(doc)
+    check_adv_manufacturer_data(doc)
+    check_status_extension(doc)
 
     if errors:
         print("Protocol validation FAILED:")
@@ -254,7 +401,9 @@ def main() -> int:
         f"{len(doc.get('records') or {})} records, "
         f"{len(doc.get('uuids') or {})} UUIDs, "
         f"{len(doc.get('commands') or [])} commands, "
-        f"{len(doc.get('streams') or [])} streams"
+        f"{len(doc.get('streams') or [])} streams, "
+        f"{len(doc.get('status_codes') or [])} status_codes, "
+        f"{len(doc.get('config_tlv') or [])} config_tlv"
     )
     return 0
 

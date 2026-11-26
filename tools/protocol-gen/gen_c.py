@@ -268,9 +268,27 @@ def emit_packages(lines: list[str], packages: dict) -> None:
         lines.append(f"/* {name} package: header {header_size} B, footer {footer_size} B. */")
         lines.append(f'#define {prefix}MAGIC_ASCII "{magic_ascii}"')
         lines.append(f"#define {prefix}MAGIC_LEN {len(magic_ascii)}")
+        if isinstance(package.get("header_ver"), int):
+            lines.append(f"#define {prefix}HEADER_VER {package['header_ver']}")
         lines.append(f"#define {prefix}HEADER_SIZE {header_size}")
+        if isinstance(package.get("header_crc16_len"), int):
+            lines.append(f"#define {prefix}HEADER_CRC16_LEN {package['header_crc16_len']}")
         lines.append(f"#define {prefix}FOOTER_SIZE {footer_size}")
         lines.append(f'#define {prefix}CODEC "{codec}"')
+        codec_values = package.get("codec_values") or {}
+        for cname in sorted(codec_values):
+            cval = codec_values[cname]
+            if not isinstance(cval, int):
+                fail(f"packages.{name}.codec_values.{cname} must be an integer")
+            lines.append(f"#define {prefix}CODEC_{macro(cname)} {cval}U")
+        hs = package.get("heatshrink")
+        if isinstance(hs, dict):
+            w = hs.get("window_sz2")
+            la = hs.get("lookahead_sz2")
+            if not isinstance(w, int) or not isinstance(la, int):
+                fail(f"packages.{name}.heatshrink requires integer window_sz2 and lookahead_sz2")
+            lines.append(f"#define {prefix}HS_WINDOW_SZ2 {w}U")
+            lines.append(f"#define {prefix}HS_LOOKAHEAD_SZ2 {la}U")
         for field_name, _c_type, offset, _field_size in header_layout:
             lines.append(f"#define {prefix}HEADER_OFF_{macro(field_name)} {offset}")
         for field_name, _c_type, offset, _field_size in footer_layout:
@@ -279,7 +297,7 @@ def emit_packages(lines: list[str], packages: dict) -> None:
 
 
 def emit_enums(lines: list[str], doc: dict) -> None:
-    """Emit the opcode, stream id and telemetry id enumerations."""
+    """Emit the opcode, stream id, telemetry id and status code enumerations."""
     streams = doc.get("streams") or []
     if streams:
         lines.append("enum lgps_stream_id {")
@@ -322,9 +340,89 @@ def emit_enums(lines: list[str], doc: dict) -> None:
         lines.append("};")
         lines.append("")
 
+    status_codes = doc.get("status_codes") or []
+    if status_codes:
+        lines.append("enum lgps_proto_status_code {")
+        for item in status_codes:
+            if not isinstance(item, dict):
+                fail("status_codes entries must be mappings")
+            name = item.get("name")
+            code = item.get("code")
+            if not isinstance(name, str) or not isinstance(code, int):
+                fail("status_codes entries need a name and an integer code")
+            lines.append(f"\tLGPS_PROTO_STATUS_{macro(name)} = {hex_literal(code)},")
+        lines.append("};")
+        lines.append("")
+
+    caps_bits = doc.get("caps_bits") or []
+    if caps_bits:
+        lines.append("/* GET_CAPS.caps capability bits. */")
+        for item in caps_bits:
+            if not isinstance(item, dict):
+                fail("caps_bits entries must be mappings")
+            name = item.get("name")
+            bit = item.get("bit")
+            if not isinstance(name, str) or not isinstance(bit, int) or not 0 <= bit <= 31:
+                fail("caps_bits entries need a name and bit 0..31")
+            mask = 1 << bit
+            lines.append(f"#define LGPS_PROTO_CAP_{macro(name)} 0x{mask:08X}U")
+        lines.append("")
+
+    config_tlv = doc.get("config_tlv") or []
+    if config_tlv:
+        lines.append("/* Config TLV keys (Config characteristic & SET_CONFIG / GET_CONFIG). */")
+        for item in config_tlv:
+            if not isinstance(item, dict):
+                fail("config_tlv entries must be mappings")
+            name = item.get("name")
+            key = item.get("key")
+            ftype = item.get("type")
+            if not isinstance(name, str) or not isinstance(key, int) or ftype not in TYPE_SIZES:
+                fail("config_tlv entries need name, integer key and valid type")
+            lines.append(f"#define LGPS_TLV_{macro(name)} {hex_literal(key)}U")
+            lines.append(f"#define LGPS_TLV_{macro(name)}_LEN {TYPE_SIZES[ftype]}U")
+        lines.append("")
+
+    adv = doc.get("adv_manufacturer_data")
+    if isinstance(adv, dict):
+        size = adv.get("size")
+        company_id = adv.get("company_id")
+        ver = adv.get("version")
+        if not isinstance(size, int) or not isinstance(company_id, int) or not isinstance(ver, int):
+            fail("adv_manufacturer_data needs integer company_id, version and size")
+        layout = field_layout("adv_manufacturer_data", adv.get("fields") or [], size)
+        lines.append("/* Scan-response Manufacturer Data payload. */")
+        lines.append(f"#define LGPS_ADV_COMPANY_ID 0x{company_id:04X}U")
+        lines.append(f"#define LGPS_ADV_VERSION {ver}U")
+        lines.append(f"#define LGPS_ADV_DATA_SIZE {size}U")
+        for field_name, _c_type, offset, _fsize in layout:
+            lines.append(f"#define LGPS_ADV_OFF_{macro(field_name)} {offset}U")
+        lines.append("")
+
+    status_ext = doc.get("status_extension")
+    if isinstance(status_ext, dict):
+        lines.append("/* Status frame size milestones and sync extension offsets. */")
+        for key, suffix in (
+            ("base_size", "BASE_SIZE"),
+            ("motion_size", "MOTION_SIZE"),
+            ("accuracy_size", "ACCURACY_SIZE"),
+            ("sync_size", "SYNC_SIZE"),
+        ):
+            val = status_ext.get(key)
+            if not isinstance(val, int):
+                fail(f"status_extension.{key} must be an integer")
+            lines.append(f"#define LGPS_PROTO_STATUS_{suffix} {val}U")
+        for field in status_ext.get("sync_fields") or []:
+            fname = field.get("name")
+            off = field.get("offset")
+            if not isinstance(fname, str) or not isinstance(off, int):
+                fail("status_extension.sync_fields entries need name and integer offset")
+            lines.append(f"#define LGPS_PROTO_STATUS_OFF_{macro(fname)} {off}U")
+        lines.append("")
+
 
 def emit_uuids(lines: list[str], uuids: dict) -> None:
-    """Emit one string macro per declared UUID."""
+    """Emit canonical string and BLE little-endian byte list macros per UUID."""
     if not uuids:
         fail("uuids block is empty")
     for name in sorted(uuids):
@@ -332,6 +430,19 @@ def emit_uuids(lines: list[str], uuids: dict) -> None:
         if not isinstance(value, str):
             fail(f"uuids.{name} must be a string")
         lines.append(f'#define LGPS_UUID_{macro(name)} "{value}"')
+    lines.append("")
+    lines.append("/* Bluetooth wire-order (little-endian) 128-bit UUID octet lists. */")
+    for name in sorted(uuids):
+        value = uuids[name]
+        raw_hex = value.replace("-", "")
+        if len(raw_hex) != 32:
+            fail(f"uuids.{name} invalid length: {value!r}")
+        octets = list(reversed(bytes.fromhex(raw_hex)))
+        row1 = ", ".join(f"0x{b:02X}" for b in octets[:8])
+        row2 = ", ".join(f"0x{b:02X}" for b in octets[8:])
+        lines.append(f"#define LGPS_UUID_{macro(name)}_LE \\")
+        lines.append(f"\t{row1}, \\")
+        lines.append(f"\t{row2}")
     lines.append("")
 
 

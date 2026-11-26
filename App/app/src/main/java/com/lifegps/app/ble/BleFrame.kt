@@ -1,6 +1,8 @@
 package com.lifegps.app.ble
 
+import com.lifegps.app.ble.generated.GeneratedProtocol
 import java.util.Locale
+import java.util.zip.CRC32
 
 /**
  * Offset table of the Status snapshot (82-byte base, 100-byte extended).
@@ -84,16 +86,21 @@ object CapsOffset {
  * protocol version alone.
  */
 object CapsBits {
-    const val STATUS_NOTIFY = 0x00000001L
-    const val LOG_NOTIFY = 0x00000002L
-    const val POI = 0x00000004L
-    const val FLASH_INFO = 0x00000008L
-    const val REBOOT = 0x00000010L
-    const val DEBUG_UNLOCK = 0x00000020L
-    const val DATA_SYNC = 0x00000040L
-    const val MAG_CAL = 0x00000080L
-    const val ACCEL_CAL = 0x00000100L
-    const val BARO_BASELINE = 0x00000200L
+    const val STATUS_NOTIFY = GeneratedProtocol.CapsBits.STATUS_NOTIFY
+    const val LOG_NOTIFY = GeneratedProtocol.CapsBits.LOG_NOTIFY
+    const val POI = GeneratedProtocol.CapsBits.POI
+    const val FLASH_INFO = GeneratedProtocol.CapsBits.FLASH_INFO
+    const val REBOOT = GeneratedProtocol.CapsBits.REBOOT
+    const val DEBUG_UNLOCK = GeneratedProtocol.CapsBits.DEBUG_UNLOCK
+    const val DATA_SYNC = GeneratedProtocol.CapsBits.DATA_SYNC
+    const val MAG_CAL = GeneratedProtocol.CapsBits.MAG_CAL
+    const val ACCEL_CAL = GeneratedProtocol.CapsBits.ACCEL_CAL
+    const val BARO_BASELINE = GeneratedProtocol.CapsBits.BARO_BASELINE
+    const val GNSS_DEBUG = GeneratedProtocol.CapsBits.GNSS_DEBUG
+    const val GNSS_CFG = GeneratedProtocol.CapsBits.GNSS_CFG
+    const val CONFIG_TLV = GeneratedProtocol.CapsBits.CONFIG_TLV
+    const val GNSS_RESTART = GeneratedProtocol.CapsBits.GNSS_RESTART
+    const val OTA_SMP = GeneratedProtocol.CapsBits.OTA_SMP
 }
 
 object FlashInfoOffset {
@@ -178,15 +185,21 @@ enum class Opcode(val code: Int, val label: String) {
     }
 }
 
-/** Response status codes (`BLE_Wire_v1.md` §3.1). */
+/** Response status codes (`BLE_Wire_v1.md` §3.1 + `protocol/lifegps_protocol.yaml`). */
 enum class StatusCode(val code: Int, val label: String) {
-    OK(0x00, "OK"),
-    INVALID_ARGUMENT(0x01, "INVALID_ARGUMENT"),
-    UNKNOWN_OPCODE(0x02, "UNKNOWN_OPCODE"),
-    NOT_SUPPORTED(0x03, "NOT_SUPPORTED"),
-    BUSY(0x04, "BUSY"),
-    INTERNAL_ERROR(0x05, "INTERNAL_ERROR"),
-    UNAUTHORIZED(0x06, "UNAUTHORIZED"),
+    OK(GeneratedProtocol.StatusCode.OK, "OK"),
+    INVALID_ARGUMENT(GeneratedProtocol.StatusCode.INVALID_ARGUMENT, "INVALID_ARGUMENT"),
+    UNKNOWN_OPCODE(GeneratedProtocol.StatusCode.UNKNOWN_OPCODE, "UNKNOWN_OPCODE"),
+    NOT_SUPPORTED(GeneratedProtocol.StatusCode.NOT_SUPPORTED, "NOT_SUPPORTED"),
+    BUSY(GeneratedProtocol.StatusCode.BUSY, "BUSY"),
+    INTERNAL_ERROR(GeneratedProtocol.StatusCode.INTERNAL_ERROR, "INTERNAL_ERROR"),
+    UNAUTHORIZED(GeneratedProtocol.StatusCode.UNAUTHORIZED, "UNAUTHORIZED"),
+    OUT_OF_RANGE(GeneratedProtocol.StatusCode.OUT_OF_RANGE, "OUT_OF_RANGE"),
+    NOT_FOUND(GeneratedProtocol.StatusCode.NOT_FOUND, "NOT_FOUND"),
+    FLASH_ERROR(GeneratedProtocol.StatusCode.FLASH_ERROR, "FLASH_ERROR"),
+    LOW_BATTERY(GeneratedProtocol.StatusCode.LOW_BATTERY, "LOW_BATTERY"),
+    CRC_MISMATCH(GeneratedProtocol.StatusCode.CRC_MISMATCH, "CRC_MISMATCH"),
+    SESSION_EXPIRED(GeneratedProtocol.StatusCode.SESSION_EXPIRED, "SESSION_EXPIRED"),
     ;
 
     companion object {
@@ -557,6 +570,27 @@ object BleFrame {
     const val TRAILER_SIZE = 2
     const val MAX_PAYLOAD = 235
 
+    /** CRC-8: poly 0x07, init 0x00, no reflection, no final xor (32B trajectory records). */
+    fun crc8(data: ByteArray, offset: Int = 0, length: Int = data.size): Int {
+        var crc = 0x00
+        var index = offset
+        val end = offset + length
+        while (index < end) {
+            crc = crc xor (data[index].toInt() and 0xFF)
+            var bit = 0
+            while (bit < 8) {
+                crc = if (crc and 0x80 != 0) {
+                    ((crc shl 1) xor 0x07) and 0xFF
+                } else {
+                    (crc shl 1) and 0xFF
+                }
+                bit++
+            }
+            index++
+        }
+        return crc and 0xFF
+    }
+
     /** CRC-16/CCITT-FALSE: poly 0x1021, init 0xFFFF, no reflection, no final xor. */
     fun crc16CcittFalse(data: ByteArray, offset: Int = 0, length: Int = data.size): Int {
         var crc = 0xFFFF
@@ -576,6 +610,13 @@ object BleFrame {
             index++
         }
         return crc and 0xFFFF
+    }
+
+    /** CRC-32/ISO-HDLC (zlib), used for LGD1 day packages and sync verification. */
+    fun crc32IsoHdlc(data: ByteArray, offset: Int = 0, length: Int = data.size): Long {
+        val crc = CRC32()
+        crc.update(data, offset, length)
+        return crc.value and 0xFFFFFFFFL
     }
 
     /** Builds a request frame; `seq` is echoed by the response. */
@@ -796,12 +837,15 @@ object BleFrame {
         val count = u8(payload, 0)
         val total = u8(payload, 1)
 
-        /* Row width is inferred from the payload length: 0.4.0+ sends 7-byte rows,
-         * 0.3.0 sent 5-byte rows (no sig_id / azim). Guessing wrong would shift
-         * every row by 2 bytes, so the arithmetic decides, not a version number.
+        /* Row width is inferred from count and payload length: 0.4.0+ sends 7-byte
+         * rows, 0.3.0 sent 5-byte rows (no sig_id / azim). Check exact count*width
+         * first so a 7-satellite legacy payload (7 * 5 = 35 bytes, divisible by
+         * both 5 and 7) is not misread as five 7-byte rows.
          */
         val body = payload.size - SatTelemetry.HEADER
         val entry = when {
+            count > 0 && count * SatTelemetry.SIZE_ENTRY == body -> SatTelemetry.SIZE_ENTRY
+            count > 0 && count * SatTelemetry.LEGACY_ENTRY == body -> SatTelemetry.LEGACY_ENTRY
             body % SatTelemetry.SIZE_ENTRY == 0 -> SatTelemetry.SIZE_ENTRY
             body % SatTelemetry.LEGACY_ENTRY == 0 -> SatTelemetry.LEGACY_ENTRY
             else -> SatTelemetry.SIZE_ENTRY

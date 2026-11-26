@@ -7,6 +7,8 @@ project(lifegps_protogen)
 
 target_sources(app PRIVATE
 	src/main.c
+	../../src/util/crc.c
+	../../src/storage/traj.c
 )
 
 target_include_directories(app PRIVATE

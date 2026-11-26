@@ -1,30 +1,40 @@
 package com.lifegps.app.ble
 
+import com.lifegps.app.ble.generated.GeneratedProtocol
 import java.util.UUID
 
 /**
- * GATT identifiers of the Life_GPS v1 wire contract (`Doc/Software/BLE_Wire_v1.md` §2).
+ * GATT identifiers of the Life_GPS wire contract (`protocol/lifegps_protocol.yaml`).
  *
- * These are the same 128-bit values the firmware exposes as little-endian byte
- * macros; they are kept in one place so the transport and the repository cannot
- * drift apart.
+ * All UUID values are delegated to [GeneratedProtocol.Uuids] so Kotlin and the
+ * firmware C header stay generated from the same YAML source of truth.
  */
 object BleUuids {
     /** Primary Life_GPS service. */
-    val SERVICE: UUID = UUID.fromString("4C475053-0001-4C47-5053-000000000001")
+    val SERVICE: UUID = GeneratedProtocol.Uuids.SERVICE
 
-    /** Status snapshot (100-byte extended / 82-byte base), notified at 10 Hz while subscribed (1 Hz idle) and readable. */
-    val STATUS: UUID = UUID.fromString("4C475053-0002-4C47-5053-000000000001")
+    /** Status snapshot (116-byte accuracy / 100-byte motion / 82-byte base). */
+    val STATUS: UUID = GeneratedProtocol.Uuids.STATUS
 
     /** Command frames are written here; responses come back as notifications. */
-    val CONTROL: UUID = UUID.fromString("4C475053-0003-4C47-5053-000000000001")
+    val CONTROL: UUID = GeneratedProtocol.Uuids.CONTROL
+
+    /** Bulk data transfer frames (`0x5A`, trajectory staging & LGD1 archives). */
+    val DATA: UUID = GeneratedProtocol.Uuids.DATA
+
+    /** Binary telemetry stream: GNSS, IMU, BARO, PDR, NMEA and SAT packets. */
+    val TELEMETRY: UUID = GeneratedProtocol.Uuids.TELEMETRY
 
     /** Firmware log forwarding (UTF-8 after a level + source prefix). */
-    val LOG: UUID = UUID.fromString("4C475053-0006-4C47-5053-000000000001")
+    val LOG: UUID = GeneratedProtocol.Uuids.LOG
 
-    /** Binary telemetry stream: IMU (with the attitude quaternion) and PDR packets. */
-    val TELEMETRY: UUID = UUID.fromString("4C475053-0005-4C47-5053-000000000001")
+    /** Versioned TLV configuration characteristic. */
+    val CONFIG: UUID = GeneratedProtocol.Uuids.CONFIG
+
+    /** MCUboot / SMP OTA service and characteristic. */
+    val SMP_SERVICE: UUID = GeneratedProtocol.Uuids.SMP_SERVICE
+    val SMP_CHARACTERISTIC: UUID = GeneratedProtocol.Uuids.SMP_CHARACTERISTIC
 
     /** Client Characteristic Configuration Descriptor shared by all notified characteristics. */
-    val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+    val CCCD: UUID = GeneratedProtocol.Uuids.CCCD
 }

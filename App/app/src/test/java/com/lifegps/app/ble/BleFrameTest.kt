@@ -596,6 +596,33 @@ class BleFrameTest {
     }
 
     @Test
+    fun parseSatTelemetryDisambiguatesSevenLegacyFiveByteRows() {
+        // 7 * 5 = 35 bytes is divisible by both 5 (legacy) and 7 (modern); count=7 must win.
+        val legacy = ByteArray(SatTelemetry.HEADER + 7 * SatTelemetry.LEGACY_ENTRY)
+        legacy[0] = 7
+        legacy[1] = 7
+        for (i in 0 until 7) {
+            val base = SatTelemetry.HEADER + i * SatTelemetry.LEGACY_ENTRY
+            legacy[base + 0] = 0
+            legacy[base + 1] = (10 + i).toByte()
+            legacy[base + 2] = (30 + i).toByte()
+            legacy[base + 3] = (20 + i * 5).toByte()
+            legacy[base + 4] = 0x09
+        }
+
+        val sat = BleFrame.parseSatTelemetry(legacy)
+        assertNotNull(sat)
+        sat!!
+        assertEquals(7, sat.rows.size)
+        for (i in 0 until 7) {
+            assertEquals(10 + i, sat.rows[i].svId)
+            assertEquals(30 + i, sat.rows[i].cno)
+            assertEquals(-1, sat.rows[i].sigId)
+            assertEquals(-1, sat.rows[i].azimuth)
+        }
+    }
+
+    @Test
     fun parseNmeaTelemetryReadsTheLengthPrefixedText() {
         val line = "\$GNGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*4C"
         val payload = ByteArray(1 + line.length)

@@ -58,6 +58,10 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    sourceSets {
+        getByName("test").resources.srcDir("../../protocol/vectors")
+    }
 }
 
 dependencies {

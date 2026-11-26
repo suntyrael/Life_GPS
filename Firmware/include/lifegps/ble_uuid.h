@@ -21,31 +21,11 @@
 #define LIFEGPS_BLE_UUID_H_
 
 /*
- * Canonical form -> octets (bit 127 first) -> wire order (bit 0 first):
- *   4C475053-0001-4C47-5053-000000000001
- *   {4C 47 50 53} {00 01} {4C 47} {50 53} {00 00 00 00 00 01}
- *   reversed: 01 00 00 00 00 00 53 50 47 4C 01 00 53 50 47 4C
- * "LGPS" is ASCII 4C 47 50 53, which is why the tail reads 53 50 47 4C when
- * reversed - that is the expected result, not a typo.
+ * The little-endian 128-bit UUID octet lists (LGPS_UUID_*_LE) are generated
+ * directly from protocol/lifegps_protocol.yaml by tools/protocol-gen/gen_c.py.
+ * This header is kept as a thin compatibility wrapper so callers that only
+ * include <lifegps/ble_uuid.h> continue to work without duplicating wire bytes.
  */
-#define LGPS_UUID_SERVICE_LE                        \
-	0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x53, 0x50, \
-	0x47, 0x4C, 0x01, 0x00, 0x53, 0x50, 0x47, 0x4C
-
-#define LGPS_UUID_STATUS_LE                         \
-	0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x53, 0x50, \
-	0x47, 0x4C, 0x02, 0x00, 0x53, 0x50, 0x47, 0x4C
-
-#define LGPS_UUID_CONTROL_LE                        \
-	0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x53, 0x50, \
-	0x47, 0x4C, 0x03, 0x00, 0x53, 0x50, 0x47, 0x4C
-
-#define LGPS_UUID_LOG_LE                            \
-	0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x53, 0x50, \
-	0x47, 0x4C, 0x06, 0x00, 0x53, 0x50, 0x47, 0x4C
-
-#define LGPS_UUID_TELEMETRY_LE                      \
-	0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x53, 0x50, \
-	0x47, 0x4C, 0x05, 0x00, 0x53, 0x50, 0x47, 0x4C
+#include <generated/lifegps_protocol.h>
 
 #endif /* LIFEGPS_BLE_UUID_H_ */

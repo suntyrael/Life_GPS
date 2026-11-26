@@ -5,11 +5,17 @@ on:
     paths:
       - "protocol/**"
       - "tools/protocol-gen/**"
+      - "Firmware/include/generated/**"
+      - "Firmware/tests/lifegps.protogen/src/generated_vectors.h"
+      - "App/app/src/main/java/com/lifegps/app/ble/generated/**"
       - ".github/workflows/protocol.yml"
   pull_request:
     paths:
       - "protocol/**"
       - "tools/protocol-gen/**"
+      - "Firmware/include/generated/**"
+      - "Firmware/tests/lifegps.protogen/src/generated_vectors.h"
+      - "App/app/src/main/java/com/lifegps/app/ble/generated/**"
       - ".github/workflows/protocol.yml"
   workflow_dispatch:
 
@@ -32,3 +38,9 @@ jobs:
         run: python -m pip install -r tools/protocol-gen/requirements.txt
       - name: Validate protocol YAML
         run: python tools/protocol-gen/validate.py
+      - name: Check generated C header
+        run: python tools/protocol-gen/gen_c.py --check
+      - name: Check generated Kotlin constants
+        run: python tools/protocol-gen/gen_kt.py --check
+      - name: Check Golden Vectors and manifest
+        run: python tools/protocol-gen/gen_vectors.py --check

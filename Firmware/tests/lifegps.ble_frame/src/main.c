@@ -81,7 +81,12 @@ static int uuid_to_wire(const char *text, uint8_t out[16])
 static const uint8_t uuid_service_wire[16] = { LGPS_UUID_SERVICE_LE };
 static const uint8_t uuid_status_wire[16] = { LGPS_UUID_STATUS_LE };
 static const uint8_t uuid_control_wire[16] = { LGPS_UUID_CONTROL_LE };
+static const uint8_t uuid_data_wire[16] = { LGPS_UUID_DATA_LE };
+static const uint8_t uuid_telemetry_wire[16] = { LGPS_UUID_TELEMETRY_LE };
 static const uint8_t uuid_log_wire[16] = { LGPS_UUID_LOG_LE };
+static const uint8_t uuid_config_wire[16] = { LGPS_UUID_CONFIG_LE };
+static const uint8_t uuid_smp_service_wire[16] = { LGPS_UUID_SMP_SERVICE_LE };
+static const uint8_t uuid_smp_chrc_wire[16] = { LGPS_UUID_SMP_CHARACTERISTIC_LE };
 
 struct uuid_case {
 	const char *canonical;
@@ -92,7 +97,12 @@ static const struct uuid_case uuid_cases[] = {
 	{ LGPS_UUID_SERVICE, uuid_service_wire },
 	{ LGPS_UUID_STATUS, uuid_status_wire },
 	{ LGPS_UUID_CONTROL, uuid_control_wire },
+	{ LGPS_UUID_DATA, uuid_data_wire },
+	{ LGPS_UUID_TELEMETRY, uuid_telemetry_wire },
 	{ LGPS_UUID_LOG, uuid_log_wire },
+	{ LGPS_UUID_CONFIG, uuid_config_wire },
+	{ LGPS_UUID_SMP_SERVICE, uuid_smp_service_wire },
+	{ LGPS_UUID_SMP_CHARACTERISTIC, uuid_smp_chrc_wire },
 };
 
 ZTEST(lifegps_ble, test_uuid_octets_match_generated_strings)

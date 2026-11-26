@@ -1269,10 +1269,13 @@ static uint8_t dispatch(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t
 
 static void command_handler(void *unused1, void *unused2, void *unused3)
 {
-	uint8_t frame[LGPS_BLE_CMD_MAX_FRAME];
-	uint8_t payload[1U + LGPS_BLE_STATUS_SIZE];
-	uint8_t response[LGPS_FRAME_COMMAND_HEADER_SIZE + sizeof(payload) +
-			 LGPS_FRAME_COMMAND_TRAILER_SIZE];
+	/* Single dedicated thread owns these scratch buffers; keeping them static
+	 * lets the response hold the full 235-byte protocol payload without eating
+	 * ~725 bytes of the command thread stack.
+	 */
+	static uint8_t frame[LGPS_BLE_CMD_MAX_FRAME];
+	static uint8_t payload[LGPS_PROTO_MAX_COMMAND_PAYLOAD];
+	static uint8_t response[LGPS_BLE_CMD_MAX_FRAME];
 
 	ARG_UNUSED(unused1);
 	ARG_UNUSED(unused2);
@@ -1471,6 +1474,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	control_subscribed = false;
 	log_subscribed = false;
 	telem_subscribed = false;
+	debug_unlocked = false;
 
 	schedule_advertising(LGPS_BLE_ADV_RESTART_MS);
 }

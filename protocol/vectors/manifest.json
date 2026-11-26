@@ -1,0 +1,78 @@
+{
+  "protocol_version": "1.0.0",
+  "vectors": {
+    "cmd_get_caps_req.bin": {
+      "flags": 0,
+      "opcode": 1,
+      "payload_len": 0,
+      "seq": 1,
+      "sha256": "1063c1742ec5a800deaa2b80db9ffbd2ee46ee8c59ecf80f0efb867da9e3a836",
+      "size": 10
+    },
+    "cmd_get_caps_rsp.bin": {
+      "flags": 1,
+      "opcode": 1,
+      "seq": 1,
+      "sha256": "6ec8231ebbd66c3aa0fe25d1452f68898783549eb8952d70662558072d98fc2e",
+      "size": 35,
+      "status": 0
+    },
+    "crc_reference.bin": {
+      "crc16": "0x29B1",
+      "crc32": "0xCBF43926",
+      "crc8": "0xF4",
+      "sha256": "15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225",
+      "size": 9
+    },
+    "data_chunk_trajectory.bin": {
+      "cursor": 252,
+      "flags": 1,
+      "payload_len": 224,
+      "sha256": "98d28f7d1f0cd289545414bac134faf970c08d18f8cd065333d7660bc8e65051",
+      "size": 240,
+      "stream": 0,
+      "transfer_id": 42
+    },
+    "day_package_hs.bin": {
+      "codec": 1,
+      "day_id": 20261126,
+      "lookahead_sz2": 4,
+      "packed_len": 102,
+      "raw_len": 256,
+      "record_count": 8,
+      "sha256": "51f987bc5ed6d95492f90b6ae3c0be45077ffcf80f70f4de8715e8dcef936b6f",
+      "size": 158,
+      "traj_crc32": "0xCC798479",
+      "window_sz2": 8
+    },
+    "day_package_raw.bin": {
+      "codec": 0,
+      "day_id": 20261125,
+      "packed_len": 96,
+      "raw_len": 96,
+      "record_count": 3,
+      "sha256": "4960e0745255e4ab2a3a63002796ab14f609688285256d0085c531890c21f7f7",
+      "size": 152,
+      "traj_crc32": "0x9EACBC44"
+    },
+    "telem_sat_legacy_7sats.bin": {
+      "body_bytes": 35,
+      "count": 7,
+      "row_bytes": 5,
+      "sha256": "91d6c84df84cd5a9df340ec0bc46ea0d642d25dd7baa2b0521c6489ed58377ab",
+      "size": 39
+    },
+    "trajectory_basic.bin": {
+      "crc32": "0x9EACBC44",
+      "record_count": 3,
+      "sha256": "0ba2c887116d95e7faee4997e23f003964b390c41990d3e504597a1758a8cc5a",
+      "size": 96
+    },
+    "trajectory_delta_wrap.bin": {
+      "crc32": "0xCC798479",
+      "record_count": 8,
+      "sha256": "2a0508b7e910ed14fc428ec6e6a1d9c579cb5368017db326141525c68cbbbfc6",
+      "size": 256
+    }
+  }
+}

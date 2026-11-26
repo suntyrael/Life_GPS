@@ -15,14 +15,14 @@
 | 角色 | 仅 Peripheral；不支持 bonding / 配对（`CONFIG_BT_SMP=n`），Status 可被未绑定链路读取 |
 | PHY | 1M 广播；连接后请求 2M + DLE 251 |
 | MTU | App 主动 `requestMtu(247)`；固件 `L2CAP TX MTU = 247` |
-| 未实现 | Data（同步）、Telemetry、Config、SMP 特征在 v1 **不出现在 GATT 表里**，App 必须按 UUID 发现并按“缺失”处理 |
+| 未实现 | Data（同步）、Config、SMP 特征在 v1 **不出现在 GATT 表里**，App 必须按 UUID 发现并按“缺失”处理 |
 
 ## 2. GATT 表（v1）
 
 | 特征 | UUID | 属性 | 说明 |
 | :--- | :--- | :--- | :--- |
 | Service | `4C475053-0001-4C47-5053-000000000001` | — | 主服务 |
-| Status | `4C475053-0002-4C47-5053-000000000001` | Read + Notify + CCC | 100 字节固定状态快照（前 82 字节与 v1 完全一致）；有 central 订阅时 10 Hz 推送，无订阅时 1 Hz 仅维持缓存 |
+| Status | `4C475053-0002-4C47-5053-000000000001` | Read + Notify + CCC | 116 字节固定状态快照（前 82/100 字节向后兼容）；有 central 订阅时 10 Hz 推送，无订阅时 1 Hz 仅维持缓存 |
 | Control | `4C475053-0003-4C47-5053-000000000001` | Write + WriteWithoutResponse + Notify + CCC | 命令帧请求，响应走 Notify |
 | Log | `4C475053-0006-4C47-5053-000000000001` | Notify + CCC | 固件日志转发（UTF-8） |
 | Telemetry | `4C475053-0005-4C47-5053-000000000001` | Notify + CCC | 按传感器分组的二进制包：IMU（含姿态四元数）30 Hz、PDR 每步 |
@@ -259,7 +259,7 @@ yaw（并顺带学习磁力计偏置），否则用磁力计按该偏置维持 y
 | opcode | 名称 | 请求 payload | 响应 payload（status 之后） |
 | :--- | :--- | :--- | :--- |
 | `0x01` | GET_CAPS | — | 见 6.1 |
-| `0x02` | GET_STATUS | — | 100 字节 Status 帧 |
+| `0x02` | GET_STATUS | — | 116 字节 Status 帧（旧固件 82/100 字节） |
 | `0x12` | POI_MARK | — | `u8 written`（1 = 已写入轨迹环） |
 | `0x30` | LOG_SUBSCRIBE | `u8 level`（0=off 1=ERR 2=WRN 3=INF 4=DBG） | — |
 | `0x41` | MAG_CAL | `u8 action`（6.3） | 见 6.3 |
@@ -277,10 +277,8 @@ GET_ARCHIVE / GNSS_SNAPSHOT / IMU_SNAPSHOT / BUTTON_EVENT / SELFTEST / ERASE_DAY
 FACTORY_RESET / FLASH_READ / FLASH_ERASE / GET_FAULT_LOG / POWER_TEST_MARK）一律返回
 `0x03 NOT_SUPPORTED`；完全不认识的 opcode 返回 `0x02`。App 必须把这两种情况显示给用户，不得伪造成功。
 
-三个校准 opcode（`0x41` / `0x42` / `0x43`）的载荷已经冻结（6.3~6.5），但**固件侧的采集与
-持久化尚未实现**：固件返回 `0x03` 之前 App 只显示“固件未提供”，不发假数据。能力一律从
-GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜测** —— 一个固件可以会说
-这个 opcode 但拒绕保存，两者是两件事。
+三个校准 opcode（`0x41` / `0x42` / `0x43`）的载荷与固件持久化已实现（6.3~6.5）；能力一律从
+GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜测**。
 
 ### 6.1 GET_CAPS 响应（24 字节）
 
@@ -292,12 +290,12 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
 | 7 | u8 | `reserved` |
 | 8 | u16 | `att_mtu`（固件配置的 L2CAP TX MTU，247） |
 | 10 | u16 | `max_cmd_payload`（235） |
-| 12 | u32 | `caps`：bit0 Status notify，bit1 Log notify，bit2 POI，bit3 FLASH_INFO，bit4 REBOOT，bit5 DEBUG_UNLOCK，bit6 Data 同步（v1 = 0），bit7 MAG_CAL，bit8 ACCEL_CAL，bit9 BARO_BASELINE（三位置位条件见 6.3~6.5），bit10 GNSS_DEBUG，bit11 GNSS_CFG |
-| 16 | u32 | `telemetry_mask`（v1 = `0x26`：bit1 GNSS、bit2 IMU、bit5 PDR，语义见 §5.1） |
+| 12 | u32 | `caps`：bit0 Status notify，bit1 Log notify，bit2 POI，bit3 FLASH_INFO，bit4 REBOOT，bit5 DEBUG_UNLOCK，bit6 Data 同步（v1 = 0），bit7 MAG_CAL，bit8 ACCEL_CAL，bit9 BARO_BASELINE（三位置位条件见 6.3~6.5），bit10 GNSS_DEBUG，bit11 GNSS_CFG，bit12 CONFIG_TLV，bit13 GNSS_RESTART，bit14 OTA_SMP |
+| 16 | u32 | `telemetry_mask`（0.4.0 = `0x336`：bit1 GNSS、bit2 IMU、bit4 BARO、bit5 PDR、bit8 NMEA、bit9 SAT，语义见 §5.1） |
 | 20 | u16 | `status_size` = 116（0.4.0 起；0.3.0 为 100，v1 为 82） |
 | 22 | u16 | `reserved` |
 
-### 6.2 FLASH_INFO 响应（20 字节）
+### 6.2 FLASH_INFO 响应（24 字节）
 
 | off | type | 字段 |
 | :--- | :--- | :--- |
@@ -571,7 +569,7 @@ GNSS 子系统反复重启、速率被接受但撑不住。它们的共同点就
 - 接收机不回应这个命令（§3.10.2.1：“Newer FW version will not acknowledge this message at all”），
   所以固件不等 ACK，用复位后的 NAV-PVT 回读作为证据。
 - 复位后固件把状态切回 `COLD_START`，TTFF 从 0 重新计时；`status` 里能看到这次是哪种启动
-  对应的 TTFF。`0x05 BUSY` 表示接收机未上电（断电退避中），此时无 BBR 可清。
+  对应的 TTFF。`0x04 BUSY` 表示接收机未上电（断电退避中），此时无 BBR 可清。
 
 ## 7. 版本策略
 

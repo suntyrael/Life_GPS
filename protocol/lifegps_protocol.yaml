@@ -101,9 +101,18 @@ records:
 packages:
   day:
     magic_ascii: "LGD1"
+    header_ver: 1
     header_size: 48
+    header_crc16_len: 46
     footer_size: 8
     codec: "byte_delta_heatshrink"
+    crc32_scope: "uncompressed_trajectory"
+    codec_values:
+      raw: 0
+      byte_delta_heatshrink: 1
+    heatshrink:
+      window_sz2: 8
+      lookahead_sz2: 4
     header_fields:
       - {name: magic, type: u32, offset: 0}
       - {name: header_ver, type: u16, offset: 4}
@@ -180,3 +189,78 @@ telemetry:
   - {id: 0x07, name: SYSTEM}
   - {id: 0x08, name: NMEA}
   - {id: 0x09, name: SAT}
+
+# 0x00..0x06 冻结与 BLE_Wire_v1.md §3.1 完全一致；0x07..0x0C 为同步/存储只追加扩展。
+status_codes:
+  - {code: 0x00, name: OK}
+  - {code: 0x01, name: INVALID_ARGUMENT}
+  - {code: 0x02, name: UNKNOWN_OPCODE}
+  - {code: 0x03, name: NOT_SUPPORTED}
+  - {code: 0x04, name: BUSY}
+  - {code: 0x05, name: INTERNAL_ERROR}
+  - {code: 0x06, name: UNAUTHORIZED}
+  - {code: 0x07, name: OUT_OF_RANGE}
+  - {code: 0x08, name: NOT_FOUND}
+  - {code: 0x09, name: FLASH_ERROR}
+  - {code: 0x0A, name: LOW_BATTERY}
+  - {code: 0x0B, name: CRC_MISMATCH}
+  - {code: 0x0C, name: SESSION_EXPIRED}
+
+# GET_CAPS.caps 能力位图：bit0..bit11 冻结不变，bit12+ 为只追加扩展。
+caps_bits:
+  - {bit: 0, name: STATUS_NOTIFY}
+  - {bit: 1, name: LOG_NOTIFY}
+  - {bit: 2, name: POI}
+  - {bit: 3, name: FLASH_INFO}
+  - {bit: 4, name: REBOOT}
+  - {bit: 5, name: DEBUG_UNLOCK}
+  - {bit: 6, name: DATA_SYNC}
+  - {bit: 7, name: MAG_CAL}
+  - {bit: 8, name: ACCEL_CAL}
+  - {bit: 9, name: BARO_BASELINE}
+  - {bit: 10, name: GNSS_DEBUG}
+  - {bit: 11, name: GNSS_CFG}
+  - {bit: 12, name: CONFIG_TLV}
+  - {bit: 13, name: GNSS_RESTART}
+  - {bit: 14, name: OTA_SMP}
+
+# Config 特征（0007）与 SET_CONFIG(0x13)/GET_CONFIG(0x14) 共用的紧凑 TLV Key 表。
+config_tlv:
+  - {key: 0x01, name: RECORD_MODE, type: u8}
+  - {key: 0x02, name: GNSS_RATE_HZ, type: u8}
+  - {key: 0x03, name: GNSS_COLD_TIMEOUT_S, type: u16}
+  - {key: 0x04, name: ARCHIVE_HOUR_UTC, type: u8}
+  - {key: 0x05, name: LED_ENABLE, type: u8}
+  - {key: 0x06, name: AUTO_OFF_MIN, type: u16}
+  - {key: 0x07, name: PDR_STEP_K_MM, type: u16}
+  - {key: 0x08, name: MAG_ANOMALY_UT, type: u16}
+  - {key: 0x09, name: TZ_OFFSET_MIN, type: i16}
+  - {key: 0x0A, name: BLE_ADV_INTERVAL_MS, type: u16}
+  - {key: 0x0B, name: LOG_LEVEL_DEFAULT, type: u8}
+
+# Scan Response 内的 Manufacturer Data 载荷（Company ID 0xFFFF 后 10 B，小端）。
+adv_manufacturer_data:
+  company_id: 0xFFFF
+  version: 1
+  size: 10
+  fields:
+    - {name: adv_ver, type: u8, offset: 0}
+    - {name: work_mode, type: u8, offset: 1}
+    - {name: battery_pct, type: u8, offset: 2}
+    - {name: storage_pct, type: u8, offset: 3}
+    - {name: adv_flags, type: u16, offset: 4}
+    - {name: last_seq_id, type: u32, offset: 6}
+
+# Status 帧长度演进（前 116 B 与 BLE_Wire_v1.md §4 冻结一致；116..127 为后续同步扩展）。
+status_extension:
+  base_size: 82
+  motion_size: 100
+  accuracy_size: 116
+  sync_size: 128
+  sync_fields:
+    - {name: archive_index_ver, type: u32, offset: 116}
+    - {name: last_seq_id, type: u32, offset: 120}
+    - {name: work_mode, type: u8, offset: 124}
+    - {name: archive_days_count, type: u8, offset: 125}
+    - {name: storage_used_permille, type: u16, offset: 126}
+
