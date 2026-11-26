@@ -67,7 +67,7 @@ fun SerialLogScreen(
     }
 
     DebugScaffold(
-        title = "串口 / BLE 日志",
+        title = "BLE 设备日志",
         onBack = onBack,
         actions = {
             TextButton(onClick = { paused = !paused }) {

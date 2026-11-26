@@ -194,10 +194,12 @@ static struct {
 	volatile uint32_t anchor_epoch_s;  /* Life_GPS epoch seconds at anchor_uptime_ms */
 	volatile uint32_t anchor_uptime_ms; /* caller uptime when the anchor was taken */
 	volatile int32_t local_offset_s;
+	volatile uint8_t source; /* enum lgps_time_source */
 	volatile bool seeded; /* build time parsed, so the getters are meaningful */
 	volatile bool synced; /* at least one accepted GNSS UTC this boot */
 } clock_state = {
 	.local_offset_s = LGPS_TIME_LOCAL_OFFSET_DEFAULT_S,
+	.source = (uint8_t)LGPS_TIME_SRC_BUILD,
 };
 
 static bool is_digit(char value)
@@ -348,6 +350,7 @@ void lgps_time_init(void)
 	clock_state.local_offset_s = LGPS_TIME_LOCAL_OFFSET_DEFAULT_S;
 	clock_state.synced = false;
 	clock_state.seeded = false;
+	clock_state.source = (uint8_t)LGPS_TIME_SRC_BUILD;
 
 	if (lgps_time_build_utc(&build_utc) != 0) {
 		/* No usable build timestamp: stay unavailable until GNSS provides one. */
@@ -391,10 +394,54 @@ bool lgps_time_sync(uint32_t utc_epoch_s, uint32_t uptime_ms)
 
 	clock_state.anchor_uptime_ms = uptime_ms;
 	clock_state.anchor_epoch_s = utc_epoch_s;
+	clock_state.source = (uint8_t)LGPS_TIME_SRC_GNSS;
 	clock_state.seeded = true;
 	clock_state.synced = true;
 
 	return true;
+}
+
+bool lgps_time_set_external(uint32_t epoch_s, uint32_t uptime_ms, int32_t *out_drift_s)
+{
+	uint32_t prev_s;
+
+	if (epoch_s == 0U) {
+		return false;
+	}
+
+	prev_s = lgps_time_now_utc_s(uptime_ms);
+	if (out_drift_s != NULL) {
+		if (prev_s == 0U) {
+			*out_drift_s = INT32_MAX;
+		} else {
+			int64_t diff = (int64_t)prev_s - (int64_t)epoch_s;
+
+			if (diff > (int64_t)INT32_MAX) {
+				*out_drift_s = INT32_MAX;
+			} else if (diff < (int64_t)INT32_MIN) {
+				*out_drift_s = INT32_MIN;
+			} else {
+				*out_drift_s = (int32_t)diff;
+			}
+		}
+	}
+
+	/* GNSS UTC remains authoritative once anchored in this boot. */
+	if (clock_state.synced) {
+		return true;
+	}
+
+	clock_state.anchor_uptime_ms = uptime_ms;
+	clock_state.anchor_epoch_s = epoch_s;
+	clock_state.source = (uint8_t)LGPS_TIME_SRC_EXTERNAL;
+	clock_state.seeded = true;
+
+	return true;
+}
+
+enum lgps_time_source lgps_time_source(void)
+{
+	return (enum lgps_time_source)clock_state.source;
 }
 
 bool lgps_time_synced(void)

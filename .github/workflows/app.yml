@@ -3,24 +3,16 @@ name: app
 on:
   push:
     paths:
-      - "App/app/**"
-      - "App/gradle/**"
-      - "App/*.kts"
-      - "App/gradle.properties"
-      - "App/gradlew"
-      - "App/gradlew.bat"
+      - "App/**"
       - "protocol/**"
+      - "tools/protocol-gen/**"
       - "versions.yaml"
       - ".github/workflows/app.yml"
   pull_request:
     paths:
-      - "App/app/**"
-      - "App/gradle/**"
-      - "App/*.kts"
-      - "App/gradle.properties"
-      - "App/gradlew"
-      - "App/gradlew.bat"
+      - "App/**"
       - "protocol/**"
+      - "tools/protocol-gen/**"
       - "versions.yaml"
       - ".github/workflows/app.yml"
   workflow_dispatch:
@@ -64,16 +56,30 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('App/**/*.gradle*', 'App/gradle/wrapper/gradle-wrapper.properties') }}
+          key: gradle-${{ runner.os }}-${{ hashFiles('App/**/*.gradle*', 'App/gradle/libs.versions.toml', 'App/gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      - name: Build, unit test, lint
-        run: ./gradlew :app:assembleDevDebug :app:testDevDebugUnitTest :app:lintDevDebug --stacktrace
+      - name: Pure JVM core tests
+        run: ./gradlew :core:protocol:test :core:model:test --stacktrace
+
+      - name: Build, unit test, lint (dev & prod)
+        run: >
+          ./gradlew
+          :app:assembleDevDebug :app:testDevDebugUnitTest :app:lintDevDebug
+          :app:assembleProdDebug :app:testProdDebugUnitTest :app:lintProdDebug
+          --stacktrace
 
       - name: Upload dev APK
         uses: actions/upload-artifact@v4
         with:
           name: app-dev-debug
           path: App/app/build/outputs/apk/dev/debug/*.apk
+          if-no-files-found: error
+
+      - name: Upload prod APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-prod-debug
+          path: App/app/build/outputs/apk/prod/debug/*.apk
           if-no-files-found: error

@@ -1,6 +1,6 @@
 package com.lifegps.app.ble
 
-import com.lifegps.app.ble.generated.GeneratedProtocol
+import com.lifegps.core.protocol.GeneratedProtocol
 import java.util.UUID
 
 /**

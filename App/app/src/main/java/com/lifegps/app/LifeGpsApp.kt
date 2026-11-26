@@ -11,49 +11,26 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.rememberNavController
-import com.lifegps.app.ble.BleDebugRepository
 import com.lifegps.app.ble.BlePermissionState
 import com.lifegps.app.ble.rememberBlePermissions
-import com.lifegps.app.debug.CalibrationScreen
-import com.lifegps.app.debug.CommandConsoleScreen
-import com.lifegps.app.debug.DebugHomeScreen
-import com.lifegps.app.debug.GnssConfigScreen
-import com.lifegps.app.debug.GnssNmeaScreen
-import com.lifegps.app.debug.DeviceScanScreen
-import com.lifegps.app.debug.FlashStatusScreen
-import com.lifegps.app.debug.GnssStatusScreen
-import com.lifegps.app.debug.HardwareCheckScreen
-import com.lifegps.app.debug.MapLiveScreen
-import com.lifegps.app.debug.SensorStatusScreen
-import com.lifegps.app.debug.SerialLogScreen
-import com.lifegps.app.debug.SpatialTrailScreen
-import com.lifegps.app.navigation.Routes
 import com.lifegps.app.ui.theme.LifeGpsTheme
 import com.lifegps.app.ui.theme.TextDim
 import com.lifegps.app.ui.theme.TextMain
 
 @Composable
 fun LifeGpsApp() {
-    val appContext = LocalContext.current.applicationContext
-    val repo = remember { BleDebugRepository(appContext) }
+    val application = LocalContext.current.applicationContext as LifeGpsApplication
+    val container = application.container
     val permissions = rememberBlePermissions()
 
     LaunchedEffect(permissions.granted) {
-        repo.setPermissionsGranted(permissions.granted)
-    }
-    DisposableEffect(repo) {
-        onDispose { repo.close() }
+        container.repo.setPermissionsGranted(permissions.granted)
     }
 
     LifeGpsTheme {
@@ -61,69 +38,8 @@ fun LifeGpsApp() {
             when {
                 permissions.unsupported -> BleUnsupportedNotice()
                 !permissions.granted -> BlePermissionGate(permissions)
-                else -> AppNavHost(repo)
+                else -> FlavorRoot(container)
             }
-        }
-    }
-}
-
-@Composable
-private fun AppNavHost(repo: BleDebugRepository) {
-    val navController = rememberNavController()
-    NavHost(
-        navController = navController,
-        startDestination = Routes.HOME,
-    ) {
-        composable(Routes.HOME) {
-            DebugHomeScreen(repo) { route -> navController.navigate(route) }
-        }
-        composable(Routes.DEVICE) {
-            DeviceScanScreen(repo) { navController.popBackStack() }
-        }
-        composable(Routes.SERIAL) {
-            SerialLogScreen(repo) { navController.popBackStack() }
-        }
-        composable(Routes.SENSORS) {
-            SensorStatusScreen(
-                repo = repo,
-                onBack = { navController.popBackStack() },
-                onOpenTrail = { navController.navigate(Routes.SPATIAL) },
-                onOpenCalibration = { navController.navigate(Routes.CALIB) },
-            )
-        }
-        composable(Routes.CALIB) {
-            CalibrationScreen(repo) { navController.popBackStack() }
-        }
-        composable(Routes.SPATIAL) {
-            SpatialTrailScreen(repo) { navController.popBackStack() }
-        }
-        composable(Routes.MAP) {
-            MapLiveScreen(repo) { navController.popBackStack() }
-        }
-        composable(Routes.GNSS) {
-            GnssStatusScreen(
-                repo = repo,
-                onBack = { navController.popBackStack() },
-                onOpenNmea = { navController.navigate(Routes.GNSS_NMEA) },
-                onOpenConfig = { navController.navigate(Routes.GNSS_CFG) },
-            )
-        }
-
-        composable(Routes.GNSS_NMEA) {
-            GnssNmeaScreen(repo) { navController.popBackStack() }
-        }
-
-        composable(Routes.GNSS_CFG) {
-            GnssConfigScreen(repo) { navController.popBackStack() }
-        }
-        composable(Routes.CHECK) {
-            HardwareCheckScreen(repo) { navController.popBackStack() }
-        }
-        composable(Routes.FLASH) {
-            FlashStatusScreen(repo) { navController.popBackStack() }
-        }
-        composable(Routes.CONSOLE) {
-            CommandConsoleScreen(repo) { navController.popBackStack() }
         }
     }
 }
@@ -144,7 +60,7 @@ private fun BlePermissionGate(state: BlePermissionState) {
         )
         Spacer(Modifier.height(10.dp))
         Text(
-            "调试界面直接读取 LGPS 设备的 Status / Control / Log 特征，必须先授予蓝牙权限才能扫描和连接。",
+            "Life_GPS 通过 BLE 与定位设备通信，必须先授予蓝牙权限才能扫描、配对和同步数据。",
             color = TextDim,
             fontSize = 13.sp,
         )
@@ -178,7 +94,7 @@ private fun BleUnsupportedNotice() {
         )
         Spacer(Modifier.height(10.dp))
         Text(
-            "系统未声明 FEATURE_BLUETOOTH_LE。Life_GPS 的数据全部来自 BLE GATT，没有 BLE 硬件时调试界面不可用。",
+            "系统未声明 FEATURE_BLUETOOTH_LE。Life_GPS 全部数据来自 BLE GATT，没有 BLE 硬件时无法连接设备。",
             color = TextDim,
             fontSize = 13.sp,
         )

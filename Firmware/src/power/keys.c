@@ -13,23 +13,18 @@
 
 LOG_MODULE_REGISTER(lgps_keys, LOG_LEVEL_INF);
 
-#define KEY_POLL_PERIOD_MS 10
 #define KEY_SETTLE_MS 5
-/*
- * Immediate-mode logging formats on the caller's stack, and the key self-test
- * prints eight-argument lines; 1 KiB left no margin for that on top of the
- * debounce state machine. 2 KiB costs 1 KiB of RAM (main stack is 4 KiB).
- */
-#define KEY_THREAD_STACK 2048
-#define KEY_THREAD_PRIORITY 8
 
 struct lgps_key_state {
+	enum lgps_key_id id;
 	const struct gpio_dt_spec *spec;
 	const char *name;
+	struct gpio_callback irq_cb;
+	struct k_work_delayable debounce_work;
+	struct k_work_delayable hold_work;
 	uint8_t stable_pressed;
-	uint8_t candidate_pressed;
-	uint8_t candidate_samples;
 	uint32_t press_start_ms;
+	bool pairing_sent;
 	bool long_sent;
 	/* False until the key has been seen released once: a key that is low at boot
 	 * cannot start the 8 s power-off countdown. */
@@ -39,155 +34,30 @@ struct lgps_key_state {
 static const struct gpio_dt_spec key_poi = GPIO_DT_SPEC_GET(DT_NODELABEL(key_poi), gpios);
 static const struct gpio_dt_spec key_mode = GPIO_DT_SPEC_GET(DT_NODELABEL(key_mode), gpios);
 
-/*
- * The board has no external pull-up on either key, so the internal one is not
- * optional: without it an open button leaves the pin floating. Enforce the
- * devicetree flag at build time instead of trusting a comment.
- * gpio_pin_configure_dt() ORs spec->dt_flags into the configuration, so a flag
- * that is present here is a flag that reaches the driver.
- */
 BUILD_ASSERT((DT_GPIO_FLAGS(DT_NODELABEL(key_poi), gpios) & GPIO_PULL_UP) != 0,
 	     "KEY1_POI (P1.06) must carry GPIO_PULL_UP in devicetree: no external pull-up");
 BUILD_ASSERT((DT_GPIO_FLAGS(DT_NODELABEL(key_mode), gpios) & GPIO_PULL_UP) != 0,
 	     "KEY2_MODE (P1.08) must carry GPIO_PULL_UP in devicetree: no external pull-up");
 
 static struct lgps_key_state keys[LGPS_KEY_COUNT] = {
-	[LGPS_KEY_POI] = { .spec = &key_poi, .name = "KEY1_POI" },
-	[LGPS_KEY_MODE] = { .spec = &key_mode, .name = "KEY2_MODE" },
+	[LGPS_KEY_POI] = { .id = LGPS_KEY_POI, .spec = &key_poi, .name = "KEY1_POI" },
+	[LGPS_KEY_MODE] = { .id = LGPS_KEY_MODE, .spec = &key_mode, .name = "KEY2_MODE" },
 };
 
 static lgps_key_callback_t key_callback;
+static atomic_t debounced_levels = ATOMIC_INIT(0);
 
-/*
- * Read the PHYSICAL pad level.
- *
- * The keys are declared GPIO_ACTIVE_LOW, and gpio_pin_get()/gpio_pin_get_dt()
- * return the *logical* level: the driver inverts it for pins marked ACTIVE_LOW.
- * Using those here inverted the state machine - "released" looked pressed and the
- * first real press looked like a release - which is exactly the behaviour seen on
- * the bench. gpio_pin_get_raw() ignores GPIO_ACTIVE_LOW, so 0 always means "the
- * button is pulling the pad to ground".
- */
 static int read_level(const struct gpio_dt_spec *spec)
 {
 	return gpio_pin_get_raw(spec->port, spec->pin);
 }
 
-/* The thread is created by K_THREAD_DEFINE, which starts it during kernel init,
- * i.e. before lgps_keys_init() runs. It must not sample unconfigured pins. */
-static K_SEM_DEFINE(keys_ready_sem, 0, 1);
-
-/*
- * Bench diagnostic for a pin that reads low at boot. A low reading has three very
- * different causes and they must not be confused:
- *   (a) the button really is held / the net is shorted to ground,
- *   (b) the devicetree pull flags never reached the driver, so the pin floats,
- *   (c) the driver ignores the pull configuration.
- * Reading the pin after each explicit configuration separates them, and the
- * devicetree flag value is printed so a lost GPIO_PULL_UP is visible.
- */
-static void diagnose_key_pin(const struct gpio_dt_spec *spec, const char *name)
+static void update_level_mask(enum lgps_key_id id, uint8_t pressed)
 {
-	gpio_flags_t effective = 0U;
-	uint32_t port_in = 0U;
-	int as_dt;
-	int explicit_up;
-	int explicit_down;
-	bool fault = false;
-	int ret;
-
-	/* Configuration exactly as the devicetree asks (pull-up | active low). */
-	ret = gpio_pin_configure_dt(spec, GPIO_INPUT);
-	if (ret < 0) {
-		LOG_ERR("%s: configure from devicetree failed (%d)", name, ret);
-		return;
-	}
-	k_msleep(2);
-	as_dt = read_level(spec);
-
-	/*
-	 * Ignore devicetree flags: request the pull directly. This also clears the
-	 * invert bit that GPIO_ACTIVE_LOW produced, which is what the raw pull
-	 * experiment needs; the restore call below re-applies dt_flags, so the
-	 * inverted (logical) view comes back.
-	 */
-	ret = gpio_pin_configure(spec->port, spec->pin, GPIO_INPUT | GPIO_PULL_UP);
-	if (ret < 0) {
-		LOG_ERR("%s: explicit pull-up failed (%d)", name, ret);
-		return;
-	}
-	k_msleep(2);
-	explicit_up = read_level(spec);
-
-	ret = gpio_pin_configure(spec->port, spec->pin, GPIO_INPUT | GPIO_PULL_DOWN);
-	if (ret < 0) {
-		LOG_ERR("%s: explicit pull-down failed (%d)", name, ret);
-		return;
-	}
-	k_msleep(2);
-	explicit_down = read_level(spec);
-
-	/* Restore the board configuration (dt_flags are OR-ed back in). */
-	ret = gpio_pin_configure_dt(spec, GPIO_INPUT);
-	if (ret < 0) {
-		LOG_ERR("%s: restore failed (%d) - the pad keeps the self-test pull-down "
-			"until the next reset", name, ret);
-	}
-
-	/*
-	 * What the driver thinks the pin is: a missing GPIO_INPUT or GPIO_PULL_UP here
-	 * means the configuration never reached the hardware, which is a completely
-	 * different fault from an externally driven pin. Both reads are checked: an
-	 * unchecked gpio_pin_get_config() failure left effective = 0 and the code below
-	 * then reported "configuration did not reach the hardware" for a driver fault it
-	 * had never actually observed.
-	 */
-	ret = gpio_pin_get_config(spec->port, spec->pin, &effective);
-	if (ret < 0) {
-		LOG_ERR("%s: gpio_pin_get_config failed (%d): pull-up state unknown, the "
-			"diagnosis below is incomplete", name, ret);
-	} else if (gpio_port_get_raw(spec->port, &port_in) < 0) {
-		LOG_ERR("%s: gpio_port_get_raw failed", name);
-	}
-
-	if ((effective & GPIO_PULL_UP) == 0U) {
-		LOG_ERR("%s: the driver reports no pull-up on this pin - configuration did not "
-			"reach the hardware", name);
-		fault = true;
-	} else if ((explicit_up == 0) && (explicit_down == 0)) {
-		LOG_WRN("%s: both pulls read 0 -> the pin is externally driven low "
-			"(held button, net shorted to GND, or the wrong pin)", name);
-		fault = true;
-	} else if ((explicit_up == 0) && (explicit_down == 1)) {
-		LOG_ERR("%s: the pull configuration has no effect on the pin (driver / pin mux)",
-			name);
-		fault = true;
-	} else if ((explicit_up == 1) && (explicit_down == 1)) {
-		LOG_WRN("%s: both pulls read 1 -> the pin is externally driven high", name);
-		fault = true;
-	} else if (as_dt == 0) {
-		/*
-		 * up=1/down=0 proves the pull-up works and the button is open, so the low
-		 * reading taken right after the first configuration is a settling artefact,
-		 * not a wiring fault. Initialisation now uses the settled value.
-		 */
-		LOG_WRN("%s: pull-up works and the key is released, but the first sample after "
-			"configuration read low (pad settling); using the settled sample", name);
+	if (pressed != 0U) {
+		(void)atomic_or(&debounced_levels, (atomic_val_t)BIT(id));
 	} else {
-		LOG_INF("%s: pull-up works, key is released", name);
-	}
-
-	/* The raw pad state is what a support case needs, and it is noise on a healthy
-	 * boot: it used to be two unconditional WRN lines, which meant a held button
-	 * produced four warnings per boot and drowned everything else. Print it once,
-	 * only when the verdict above is a fault.
-	 */
-	if (fault) {
-		LOG_WRN("%s: pad dt_flags=0x%02x effective=0x%02x port_IN=0x%08x bit%u=%u "
-			"(dt=%d explicit_up=%d explicit_down=%d)", name, spec->dt_flags,
-			effective, port_in, spec->pin,
-			(unsigned int)((port_in >> spec->pin) & 0x01U), as_dt, explicit_up,
-			explicit_down);
+		(void)atomic_and(&debounced_levels, (atomic_val_t)~BIT(id));
 	}
 }
 
@@ -198,10 +68,56 @@ static void notify(enum lgps_key_id id, enum lgps_key_event_type event, uint32_t
 	}
 }
 
-static void update_key(enum lgps_key_id id, uint32_t now_ms)
+static void hold_work_handler(struct k_work *work)
 {
-	struct lgps_key_state *key = &keys[id];
+	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+	struct lgps_key_state *key = CONTAINER_OF(dwork, struct lgps_key_state, hold_work);
+	int level;
+	uint32_t now_ms;
+	uint32_t held_ms;
+
+	if (!key->armed || (key->stable_pressed == 0U)) {
+		return;
+	}
+
+	level = read_level(key->spec);
+	if (level != 0) {
+		/* Key already released; let debounce handler finish release transition. */
+		(void)k_work_reschedule(&key->debounce_work, K_MSEC(LGPS_KEY_DEBOUNCE_MS));
+		return;
+	}
+
+	now_ms = k_uptime_get_32();
+	held_ms = now_ms - key->press_start_ms;
+
+	if (!key->pairing_sent && (held_ms >= LGPS_KEY_PAIRING_PRESS_MS)) {
+		key->pairing_sent = true;
+		LOG_INF("%s pairing hold (%u ms)", key->name, held_ms);
+		notify(key->id, LGPS_KEY_EVENT_PAIRING_PRESS, held_ms);
+	}
+
+	if (!key->long_sent && (held_ms >= LGPS_KEY_LONG_PRESS_MS)) {
+		key->long_sent = true;
+		LOG_INF("%s long press (%u ms)", key->name, held_ms);
+		notify(key->id, LGPS_KEY_EVENT_LONG_PRESS, held_ms);
+		return;
+	}
+
+	if (!key->long_sent) {
+		uint32_t next_target =
+			key->pairing_sent ? LGPS_KEY_LONG_PRESS_MS : LGPS_KEY_PAIRING_PRESS_MS;
+		uint32_t remain = (next_target > held_ms) ? (next_target - held_ms) : 10U;
+
+		(void)k_work_reschedule(&key->hold_work, K_MSEC(remain));
+	}
+}
+
+static void debounce_work_handler(struct k_work *work)
+{
+	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+	struct lgps_key_state *key = CONTAINER_OF(dwork, struct lgps_key_state, debounce_work);
 	int value = read_level(key->spec);
+	uint32_t now_ms;
 	uint8_t pressed;
 
 	if (value < 0) {
@@ -209,43 +125,31 @@ static void update_key(enum lgps_key_id id, uint32_t now_ms)
 		return;
 	}
 
-	/* Active low: pressed == 0. */
 	pressed = (value == 0) ? 1U : 0U;
-
-	if (pressed != key->candidate_pressed) {
-		key->candidate_pressed = pressed;
-		key->candidate_samples = 0U;
-		return;
-	}
-
-	if (key->candidate_samples < 255U) {
-		key->candidate_samples++;
-	}
-
-	if (key->candidate_samples != (LGPS_KEY_DEBOUNCE_MS / KEY_POLL_PERIOD_MS)) {
-		return;
-	}
-
 	if (pressed == key->stable_pressed) {
 		return;
 	}
 
+	now_ms = k_uptime_get_32();
 	key->stable_pressed = pressed;
+	update_level_mask(key->id, pressed);
 
 	if (pressed != 0U) {
 		key->press_start_ms = now_ms;
+		key->pairing_sent = false;
 		key->long_sent = false;
 
 		if (!key->armed) {
-			/* Level was already low at boot: wait for a real release first. */
 			return;
 		}
 
-		/* Immediate feedback: the user must see the press before releasing. */
 		LOG_INF("%s pressed", key->name);
-		notify(id, LGPS_KEY_EVENT_PRESS, 0U);
+		notify(key->id, LGPS_KEY_EVENT_PRESS, 0U);
+		(void)k_work_reschedule(&key->hold_work, K_MSEC(LGPS_KEY_PAIRING_PRESS_MS));
 		return;
 	}
+
+	(void)k_work_cancel_delayable(&key->hold_work);
 
 	if (!key->armed) {
 		key->armed = true;
@@ -255,50 +159,23 @@ static void update_key(enum lgps_key_id id, uint32_t now_ms)
 
 	uint32_t held_ms = now_ms - key->press_start_ms;
 
-	if (!key->long_sent && held_ms < LGPS_KEY_SHORT_PRESS_MS) {
-		notify(id, LGPS_KEY_EVENT_SHORT_PRESS, held_ms);
+	if (!key->long_sent && !key->pairing_sent && (held_ms < LGPS_KEY_SHORT_PRESS_MS)) {
+		notify(key->id, LGPS_KEY_EVENT_SHORT_PRESS, held_ms);
 	}
 
 	LOG_DBG("%s released after %u ms", key->name, held_ms);
-	notify(id, LGPS_KEY_EVENT_RELEASE, held_ms);
+	notify(key->id, LGPS_KEY_EVENT_RELEASE, held_ms);
 }
 
-static void keys_thread(void *arg1, void *arg2, void *arg3)
+static void key_gpio_isr(const struct device *port, struct gpio_callback *cb, uint32_t pins)
 {
-	ARG_UNUSED(arg1);
-	ARG_UNUSED(arg2);
-	ARG_UNUSED(arg3);
+	struct lgps_key_state *key = CONTAINER_OF(cb, struct lgps_key_state, irq_cb);
 
-	if (k_sem_take(&keys_ready_sem, K_FOREVER) != 0) {
-		return;
-	}
+	ARG_UNUSED(port);
+	ARG_UNUSED(pins);
 
-	for (;;) {
-		uint32_t now_ms = k_uptime_get_32();
-
-		for (uint8_t id = 0U; id < LGPS_KEY_COUNT; id++) {
-			update_key((enum lgps_key_id)id, now_ms);
-
-			struct lgps_key_state *key = &keys[id];
-
-			if (key->armed && key->stable_pressed != 0U && !key->long_sent) {
-				uint32_t held_ms = now_ms - key->press_start_ms;
-
-				if (held_ms >= LGPS_KEY_LONG_PRESS_MS) {
-					key->long_sent = true;
-					LOG_INF("%s long press (%u ms)", key->name, held_ms);
-					notify((enum lgps_key_id)id, LGPS_KEY_EVENT_LONG_PRESS,
-					       held_ms);
-				}
-			}
-		}
-
-		k_msleep(KEY_POLL_PERIOD_MS);
-	}
+	(void)k_work_reschedule(&key->debounce_work, K_MSEC(LGPS_KEY_DEBOUNCE_MS));
 }
-
-K_THREAD_DEFINE(lgps_keys_thread, KEY_THREAD_STACK, keys_thread, NULL, NULL, NULL,
-		KEY_THREAD_PRIORITY, 0, 0);
 
 int lgps_keys_init(lgps_key_callback_t callback)
 {
@@ -306,6 +183,7 @@ int lgps_keys_init(lgps_key_callback_t callback)
 
 	for (uint8_t id = 0U; id < LGPS_KEY_COUNT; id++) {
 		struct lgps_key_state *key = &keys[id];
+		int level;
 		int ret;
 
 		if (!gpio_is_ready_dt(key->spec)) {
@@ -313,64 +191,56 @@ int lgps_keys_init(lgps_key_callback_t callback)
 			return -ENODEV;
 		}
 
-		/* Internal pull-up, active low; no RC network on the board. */
 		ret = gpio_pin_configure_dt(key->spec, GPIO_INPUT);
 		if (ret < 0) {
 			LOG_ERR("%s: configure failed (%d)", key->name, ret);
 			return ret;
 		}
 
-		/*
-		 * Let the pad settle before the first sample: right after the pull-up is
-		 * enabled the very first read can still return the old level, which would
-		 * latch a "pressed" state that no event can clear.
-		 */
 		k_msleep(KEY_SETTLE_MS);
 
-		int level = read_level(key->spec);
-
+		level = read_level(key->spec);
 		if (level < 0) {
 			LOG_ERR("%s: initial read failed (%d)", key->name, level);
 			return level;
 		}
 
-		if (level == 0) {
-			LOG_WRN("%s reads low after settling: long press disarmed until it is "
-				"released once", key->name);
-			diagnose_key_pin(key->spec, key->name);
+		key->stable_pressed = (level == 0) ? 1U : 0U;
+		key->press_start_ms = k_uptime_get_32();
+		key->pairing_sent = false;
+		key->long_sent = false;
+		key->armed = (key->stable_pressed == 0U);
+		update_level_mask(key->id, key->stable_pressed);
 
-			/* Use the settled value the diagnostic left behind. */
-			level = read_level(key->spec);
-			if (level < 0) {
-				LOG_ERR("%s: read after self-test failed (%d)", key->name, level);
-				return level;
-			}
+		if (!key->armed) {
+			LOG_WRN("%s reads low at boot: disarmed until released once", key->name);
 		}
 
-		key->stable_pressed = (level == 0) ? 1U : 0U;
-		key->candidate_pressed = key->stable_pressed;
-		key->press_start_ms = k_uptime_get_32();
-		key->armed = (key->stable_pressed == 0U);
+		k_work_init_delayable(&key->debounce_work, debounce_work_handler);
+		k_work_init_delayable(&key->hold_work, hold_work_handler);
+
+		gpio_init_callback(&key->irq_cb, key_gpio_isr, BIT(key->spec->pin));
+		ret = gpio_add_callback(key->spec->port, &key->irq_cb);
+		if (ret < 0) {
+			LOG_ERR("%s: gpio_add_callback failed (%d)", key->name, ret);
+			return ret;
+		}
+
+		ret = gpio_pin_interrupt_configure_dt(key->spec, GPIO_INT_EDGE_BOTH);
+		if (ret < 0) {
+			LOG_ERR("%s: interrupt configure failed (%d)", key->name, ret);
+			return ret;
+		}
 	}
 
-	LOG_INF("keys ready: KEY1_POI=P1.06 KEY2_MODE=P1.08 (pull-up, %u ms debounce, "
-		"%u ms long press, arm-on-release)", LGPS_KEY_DEBOUNCE_MS, LGPS_KEY_LONG_PRESS_MS);
-
-	/* Sampling may start only now that both pins are configured and settled. */
-	k_sem_give(&keys_ready_sem);
+	LOG_INF("keys ready (IRQ): KEY1_POI=P1.06 KEY2_MODE=P1.08 (pull-up, %u ms debounce, "
+		"%u ms pairing, %u ms power-off)",
+		LGPS_KEY_DEBOUNCE_MS, LGPS_KEY_PAIRING_PRESS_MS, LGPS_KEY_LONG_PRESS_MS);
 
 	return 0;
 }
 
 uint8_t lgps_keys_levels(void)
 {
-	uint8_t levels = 0U;
-
-	for (uint8_t id = 0U; id < LGPS_KEY_COUNT; id++) {
-		if (keys[id].stable_pressed != 0U) {
-			levels |= (uint8_t)BIT(id);
-		}
-	}
-
-	return levels;
+	return (uint8_t)atomic_get(&debounced_levels);
 }

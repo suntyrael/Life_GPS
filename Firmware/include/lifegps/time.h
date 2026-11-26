@@ -107,6 +107,24 @@ void lgps_time_init(void);
  */
 bool lgps_time_sync(uint32_t utc_epoch_s, uint32_t uptime_ms);
 
+enum lgps_time_source {
+	LGPS_TIME_SRC_BUILD = 0,
+	LGPS_TIME_SRC_EXTERNAL = 1,
+	LGPS_TIME_SRC_GNSS = 2,
+};
+
+/*
+ * Set the clock from an external host (BLE SET_TIME 0x11) at @p uptime_ms.
+ *
+ * Returns true when applied (or accepted while GNSS remains authoritative).
+ * When @p out_drift_s is non-NULL it receives (previous_utc - epoch_s), or
+ * INT32_MAX when the clock was previously unavailable.
+ */
+bool lgps_time_set_external(uint32_t epoch_s, uint32_t uptime_ms, int32_t *out_drift_s);
+
+/* Current clock authority: BUILD (0), EXTERNAL (1) or GNSS (2). */
+enum lgps_time_source lgps_time_source(void);
+
 /* True only after at least one accepted GNSS sync in this boot. */
 bool lgps_time_synced(void);
 

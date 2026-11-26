@@ -10,17 +10,22 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.ParcelUuid
 import androidx.core.content.ContextCompat
 import com.lifegps.app.debug.ScannedDevice
+import com.lifegps.core.model.BondState
 import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
@@ -45,56 +50,58 @@ sealed class LinkState {
     data class ERROR(val message: String) : LinkState()
 }
 
-
 /**
  * Thin wrapper around the Android BLE APIs.
  *
- * Runtime permissions are checked before every scan/connect (`scanPermissionGranted`
- * / `connectPermissionGranted`) and the checks are mirrored by the UI gate; the
- * class-level lint suppression is only there because lint cannot see through
- * those helpers.
- *
- * Responsibilities kept here (and deliberately not in the repository):
+ * Responsibilities:
  *  - scanning with a Service-UUID filter, falling back to an unfiltered scan;
- *  - the connection setup order: connected -> requestMtu -> discoverServices ->
- *    CCCD subscriptions -> READY;
- *  - serialising GATT operations so `requestMtu` and `discoverServices` never
- *    race (the stack only allows one outstanding request).
- *
- * Decoding is not done here: characteristic values are forwarded as raw bytes.
+ *  - connection setup: connected -> requestMtu(247) -> discoverServices ->
+ *    CCCD subscriptions -> READY (plus best-effort 2M PHY request);
+ *  - serialising GATT operations so only one request is outstanding at a time;
+ *  - observing platform BLE bonding state (`ACTION_BOND_STATE_CHANGED`);
+ *  - gating debug-only Telemetry / Log CCCDs via [setDebugStreamsEnabled].
  */
 @SuppressLint("MissingPermission")
-class BleTransport(context: Context) {
+class BleTransport(
+    context: Context,
+    initialDebugStreamsEnabled: Boolean = true,
+) : LifeGpsTransport {
 
     private val appContext: Context = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val writeMutex = Mutex()
 
     private val _state = MutableStateFlow<LinkState>(LinkState.DISCONNECTED)
-    val state: StateFlow<LinkState> = _state.asStateFlow()
+    override val state: StateFlow<LinkState> = _state.asStateFlow()
+
+    private val _bondState = MutableStateFlow(BondState.NONE)
+    override val bondState: StateFlow<BondState> = _bondState.asStateFlow()
 
     private val _scanning = MutableStateFlow(false)
-    val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
+    override val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
 
     private val _scanError = MutableStateFlow<String?>(null)
-    val scanError: StateFlow<String?> = _scanError.asStateFlow()
+    override val scanError: StateFlow<String?> = _scanError.asStateFlow()
 
     /** Last negotiated ATT MTU; 0 until the stack reports one. */
-    var connectionMtu: Int = 0
+    override var connectionMtu: Int = 0
         private set
 
-    var onDeviceFound: ((ScannedDevice) -> Unit)? = null
-    var onStatus: ((ByteArray) -> Unit)? = null
-    var onLog: ((ByteArray) -> Unit)? = null
+    override var onDeviceFound: ((ScannedDevice) -> Unit)? = null
+    override var onStatus: ((ByteArray) -> Unit)? = null
+    override var onLog: ((ByteArray) -> Unit)? = null
+    override var onFrame: ((ByteArray) -> Unit)? = null
+    override var onTelemetry: ((ByteArray) -> Unit)? = null
+    override var onData: ((ByteArray) -> Unit)? = null
 
-    /** Raw response frames from the Control characteristic. */
-    var onFrame: ((ByteArray) -> Unit)? = null
-
-    /** Raw Telemetry notifications (IMU / PDR packets). */
-    var onTelemetry: ((ByteArray) -> Unit)? = null
+    @Volatile
+    private var debugStreamsEnabled: Boolean = initialDebugStreamsEnabled
 
     @Volatile
     private var closed = false
+
+    @Volatile
+    private var activeAddress: String? = null
 
     @Volatile
     private var gatt: BluetoothGatt? = null
@@ -104,6 +111,12 @@ class BleTransport(context: Context) {
 
     @Volatile
     private var controlChar: BluetoothGattCharacteristic? = null
+
+    @Volatile
+    private var dataChar: BluetoothGattCharacteristic? = null
+
+    @Volatile
+    private var configChar: BluetoothGattCharacteristic? = null
 
     @Volatile
     private var logChar: BluetoothGattCharacteristic? = null
@@ -121,6 +134,50 @@ class BleTransport(context: Context) {
     private var filteredScan = true
 
     private var scanTimeoutJob: Job? = null
+    private var bondReceiverRegistered = false
+
+    private val bondReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
+            val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+            }
+            if (device != null && activeAddress != null && device.address == activeAddress) {
+                val raw = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
+                _bondState.value = mapBondState(raw)
+            }
+        }
+    }
+
+    init {
+        try {
+            ContextCompat.registerReceiver(
+                appContext,
+                bondReceiver,
+                IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED),
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+            bondReceiverRegistered = true
+        } catch (_: Throwable) {
+            bondReceiverRegistered = false
+        }
+    }
+
+    override fun setDebugStreamsEnabled(enabled: Boolean) {
+        if (debugStreamsEnabled == enabled) return
+        debugStreamsEnabled = enabled
+        if (_state.value == LinkState.READY) {
+            if (logChar != null) {
+                enqueueOp { writeCccd(BleUuids.LOG, enable = enabled) }
+            }
+            if (telemChar != null) {
+                enqueueOp { writeCccd(BleUuids.TELEMETRY, enable = enabled) }
+            }
+        }
+    }
 
     // --- serialised GATT operation queue -------------------------------------
 
@@ -167,12 +224,7 @@ class BleTransport(context: Context) {
 
     // --- scanning -------------------------------------------------------------
 
-    /**
-     * Starts a 10 s scan. Results are filtered by the Life_GPS Service UUID; if
-     * nothing is seen after a few seconds the scan restarts unfiltered so that
-     * devices whose advertising packet is malformed still show up.
-     */
-    fun scan(onDevice: (ScannedDevice) -> Unit) {
+    override fun scan(onDevice: (ScannedDevice) -> Unit) {
         if (closed || _scanning.value) return
         onDeviceFound = onDevice
         _scanError.value = null
@@ -230,8 +282,8 @@ class BleTransport(context: Context) {
                 if (current != null) {
                     try {
                         current.stopScan(scanCallback)
-                    } catch (ignored: SecurityException) {
-                        // ignore: the scan will be stopped by the timeout anyway
+                    } catch (_: SecurityException) {
+                        // timeout will stop scan
                     }
                     filteredScan = false
                     startScan(current, filtered = false)
@@ -242,21 +294,21 @@ class BleTransport(context: Context) {
         }
     }
 
-    fun stopScan() {
+    override fun stopScan() {
         scanTimeoutJob?.cancel()
         scanTimeoutJob = null
         val scanner = try {
             adapter()?.bluetoothLeScanner
-        } catch (error: SecurityException) {
+        } catch (_: SecurityException) {
             null
         }
         if (scanner != null) {
             try {
                 scanner.stopScan(scanCallback)
-            } catch (ignored: SecurityException) {
+            } catch (_: SecurityException) {
                 // ignore
-            } catch (ignored: IllegalStateException) {
-                // Bluetooth was turned off while scanning
+            } catch (_: IllegalStateException) {
+                // Bluetooth turned off while scanning
             }
         }
         _scanning.value = false
@@ -274,9 +326,9 @@ class BleTransport(context: Context) {
         return try {
             scanner.startScan(filters, settings, scanCallback)
             true
-        } catch (ignored: SecurityException) {
+        } catch (_: SecurityException) {
             false
-        } catch (ignored: IllegalStateException) {
+        } catch (_: IllegalStateException) {
             false
         }
     }
@@ -288,7 +340,7 @@ class BleTransport(context: Context) {
             val advertised = result.scanRecord?.deviceName?.takeIf { it.isNotBlank() }
             val platformName = advertised ?: try {
                 device.name
-            } catch (error: SecurityException) {
+            } catch (_: SecurityException) {
                 null
             }
             onDeviceFound?.invoke(
@@ -312,7 +364,7 @@ class BleTransport(context: Context) {
 
     // --- connection -----------------------------------------------------------
 
-    fun connect(address: String) {
+    override fun connect(address: String) {
         if (closed) return
         stopScan()
         val adapter = adapter()
@@ -326,7 +378,7 @@ class BleTransport(context: Context) {
         }
         val enabled = try {
             adapter.isEnabled
-        } catch (error: SecurityException) {
+        } catch (_: SecurityException) {
             _state.value = LinkState.ERROR("读取蓝牙状态失败：缺少权限")
             return
         }
@@ -336,23 +388,29 @@ class BleTransport(context: Context) {
         }
         val device = try {
             adapter.getRemoteDevice(address)
-        } catch (error: IllegalArgumentException) {
+        } catch (_: IllegalArgumentException) {
             _state.value = LinkState.ERROR("MAC 地址无效：$address")
             return
         }
 
         forgetGatt(gatt, disconnectFirst = true)
+        activeAddress = address
+        _bondState.value = try {
+            mapBondState(device.bondState)
+        } catch (_: SecurityException) {
+            BondState.NONE
+        }
         cccdFailed = false
         connectionMtu = 0
         _state.value = LinkState.CONNECTING
         try {
             gatt = device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-        } catch (error: SecurityException) {
+        } catch (_: SecurityException) {
             _state.value = LinkState.ERROR("缺少 BLUETOOTH_CONNECT 权限")
         }
     }
 
-    fun disconnect() {
+    override fun disconnect() {
         val current = gatt
         if (current == null) {
             _state.value = LinkState.DISCONNECTED
@@ -360,7 +418,7 @@ class BleTransport(context: Context) {
         }
         try {
             current.disconnect()
-        } catch (error: SecurityException) {
+        } catch (_: SecurityException) {
             _state.value = LinkState.ERROR("缺少 BLUETOOTH_CONNECT 权限")
         }
     }
@@ -370,6 +428,8 @@ class BleTransport(context: Context) {
             gatt = null
             statusChar = null
             controlChar = null
+            dataChar = null
+            configChar = null
             logChar = null
             telemChar = null
         }
@@ -377,13 +437,13 @@ class BleTransport(context: Context) {
             if (disconnectFirst) {
                 try {
                     target.disconnect()
-                } catch (ignored: Throwable) {
+                } catch (_: Throwable) {
                     // already gone
                 }
             }
             try {
                 target.close()
-            } catch (ignored: Throwable) {
+            } catch (_: Throwable) {
                 // already closed
             }
         }
@@ -401,13 +461,23 @@ class BleTransport(context: Context) {
         }
     }
 
+    private fun dispatchCharacteristic(uuid: UUID, value: ByteArray) {
+        when (uuid) {
+            BleUuids.STATUS -> onStatus?.invoke(value)
+            BleUuids.LOG -> onLog?.invoke(value)
+            BleUuids.CONTROL -> onFrame?.invoke(value)
+            BleUuids.TELEMETRY -> onTelemetry?.invoke(value)
+            BleUuids.DATA -> onData?.invoke(value)
+            else -> Unit
+        }
+    }
+
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             if (g !== gatt) {
-                // A callback from a previous connection after reconnect/disconnect.
                 try {
                     g.close()
-                } catch (ignored: Throwable) {
+                } catch (_: Throwable) {
                     // ignore
                 }
                 return
@@ -433,6 +503,15 @@ class BleTransport(context: Context) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 connectionMtu = mtu
             }
+            try {
+                g.setPreferredPhy(
+                    BluetoothDevice.PHY_LE_2M_MASK,
+                    BluetoothDevice.PHY_LE_2M_MASK,
+                    BluetoothDevice.PHY_OPTION_NO_PREFERRED,
+                )
+            } catch (_: Throwable) {
+                // Best-effort 2M PHY request; keep going regardless.
+            }
             completeOp()
         }
 
@@ -451,6 +530,8 @@ class BleTransport(context: Context) {
             }
             statusChar = service.getCharacteristic(BleUuids.STATUS)
             controlChar = service.getCharacteristic(BleUuids.CONTROL)
+            dataChar = service.getCharacteristic(BleUuids.DATA)
+            configChar = service.getCharacteristic(BleUuids.CONFIG)
             logChar = service.getCharacteristic(BleUuids.LOG)
             telemChar = service.getCharacteristic(BleUuids.TELEMETRY)
             if (controlChar == null) {
@@ -460,16 +541,19 @@ class BleTransport(context: Context) {
             }
             completeOp()
             if (statusChar != null) {
-                enqueueOp { writeCccd(BleUuids.STATUS) }
-            }
-            if (logChar != null) {
-                enqueueOp { writeCccd(BleUuids.LOG) }
-            }
-            if (telemChar != null) {
-                enqueueOp { writeCccd(BleUuids.TELEMETRY) }
+                enqueueOp { writeCccd(BleUuids.STATUS, enable = true) }
             }
             if (controlChar != null) {
-                enqueueOp { writeCccd(BleUuids.CONTROL) }
+                enqueueOp { writeCccd(BleUuids.CONTROL, enable = true) }
+            }
+            if (dataChar != null) {
+                enqueueOp { writeCccd(BleUuids.DATA, enable = true) }
+            }
+            if (debugStreamsEnabled && logChar != null) {
+                enqueueOp { writeCccd(BleUuids.LOG, enable = true) }
+            }
+            if (debugStreamsEnabled && telemChar != null) {
+                enqueueOp { writeCccd(BleUuids.TELEMETRY, enable = true) }
             }
             enqueueOp {
                 _state.value = if (cccdFailed) {
@@ -493,77 +577,121 @@ class BleTransport(context: Context) {
             completeOp()
         }
 
+        override fun onCharacteristicChanged(
+            g: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+        ) {
+            if (g !== gatt) return
+            dispatchCharacteristic(characteristic.uuid, value.copyOf())
+        }
+
         @Suppress("DEPRECATION")
-        override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+        @Deprecated("Deprecated in API 33")
+        override fun onCharacteristicChanged(
+            g: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+        ) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) return
             if (g !== gatt) return
             val value = characteristic.value ?: return
-            when (characteristic.uuid) {
-                BleUuids.STATUS -> onStatus?.invoke(value.copyOf())
-                BleUuids.LOG -> onLog?.invoke(value.copyOf())
-                BleUuids.CONTROL -> onFrame?.invoke(value.copyOf())
-                BleUuids.TELEMETRY -> onTelemetry?.invoke(value.copyOf())
-                else -> Unit
-            }
+            dispatchCharacteristic(characteristic.uuid, value.copyOf())
         }
     }
 
-    @Suppress("DEPRECATION")
-    private fun writeCccd(uuid: UUID): Boolean {
+    private fun writeCccd(uuid: UUID, enable: Boolean): Boolean {
         val current = gatt ?: return false
         val service = current.getService(BleUuids.SERVICE) ?: return false
         val characteristic = service.getCharacteristic(uuid) ?: return false
-        if (!current.setCharacteristicNotification(characteristic, true)) return false
+        if (!current.setCharacteristicNotification(characteristic, enable)) return false
         val descriptor = characteristic.getDescriptor(BleUuids.CCCD) ?: return false
-        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-        return current.writeDescriptor(descriptor)
+        val payload = if (enable) {
+            BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+        } else {
+            BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
+        }
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            current.writeDescriptor(descriptor, payload) == BluetoothStatusCodes.SUCCESS
+        } else {
+            @Suppress("DEPRECATION")
+            descriptor.value = payload
+            @Suppress("DEPRECATION")
+            current.writeDescriptor(descriptor)
+        }
     }
 
     // --- command writes -------------------------------------------------------
 
-    /**
-     * Writes one command frame to Control. Write-without-response is preferred;
-     * when the stack refuses to queue it, the write is retried as an acknowledged
-     * write with the same bytes.
-     */
-    fun send(bytes: ByteArray) {
+    override fun send(bytes: ByteArray) {
         if (closed) return
         scope.launch {
             writeMutex.withLock { writeNow(bytes) }
         }
     }
 
-    @Suppress("DEPRECATION")
     private fun writeNow(bytes: ByteArray) {
         val current = gatt ?: return
         val characteristic = controlChar ?: return
-        characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-        characteristic.value = bytes
-        val queued = try {
-            current.writeCharacteristic(characteristic)
-        } catch (error: SecurityException) {
-            false
-        }
+        val queued = writeCharCompat(
+            current,
+            characteristic,
+            bytes,
+            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE,
+        )
         if (queued) return
-        characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-        characteristic.value = bytes
-        try {
-            current.writeCharacteristic(characteristic)
-        } catch (ignored: SecurityException) {
-            // Dropped: the caller times out and reports "-- TIMEOUT" to the user.
-        }
+        writeCharCompat(
+            current,
+            characteristic,
+            bytes,
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+        )
     }
 
-    /** Releases the GATT client and stops scanning. Safe to call repeatedly. */
-    fun close() {
+    private fun writeCharCompat(
+        g: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        bytes: ByteArray,
+        writeType: Int,
+    ): Boolean = try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            g.writeCharacteristic(characteristic, bytes, writeType) == BluetoothStatusCodes.SUCCESS
+        } else {
+            @Suppress("DEPRECATION")
+            characteristic.writeType = writeType
+            @Suppress("DEPRECATION")
+            characteristic.value = bytes
+            @Suppress("DEPRECATION")
+            g.writeCharacteristic(characteristic)
+        }
+    } catch (_: SecurityException) {
+        false
+    }
+
+    override fun close() {
         if (closed) return
         closed = true
         stopScan()
         scope.cancel()
+        if (bondReceiverRegistered) {
+            try {
+                appContext.unregisterReceiver(bondReceiver)
+            } catch (_: Throwable) {
+                // ignore
+            }
+            bondReceiverRegistered = false
+        }
         forgetGatt(gatt, disconnectFirst = true)
         _state.value = LinkState.DISCONNECTED
+        _bondState.value = BondState.NONE
     }
 
     // --- platform helpers -----------------------------------------------------
+
+    private fun mapBondState(raw: Int): BondState = when (raw) {
+        BluetoothDevice.BOND_BONDED -> BondState.BONDED
+        BluetoothDevice.BOND_BONDING -> BondState.BONDING
+        else -> BondState.NONE
+    }
 
     private fun adapter(): BluetoothAdapter? =
         (appContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter

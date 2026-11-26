@@ -49,6 +49,7 @@
 #include <lifegps/gnss.h>
 #include <lifegps/led.h>
 #include <lifegps/telemetry.h>
+#include <lifegps/time.h>
 #include <lifegps/traj.h>
 
 #include "ble_internal.h"
@@ -359,8 +360,10 @@ static void telem_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 
 static struct k_thread command_thread;
 K_THREAD_STACK_DEFINE(command_stack, LGPS_BLE_CMD_THREAD_STACK);
+#if defined(CONFIG_LGPS_BLE_LOG)
 static struct k_thread log_drain_thread;
 K_THREAD_STACK_DEFINE(log_drain_stack, LGPS_BLE_LOG_THREAD_STACK);
+#endif
 
 #define LGPS_BLE_CMD_QUEUE_DEPTH 2
 
@@ -576,10 +579,11 @@ static uint8_t reply_not_supported(uint8_t opcode)
 static uint8_t cmd_get_caps(uint8_t *payload, size_t capacity, size_t *out_len)
 {
 	struct lgps_ble_caps caps = {
-		.caps = LGPS_BLE_CAP_STATUS_NOTIFY | LGPS_BLE_CAP_LOG_NOTIFY | LGPS_BLE_CAP_POI |
-			LGPS_BLE_CAP_FLASH_INFO | LGPS_BLE_CAP_REBOOT |
+		.caps = LGPS_BLE_CAP_STATUS_NOTIFY |
+			(IS_ENABLED(CONFIG_LGPS_BLE_LOG) ? LGPS_BLE_CAP_LOG_NOTIFY : 0U) |
+			LGPS_BLE_CAP_POI | LGPS_BLE_CAP_FLASH_INFO | LGPS_BLE_CAP_REBOOT |
 			LGPS_BLE_CAP_DEBUG_UNLOCK | LGPS_BLE_CAP_GNSS_DEBUG | LGPS_BLE_CAP_GNSS_CFG |
-			LGPS_BLE_CAP_BARO_BASELINE |
+			LGPS_BLE_CAP_GNSS_RESTART | LGPS_BLE_CAP_BARO_BASELINE |
 			(IS_ENABLED(CONFIG_LGPS_CALIB)
 				 ? (LGPS_BLE_CAP_MAG_CAL | LGPS_BLE_CAP_ACCEL_CAL)
 				 : 0U),
@@ -1012,6 +1016,10 @@ static uint8_t cmd_accel_cal(const struct lgps_ble_cmd *cmd, uint8_t *payload, s
 
 static uint8_t cmd_log_subscribe(const struct lgps_ble_cmd *cmd)
 {
+	if (!IS_ENABLED(CONFIG_LGPS_BLE_LOG)) {
+		return LGPS_BLE_NOT_SUPPORTED;
+	}
+
 	if (cmd->payload_len != 1U) {
 		return LGPS_BLE_INVALID_ARGUMENT;
 	}
@@ -1227,6 +1235,49 @@ static uint8_t cmd_gnss_cfg(const struct lgps_ble_cmd *cmd, uint8_t *payload, si
 	return LGPS_BLE_OK;
 }
 
+static uint8_t cmd_set_time(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t capacity,
+			    size_t *out_len)
+{
+	uint32_t epoch_s;
+	uint16_t subsec_ms;
+	int16_t tz_offset_min;
+	int32_t drift_s = INT32_MAX;
+
+	if ((cmd->payload_len != 8U) || (capacity < 6U)) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	epoch_s = (uint32_t)cmd->payload[0] | ((uint32_t)cmd->payload[1] << 8) |
+		  ((uint32_t)cmd->payload[2] << 16) | ((uint32_t)cmd->payload[3] << 24);
+	subsec_ms = (uint16_t)((uint16_t)cmd->payload[4] | ((uint16_t)cmd->payload[5] << 8));
+	tz_offset_min = (int16_t)((uint16_t)cmd->payload[6] | ((uint16_t)cmd->payload[7] << 8));
+
+	if ((epoch_s == 0U) || (subsec_ms > 999U)) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	if (tz_offset_min != 0x7FFF) {
+		int32_t offset_s = (int32_t)tz_offset_min * 60;
+
+		if (lgps_time_set_local_offset_s(offset_s) != 0) {
+			return LGPS_BLE_INVALID_ARGUMENT;
+		}
+	}
+
+	if (!lgps_time_set_external(epoch_s, lgps_diag_uptime_ms(), &drift_s)) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	payload[1] = (uint8_t)((uint32_t)drift_s & 0xFFU);
+	payload[2] = (uint8_t)(((uint32_t)drift_s >> 8) & 0xFFU);
+	payload[3] = (uint8_t)(((uint32_t)drift_s >> 16) & 0xFFU);
+	payload[4] = (uint8_t)(((uint32_t)drift_s >> 24) & 0xFFU);
+	payload[5] = (uint8_t)lgps_time_source();
+	*out_len = 6U;
+
+	return LGPS_BLE_OK;
+}
+
 static uint8_t dispatch(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t capacity,
 			size_t *out_len)
 {
@@ -1237,6 +1288,8 @@ static uint8_t dispatch(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t
 		return cmd_get_caps(payload, capacity, out_len);
 	case LGPS_CMD_GET_STATUS:
 		return cmd_get_status(payload, capacity, out_len);
+	case LGPS_CMD_SET_TIME:
+		return cmd_set_time(cmd, payload, capacity, out_len);
 	case LGPS_CMD_POI_MARK:
 		return cmd_poi_mark(payload, capacity, out_len);
 	case LGPS_CMD_MAG_CAL:
@@ -1331,27 +1384,32 @@ static void command_handler(void *unused1, void *unused2, void *unused3)
 
 /* --- log forwarding -------------------------------------------------------- */
 
+#if defined(CONFIG_LGPS_BLE_LOG)
 static void log_handler(void *unused1, void *unused2, void *unused3)
 {
-	uint8_t packet[LGPS_BLE_LOG_MAX_PACKET];
+	static uint8_t packet[LGPS_BLE_LOG_MAX_PACKET];
 
 	ARG_UNUSED(unused1);
 	ARG_UNUSED(unused2);
 	ARG_UNUSED(unused3);
 
 	for (;;) {
-		size_t len = lgps_ble_log_pop(packet, sizeof(packet));
+		(void)lgps_ble_log_wait(K_FOREVER);
 
-		if (len == 0U) {
-			k_msleep(LGPS_BLE_LOG_DRAIN_MS);
-			continue;
-		}
+		for (;;) {
+			size_t len = lgps_ble_log_pop(packet, sizeof(packet));
 
-		if (log_subscribed) {
-			notify_guarded(log_attr, packet, (uint16_t)len);
+			if (len == 0U) {
+				break;
+			}
+
+			if (log_subscribed) {
+				notify_guarded(log_attr, packet, (uint16_t)len);
+			}
 		}
 	}
 }
+#endif
 
 /* --- connection ------------------------------------------------------------ */
 
@@ -1756,8 +1814,10 @@ int lgps_ble_init(void)
 	k_thread_create(&command_thread, command_stack, K_THREAD_STACK_SIZEOF(command_stack),
 			command_handler, NULL, NULL, NULL, LGPS_BLE_THREAD_PRIO, 0, K_NO_WAIT);
 
+#if defined(CONFIG_LGPS_BLE_LOG)
 	k_thread_create(&log_drain_thread, log_drain_stack, K_THREAD_STACK_SIZEOF(log_drain_stack),
 			log_handler, NULL, NULL, NULL, LGPS_BLE_THREAD_PRIO, 0, K_NO_WAIT);
+#endif
 
 	err = start_advertising();
 	if (err != 0) {

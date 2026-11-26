@@ -23,11 +23,11 @@ target_sources(app PRIVATE
   src/main.c
   src/ble/ble_frame.c
   src/ble/ble_gatt.c
-  src/ble/ble_log.c
   src/board/board_io.c
   src/diag/diag.c
   src/diag/telemetry.c
   src/gnss/gnss.c
+  src/gnss/gnss_fsm.c
   src/gnss/ubx.c
   src/imu/lsm6dsv16x.c
   src/imu/bmp388.c
@@ -47,6 +47,12 @@ target_sources(app PRIVATE
   src/util/crc.c
   src/util/time.c
 )
+
+if(CONFIG_LGPS_BLE_LOG)
+  target_sources(app PRIVATE
+    src/ble/ble_log.c
+  )
+endif()
 
 # Calibration: pure maths + session state (src/calib/calib.c, unit tested on
 # native_sim) and the NOR record backend (src/calib/calib_store.c).

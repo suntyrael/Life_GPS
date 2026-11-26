@@ -22,8 +22,9 @@
 #include <stdint.h>
 
 #define LGPS_KEY_DEBOUNCE_MS 100U
-#define LGPS_KEY_LONG_PRESS_MS 8000U
 #define LGPS_KEY_SHORT_PRESS_MS 800U
+#define LGPS_KEY_PAIRING_PRESS_MS 3000U
+#define LGPS_KEY_LONG_PRESS_MS 8000U
 
 enum lgps_key_id {
 	LGPS_KEY_POI = 0,
@@ -36,20 +37,21 @@ enum lgps_key_event_type {
 	LGPS_KEY_EVENT_RELEASE,
 	LGPS_KEY_EVENT_SHORT_PRESS,
 	LGPS_KEY_EVENT_LONG_PRESS,
+	LGPS_KEY_EVENT_PAIRING_PRESS,
 };
 
 typedef void (*lgps_key_callback_t)(enum lgps_key_id key, enum lgps_key_event_type event,
 				    uint32_t held_ms);
 
 /*
- * Start the 10 ms polling thread. @p callback is invoked from that thread, so it
- * may block (the power state machine waits for the LED sequence there).
+ * Configure GPIO edge interrupts and delayable debounce / hold timers.
+ * @p callback runs on the system workqueue and must not sleep for long periods.
  */
 int lgps_keys_init(lgps_key_callback_t callback);
 
 /*
  * Debounced key levels as a bitmask: bit0 = KEY1_POI pressed, bit1 = KEY2_MODE
- * pressed. Used by the telemetry frame so the raw pin state is always visible.
+ * pressed. Thread-safe atomic read.
  */
 uint8_t lgps_keys_levels(void);
 

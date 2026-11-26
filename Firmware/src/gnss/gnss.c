@@ -64,6 +64,8 @@ RING_BUF_DECLARE(gnss_rx_ring, GNSS_RX_RING_SIZE);
 
 static struct lgps_ubx_parser parser;
 static struct lgps_gnss_fix current_fix;
+static struct k_spinlock fix_lock;
+static K_SEM_DEFINE(gnss_wake_sem, 0, 1);
 static enum lgps_gnss_state gnss_state = LGPS_GNSS_STATE_OFF;
 static uint32_t state_since_ms;
 static uint32_t last_pvt_log_ms;
@@ -502,11 +504,15 @@ static void set_state(enum lgps_gnss_state next, uint32_t duration_ms)
 
 void lgps_gnss_get_fix(struct lgps_gnss_fix *out)
 {
+	k_spinlock_key_t key;
+
 	if (out == NULL) {
 		return;
 	}
 
+	key = k_spin_lock(&fix_lock);
 	*out = current_fix;
+	k_spin_unlock(&fix_lock, key);
 }
 
 void lgps_gnss_get_ttff(struct lgps_gnss_ttff *out)
@@ -529,13 +535,10 @@ enum lgps_gnss_state lgps_gnss_get_state(void)
 
 static void gnss_uart_isr(const struct device *dev, void *user_data)
 {
+	bool got_bytes = false;
+
 	ARG_UNUSED(user_data);
 
-	/*
-	 * uart_irq_update() is a three-valued return: 1 = this interrupt belongs to
-	 * the UART, 0 = spurious, negative = the driver has no interrupt support
-	 * (-ENOTSUP / -ENOSYS). Treating it as a boolean spun on the error case.
-	 */
 	if (uart_irq_update(dev) != 1) {
 		return;
 	}
@@ -544,17 +547,6 @@ static void gnss_uart_isr(const struct device *dev, void *user_data)
 		return;
 	}
 
-	/*
-	 * uart_fifo_read() is a drain loop, not a one-shot read: the driver returns at
-	 * most what the FIFO holds right now, and the documented contract is to call it
-	 * until it returns 0. A single fixed-size read per interrupt leaves bytes in
-	 * the FIFO while the receiver keeps clocking new ones in.
-	 *
-	 * NOTHING in this function may log: CONFIG_LOG_MODE_IMMEDIATE sends every
-	 * character through the UARTE30 poll_out path while holding the log lock
-	 * (log_output.c), which costs several milliseconds - exactly when the GNSS
-	 * FIFO is overflowing. Drops are counted here and reported by the thread.
-	 */
 	for (;;) {
 		uint8_t chunk[32];
 		uint32_t stored;
@@ -565,6 +557,7 @@ static void gnss_uart_isr(const struct device *dev, void *user_data)
 			break;
 		}
 
+		got_bytes = true;
 		atomic_add(&isr_rx_bytes, (atomic_val_t)read);
 
 		for (int i = 0; i < read; i++) {
@@ -578,6 +571,10 @@ static void gnss_uart_isr(const struct device *dev, void *user_data)
 		if (stored < (uint32_t)read) {
 			atomic_add(&isr_rx_dropped, (atomic_val_t)((uint32_t)read - stored));
 		}
+	}
+
+	if (got_bytes) {
+		k_sem_give(&gnss_wake_sem);
 	}
 }
 
@@ -1624,42 +1621,36 @@ static void handle_nav_pvt(const struct lgps_nav_pvt *pvt)
 		}
 	}
 
-	current_fix.valid = fix_valid;
-	current_fix.utc_valid = utc_ok;
-	current_fix.fix_type = pvt->fix_type;
-	current_fix.satellites = pvt->num_sv;
-	/*
-	 * pDOP 99.99 is the receiver's "no solution" sentinel, not a DOP value; it
-	 * must not reach the status frame, where the App would render it as a real
-	 * DOP of 99.99. hDOP/vDOP come from NAV-DOP and carry the same sentinel.
-	 */
-	current_fix.pdop_1e2 = (fix_valid && (pvt->pdop_1e2 < 9999U)) ? pvt->pdop_1e2 : 0U;
-	if (!fix_valid) {
-		current_fix.hdop_1e2 = 0U;
-		current_fix.vdop_1e2 = 0U;
+	{
+		k_spinlock_key_t key = k_spin_lock(&fix_lock);
+
+		current_fix.valid = fix_valid;
+		current_fix.utc_valid = utc_ok;
+		current_fix.fix_type = pvt->fix_type;
+		current_fix.satellites = pvt->num_sv;
+		current_fix.pdop_1e2 =
+			(fix_valid && (pvt->pdop_1e2 < 9999U)) ? pvt->pdop_1e2 : 0U;
+		if (!fix_valid) {
+			current_fix.hdop_1e2 = 0U;
+			current_fix.vdop_1e2 = 0U;
+		}
+		current_fix.lat_e7 = pvt->lat_e7;
+		current_fix.lon_e7 = pvt->lon_e7;
+		current_fix.height_mm = pvt->height_mm;
+		current_fix.hmsl_mm = pvt->hmsl_mm;
+		current_fix.h_acc_mm = pvt->hacc_mm;
+		current_fix.v_acc_mm = pvt->vacc_mm;
+		current_fix.s_acc_mms = pvt->sacc_mms;
+		current_fix.head_acc_1e5 = pvt->headacc_1e5;
+		current_fix.speed_cms = (uint16_t)(pvt->gspeed_mms / 10);
+		current_fix.heading_ddeg = (uint16_t)((pvt->head_mot_1e5 + 18000000) / 1000);
+		if (current_fix.heading_ddeg >= 3600U) {
+			current_fix.heading_ddeg = 0U;
+		}
+		current_fix.utc_epoch_s = epoch_s;
+		current_fix.last_pvt_uptime_ms = now_ms;
+		k_spin_unlock(&fix_lock, key);
 	}
-	current_fix.lat_e7 = pvt->lat_e7;
-	current_fix.lon_e7 = pvt->lon_e7;
-	current_fix.height_mm = pvt->height_mm;
-	current_fix.hmsl_mm = pvt->hmsl_mm;
-	current_fix.h_acc_mm = pvt->hacc_mm;
-	current_fix.v_acc_mm = pvt->vacc_mm;
-	current_fix.s_acc_mms = pvt->sacc_mms;
-	current_fix.head_acc_1e5 = pvt->headacc_1e5;
-	current_fix.speed_cms = (uint16_t)(pvt->gspeed_mms / 10);
-	/*
-	 * headMot is 1e-5 deg in [-180, +180]; heading_ddeg wants 1e-2 deg in
-	 * [0, 360). Dividing by 1000 is the unit change (1e-5 -> 1e-2), and the offset
-	 * that shifts a signed course into a bearing is 180 deg = 18000000 units of
-	 * 1e-5 deg. The previous code added 1800000, i.e. 18 deg, which rotated every
-	 * heading by 18 degrees short of north.
-	 */
-	current_fix.heading_ddeg = (uint16_t)((pvt->head_mot_1e5 + 18000000) / 1000);
-	if (current_fix.heading_ddeg >= 3600U) {
-		current_fix.heading_ddeg = 0U;
-	}
-	current_fix.utc_epoch_s = epoch_s;
-	current_fix.last_pvt_uptime_ms = now_ms;
 
 	/* Every valid UTC re-anchors the software clock; losing the fix later does
 	 * not stop it. lgps_time_sync() rejects an implausible value (0, or more
@@ -1814,14 +1805,18 @@ static void handle_cfg_valget(void)
  */
 static void handle_nav_dop(const struct lgps_ubx_nav_dop *dop)
 {
+	k_spinlock_key_t key = k_spin_lock(&fix_lock);
+
 	if (!current_fix.valid || (dop->hdop_1e2 >= 9999U) || (dop->vdop_1e2 >= 9999U)) {
 		current_fix.hdop_1e2 = 0U;
 		current_fix.vdop_1e2 = 0U;
+		k_spin_unlock(&fix_lock, key);
 		return;
 	}
 
 	current_fix.hdop_1e2 = dop->hdop_1e2;
 	current_fix.vdop_1e2 = dop->vdop_1e2;
+	k_spin_unlock(&fix_lock, key);
 }
 
 static void gnss_process_rx(void)
@@ -2518,7 +2513,14 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 			break;
 		}
 
-		k_msleep(20);
+		{
+			uint32_t wait_ms = ((gnss_state == LGPS_GNSS_STATE_OFF) ||
+					    (gnss_state == LGPS_GNSS_STATE_BACKOFF))
+						   ? 500U
+						   : 50U;
+
+			(void)k_sem_take(&gnss_wake_sem, K_MSEC(wait_ms));
+		}
 	}
 }
 

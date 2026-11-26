@@ -342,4 +342,27 @@ ZTEST(lifegps_time, test_sync_rejects_invalid_anchor)
 	zassert_true(lgps_time_synced(), "accepted boundary sync");
 }
 
+ZTEST(lifegps_time, test_external_time_and_gnss_priority)
+{
+	int32_t drift_s = 0;
+
+	zassert_equal(lgps_time_source(), LGPS_TIME_SRC_BUILD, "starts from build time");
+	zassert_false(lgps_time_set_external(0U, 1000U, &drift_s), "epoch 0 rejected");
+
+	zassert_true(lgps_time_set_external(210000000U, 5000U, &drift_s),
+		     "external SET_TIME accepted before GNSS");
+	zassert_equal(lgps_time_source(), LGPS_TIME_SRC_EXTERNAL, "source is EXTERNAL");
+	zassert_false(lgps_time_synced(), "external time does not pretend to be GNSS");
+	zassert_equal(lgps_time_now_utc_s(7000U), 210000002U, "external clock runs on uptime");
+
+	/* Once GNSS anchors, GNSS takes precedence and subsequent external writes do not overwrite it. */
+	zassert_true(lgps_time_sync(210000100U, 10000U), "GNSS sync accepted");
+	zassert_equal(lgps_time_source(), LGPS_TIME_SRC_GNSS, "source is GNSS");
+	zassert_true(lgps_time_set_external(210000500U, 12000U, &drift_s),
+		     "external SET_TIME still succeeds for drift report");
+	zassert_equal(drift_s, -398, "drift reports previous_utc - host_utc");
+	zassert_equal(lgps_time_source(), LGPS_TIME_SRC_GNSS, "GNSS remains authoritative");
+	zassert_equal(lgps_time_now_utc_s(12000U), 210000102U, "GNSS anchor untouched");
+}
+
 ZTEST_SUITE(lifegps_time, NULL, NULL, time_before, NULL, NULL);

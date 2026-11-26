@@ -14,8 +14,8 @@
 
 | 阶段 | 主题 | 状态 |
 | :--- | :--- | :--- |
-| **M0** | 协议 SSOT 补全、跨端代码生成（C + Kotlin + Golden Vectors）与高危止血修债 | 已完成编码，待 CI 验证 |
-| **M1** | 固件去轮询事件化 + 双配置骨架；App 5 模块化 + Nordic BLE + 双 Flavor 隔离 | 待启动 |
+| **M0** | 协议 SSOT 补全、跨端代码生成（C + Kotlin + Golden Vectors）与高危止血修债 | ✅ 已完成（CI 全绿） |
+| **M1** | 固件去轮询事件化 + 双配置骨架；App 纯 JVM 核心模块 + `LifeGpsTransport` + `dev`/`prod` 双 Flavor 隔离 | 🚧 已完成编码，CI 验证中 |
 | **M2** | 固件超低功耗 4 态电源状态机 + IMU 运动唤醒 + 导航补盲（磁异常/Weinberg/楼层/乘车）+ 周期轨迹落盘 | 待启动 |
 | **M3** | BLE 配对绑定 + 完整 6 特征（Data/Config）+ 夜间无加密原子归档（Byte-Delta+Heatshrink+Journal）+ App 双通道同步与 Room 本地库 | 待启动 |
 | **M4** | Android `prod` 产品终端（MapLibre 地图 + WGS-84/GCJ-02 渲染开关 + 时间线/统计 + POI + GPX/KML/GeoJSON/CSV 导出 + 设置/灯语帮助） | 待启动 |
@@ -34,7 +34,7 @@
 - **协议与工具链**：
   - 修改 [lifegps_protocol.yaml](../../protocol/lifegps_protocol.yaml)、[validate.py](../../tools/protocol-gen/validate.py)、[gen_c.py](../../tools/protocol-gen/gen_c.py)、[protocol.yml](../../.github/workflows/protocol.yml)、[Makefile](../../Makefile)
   - 新增 [schema.py](../../tools/protocol-gen/schema.py)、[gen_kt.py](../../tools/protocol-gen/gen_kt.py)、[gen_vectors.py](../../tools/protocol-gen/gen_vectors.py)
-  - 生成 [lifegps_protocol.h](../../Firmware/include/generated/lifegps_protocol.h)、[GeneratedProtocol.kt](../../App/app/src/main/java/com/lifegps/app/ble/generated/GeneratedProtocol.kt)、9 个跨端共享向量 [manifest.json](../../protocol/vectors/manifest.json) 与 [generated_vectors.h](../../Firmware/tests/lifegps.protogen/src/generated_vectors.h)
+  - 生成 [lifegps_protocol.h](../../Firmware/include/generated/lifegps_protocol.h)、[GeneratedProtocol.kt](../../App/core/protocol/src/main/kotlin/com/lifegps/core/protocol/GeneratedProtocol.kt)（M1 迁入 `:core:protocol`）、9 个跨端共享向量 [manifest.json](../../protocol/vectors/manifest.json) 与 [generated_vectors.h](../../Firmware/tests/lifegps.protogen/src/generated_vectors.h)
 - **固件止血修债**：
   - [ble_uuid.h](../../Firmware/include/lifegps/ble_uuid.h) 委托生成头；[ble_frame.h](../../Firmware/include/lifegps/ble_frame.h) 状态码/能力位对齐生成常量
   - [ble_gatt.c](../../Firmware/src/ble/ble_gatt.c)：`command_handler()` 响应缓冲扩容至完整 235 B 并改为 `static`（省 ~600 B 线程栈）；`disconnected()` 复零 `debug_unlocked = false`
@@ -47,8 +47,27 @@
 
 ### 本地自检与 CI 状态
 - 本地只读自检：`make proto-check` 通过，`make docs-check` 通过（35 Markdown 文件）。
-- GitHub Actions（提交 `91636c6`）：
-  - `protocol`（Run `45777917913`）：✅ 通过（`validate` + `gen_c/gen_kt/gen_vectors --check`）
-  - `docs`（Run `45777917901`）：✅ 通过
-  - `firmware`（Run `45777917995`）：✅ 通过（`flash=271508 B / 729088 B`，`ram=64613 B / 262144 B`，`twister` 13/13 全过含 `lifegps.protogen` C 侧 Golden Vectors 校验）
-  - `app`（Run `45777917983`）：首次因 `GoldenVectorsTest.kt` KDoc 中 `/*.bin` 触发 Kotlin 嵌套注释语法错失败，已立即修复并重推验证。
+- GitHub Actions（提交 `91636c6` + `6d88f55`）：
+  - `protocol`（Run `45777917913`）：✅ 通过
+  - `docs`（Run `457779207014`）：✅ 通过
+  - `firmware`（Run `45777917995`）：✅ 通过（`flash=271508 B / 729088 B`，`ram=64613 B / 262144 B`，`twister` 13/13 全过）
+  - `app`（Run `45779206907`）：✅ 通过（修复 `GoldenVectorsTest.kt` KDoc `/*` 嵌套注释后全绿）
+
+---
+
+## 2026-11-26 · Milestone 1：固件事件化双配置基线 & App 双 Flavor 隔离与核心模块
+
+### 关键设计决策
+1. **固件 `prod` / `debug` 双配置**：`Firmware/prj.conf` 切换为低功耗产品基线（`LOG_MODE_DEFERRED`、`LOG_DEFAULT_LEVEL=2`、关闭周期 UART 文本遥测与 BLE Log 线程、开启 `GPIO_NRFX_INTERRUPT`），原 M1 bring-up 调试配置独立沉淀至 [debug.conf](../../Firmware/conf/debug.conf)，CI 同时构建并体积门禁两种 profile。
+2. **彻底去轮询与并发修复**：
+   - 按键驱动 [keys.c](../../Firmware/src/power/keys.c) 移除 10 ms 轮询线程（省 2048 B 栈），改为 `GPIO_INT_EDGE_BOTH` 中断 + `k_work_delayable` 去抖/3 s 配对/8 s 关机定时，[power_sm.c](../../Firmware/src/power/power_sm.c) 关机流程改为非阻塞 delayable work；
+   - BLE 日志 [ble_log.c](../../Firmware/src/ble/ble_log.c) 改为 `CONFIG_LGPS_BLE_LOG` 门控、信号量事件驱动唤醒（无 20 ms 轮询）且 `k_sem_give` 移出 spinlock 临界区；
+   - GNSS [gnss.c](../../Firmware/src/gnss/gnss.c) 以 `fix_lock` 保护 `current_fix`、UART ISR 触发 `gnss_wake_sem`；新增纯 C 6 态功耗策略状态机 [gnss_fsm.c](../../Firmware/src/gnss/gnss_fsm.c) 与 `lifegps.gnss_fsm` 单测；
+   - 校准模块 [calib.c](../../Firmware/src/calib/calib.c) 加入 Zephyr `k_mutex` 并发保护；[main.c](../../Firmware/src/main.c) 将 Sensor Hub 读盘与 10 Hz BLE Status 解耦为 1 Hz 缓存刷新；[ble_gatt.c](../../Firmware/src/ble/ble_gatt.c) + [time.c](../../Firmware/src/util/time.c) 补齐 `SET_TIME (0x11)` 外部对时。
+3. **Android 生命周期 + 模块化 + `prod`/`dev` 物理隔离**：
+   - 新增纯 JVM 模块 `:core:protocol`（含 `GeneratedProtocol`、`ProtocolCrc`、`TrajectoryRecord`、`DataFrameCodec`、`DayPackageCodec` + Heatshrink W=8/L=4 解码器，直接跑通全部 Golden Vectors）与 `:core:model`（含展示层专用 `CoordTransform` WGS-84↔GCJ-02 转换）；
+   - 新增 [LifeGpsApplication.kt](../../App/app/src/main/java/com/lifegps/app/LifeGpsApplication.kt) 与 `AppContainer` 持有全局 BLE 会话（旋转屏幕不断连），彻底移除 USB-C OTG 依赖（`android.hardware.usb.host` 与 `LogSource.USB`）；
+   - 抽象 [LifeGpsTransport.kt](../../App/app/src/main/java/com/lifegps/app/ble/LifeGpsTransport.kt)，升级 [BleTransport.kt](../../App/app/src/main/java/com/lifegps/app/ble/BleTransport.kt)（API 33+ 非弃用 GATT API、2M PHY 请求、`DATA`/`CONFIG` 特征发现、`BondState` 广播监听、按需启停 Telemetry/Log CCCD）；
+   - 将全部 13 个硬件调试页迁入 `App/app/src/dev/java/com/lifegps/app/debug/`，使 `prod` APK 编译期物理隔离调试代码；新增产品外壳 [ProdAppHost.kt](../../App/app/src/main/java/com/lifegps/app/prod/ProdAppHost.kt)（首页/地图预览/时间轴/设置 + 按键灯语速查 + `SET_TIME` 对时），`dev` flavor 可一键在「硬件调试」与「产品模式」间无缝切换并共享同一 BLE 连接。
+4. **CI 门禁扩容**：[firmware.yml](../../.github/workflows/firmware.yml) 双构建 `prod` + `debug`；[app.yml](../../.github/workflows/app.yml) 运行纯 JVM 核心单测 + `devDebug` 与 `prodDebug` 双构建/单测/Lint 并上传双 APK。
+

@@ -57,17 +57,29 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
+import com.lifegps.core.model.BondState
+import com.lifegps.core.protocol.GeneratedProtocol
+
 /**
- * Debug data source backed by the real GATT link.
+ * Data source backed by the real GATT link (or a test [LifeGpsTransport]).
  *
  * Every number exposed to the UI is derived from a Status notification, a
  * command response or a Log notification. When the firmware does not publish a
  * quantity (quaternions, hPa, per-satellite C/N0, TTFF) the corresponding field
  * stays zero / empty and the screens render "—", never a substitute value.
  */
-class BleDebugRepository(context: Context) : DebugRepository {
+class BleDebugRepository(
+    context: Context,
+    private val transport: LifeGpsTransport = BleTransport(context),
+) : DebugRepository {
 
-    private val transport = BleTransport(context)
+    val linkState: StateFlow<LinkState> get() = transport.state
+    val bondState: StateFlow<BondState> get() = transport.bondState
+
+    fun setDebugStreamsEnabled(enabled: Boolean) {
+        transport.setDebugStreamsEnabled(enabled)
+    }
+
     private val appContext: Context = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val clock = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
@@ -1224,6 +1236,18 @@ class BleDebugRepository(context: Context) : DebugRepository {
         transport.disconnect()
     }
 
+    /** Sends `SET_TIME (0x11)` with the phone's current UTC in Life_GPS epoch seconds. */
+    fun syncTimeNow() {
+        val unixSec = Instant.now().epochSecond
+        val lgpsEpoch = (unixSec - GeneratedProtocol.Meta.EPOCH_UNIX_OFFSET).coerceAtLeast(0L)
+        val b0 = (lgpsEpoch and 0xFFL).toInt()
+        val b1 = ((lgpsEpoch ushr 8) and 0xFFL).toInt()
+        val b2 = ((lgpsEpoch ushr 16) and 0xFFL).toInt()
+        val b3 = ((lgpsEpoch ushr 24) and 0xFFL).toInt()
+        val hexPayload = String.format(Locale.US, "%02X%02X%02X%02X", b0, b1, b2, b3)
+        sendCommand("SET_TIME", hexPayload)
+    }
+
     override fun markPoi() {
         val current = _gnss.value
         if (!current.fix) {
@@ -1955,7 +1979,7 @@ class BleDebugRepository(context: Context) : DebugRepository {
     override fun exportLogs() {
         val directory = appContext.getExternalFilesDir(null)
         if (directory == null) {
-            addLog(LogLevel.ERROR, LogSource.USB, "EXPORT", "外部文件目录不可用（getExternalFilesDir 返回 null），未导出")
+            addLog(LogLevel.ERROR, LogSource.APP, "EXPORT", "外部文件目录不可用（getExternalFilesDir 返回 null），未导出")
             return
         }
         scope.launch {
@@ -1978,12 +2002,12 @@ class BleDebugRepository(context: Context) : DebugRepository {
             }
             outcome.fold(
                 onSuccess = { file ->
-                    addLog(LogLevel.INFO, LogSource.USB, "EXPORT", "日志已写入 ${file.absolutePath}")
+                    addLog(LogLevel.INFO, LogSource.APP, "EXPORT", "日志已写入 ${file.absolutePath}")
                 },
                 onFailure = { error ->
                     addLog(
                         LogLevel.ERROR,
-                        LogSource.USB,
+                        LogSource.APP,
                         "EXPORT",
                         "写入失败：${error.message ?: error.javaClass.simpleName}",
                     )

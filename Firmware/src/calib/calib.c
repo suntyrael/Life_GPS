@@ -17,6 +17,16 @@
 #include <stddef.h>
 #include <string.h>
 
+#if defined(__ZEPHYR__)
+#include <zephyr/kernel.h>
+static K_MUTEX_DEFINE(calib_mutex);
+#define CALIB_LOCK() (void)k_mutex_lock(&calib_mutex, K_FOREVER)
+#define CALIB_UNLOCK() (void)k_mutex_unlock(&calib_mutex)
+#else
+#define CALIB_LOCK() do { } while (0)
+#define CALIB_UNLOCK() do { } while (0)
+#endif
+
 #include <lifegps/calib.h>
 #include <lifegps/calib_store.h>
 #include <lifegps/crc.h>
@@ -144,7 +154,9 @@ static uint32_t known_unix_s;
 void lgps_calib_note_utc(uint32_t unix_s)
 {
 	if (unix_s != 0U) {
+		CALIB_LOCK();
 		known_unix_s = unix_s;
+		CALIB_UNLOCK();
 	}
 }
 
@@ -414,6 +426,7 @@ void lgps_calib_apply_imu(struct lgps_imu_sample *sample)
 		return;
 	}
 
+	CALIB_LOCK();
 	for (axis = 0U; axis < 3U; axis++) {
 		const float nominal_g = (float)sample->raw_accel[axis] * ACCEL_G_PER_LSB;
 		const float gain = 1.0F + ((float)coeffs.accel_scale_ppm[axis] / 1000000.0F);
@@ -430,6 +443,7 @@ void lgps_calib_apply_imu(struct lgps_imu_sample *sample)
 			((float)sample->raw_gyro[axis] * GYRO_MDPS_PER_LSB / 1000.0F) -
 			((float)coeffs.gyro_bias_mdps[axis] / 1000.0F);
 	}
+	CALIB_UNLOCK();
 }
 
 void lgps_calib_apply_mag(float mag_ut[3])
@@ -440,6 +454,7 @@ void lgps_calib_apply_mag(float mag_ut[3])
 		return;
 	}
 
+	CALIB_LOCK();
 	for (axis = 0U; axis < 3U; axis++) {
 		/*
 		 * The wire and the record carry raw LSB; the conversion to uT happens
@@ -451,6 +466,7 @@ void lgps_calib_apply_mag(float mag_ut[3])
 
 		mag_ut[axis] = centred * gain * LGPS_LIS2MDL_UT_PER_LSB;
 	}
+	CALIB_UNLOCK();
 }
 
 /* --- session helpers ------------------------------------------------------- */
@@ -647,6 +663,7 @@ int lgps_calib_init(void)
 	uint32_t seq = 0U;
 	uint32_t unix_s = 0U;
 
+	CALIB_LOCK();
 	load_defaults();
 	memset(&accel, 0, sizeof(accel));
 	memset(&mag, 0, sizeof(mag));
@@ -657,6 +674,7 @@ int lgps_calib_init(void)
 	mag.state = LGPS_CALIB_STATE_IDLE;
 
 	if (lgps_calib_store_load(&stored, &record_flags, &seq, &unix_s) != 0) {
+		CALIB_UNLOCK();
 		return 0;
 	}
 
@@ -669,6 +687,7 @@ int lgps_calib_init(void)
 	} else if ((flags & (LGPS_CALIB_FLAG_MAG_VALID | LGPS_CALIB_FLAG_IMU_VALID)) == 0U) {
 		flags |= infer_sensor_validity(&coeffs);
 	}
+	CALIB_UNLOCK();
 
 	return 0;
 }
@@ -686,6 +705,7 @@ void lgps_calib_snapshot(struct lgps_calib_snapshot *out)
 		return;
 	}
 
+	CALIB_LOCK();
 	memset(out, 0, sizeof(*out));
 	out->coeffs = coeffs;
 	out->flags = flags;
@@ -749,35 +769,40 @@ void lgps_calib_snapshot(struct lgps_calib_snapshot *out)
 		out->mag_progress_permille =
 			((flags & LGPS_CALIB_FLAG_FROM_STORE) != 0U) ? 1000U : 0U;
 	}
+	CALIB_UNLOCK();
 }
 
 /* --- accelerometer session ------------------------------------------------- */
 
 int lgps_calib_accel_start(uint8_t position)
 {
+	int ret = 0;
+
 	if (position > LGPS_CALIB_POSITION_QUICK && position != LGPS_CALIB_POSITION_AUTO) {
 		return -EINVAL;
 	}
 
+	CALIB_LOCK();
 	if (accel.state == LGPS_CALIB_STATE_COLLECTING) {
-		return -EBUSY;
+		ret = -EBUSY;
+	} else {
+		accel_reset_session(position);
 	}
+	CALIB_UNLOCK();
 
-	accel_reset_session(position);
-
-	return 0;
+	return ret;
 }
 
 int lgps_calib_accel_cancel(void)
 {
-	if (accel.state != LGPS_CALIB_STATE_COLLECTING) {
-		return 0;
+	CALIB_LOCK();
+	if (accel.state == LGPS_CALIB_STATE_COLLECTING) {
+		accel.state = LGPS_CALIB_STATE_IDLE;
+		accel.face_state = LGPS_CALIB_FACE_WAIT_REST;
+		accel.samples = 0U;
+		accel.rest_pct = 0U;
 	}
-
-	accel.state = LGPS_CALIB_STATE_IDLE;
-	accel.face_state = LGPS_CALIB_FACE_WAIT_REST;
-	accel.samples = 0U;
-	accel.rest_pct = 0U;
+	CALIB_UNLOCK();
 
 	return 0;
 }
@@ -791,6 +816,7 @@ int lgps_calib_accel_finish(void)
 	uint8_t faces = 0U;
 	int ret;
 
+	CALIB_LOCK();
 	/*
 	 * FINISH_SAVE is expected while the capture is still running (the host polls
 	 * the progress and then finishes), so a collecting state is not an error: the
@@ -807,6 +833,7 @@ int lgps_calib_accel_finish(void)
 		ret = lgps_calib_face_math(accel.face_mean_lsb, accel.face_mask, bias_ug,
 					   scale_ppm);
 		if (ret < 0) {
+			CALIB_UNLOCK();
 			return ret;
 		}
 
@@ -827,6 +854,7 @@ int lgps_calib_accel_finish(void)
 		}
 
 		if (faces == 0U) {
+			CALIB_UNLOCK();
 			return -EAGAIN;
 		}
 
@@ -848,11 +876,17 @@ int lgps_calib_accel_finish(void)
 	accel.quick_valid = false;
 	accel.detected_face = LGPS_CALIB_FACE_NONE;
 
-	return persist_current(false);
+	ret = persist_current(false);
+	CALIB_UNLOCK();
+
+	return ret;
 }
 
 int lgps_calib_accel_clear(void)
 {
+	int ret;
+
+	CALIB_LOCK();
 	memset(coeffs.accel_bias_ug, 0, sizeof(coeffs.accel_bias_ug));
 	memset(coeffs.accel_scale_ppm, 0, sizeof(coeffs.accel_scale_ppm));
 	memset(coeffs.gyro_bias_mdps, 0, sizeof(coeffs.gyro_bias_mdps));
@@ -867,35 +901,42 @@ int lgps_calib_accel_clear(void)
 	accel.quick_valid = false;
 	accel.detected_face = LGPS_CALIB_FACE_NONE;
 
-	return persist_current(true);
+	ret = persist_current(true);
+	CALIB_UNLOCK();
+
+	return ret;
 }
 
 /* --- magnetometer session -------------------------------------------------- */
 
 int lgps_calib_mag_start(void)
 {
+	int ret = 0;
+
+	CALIB_LOCK();
 	if (mag.state == LGPS_CALIB_STATE_COLLECTING) {
-		return -EBUSY;
+		ret = -EBUSY;
+	} else {
+		mag.state = LGPS_CALIB_STATE_COLLECTING;
+		mag.samples = 0U;
+		mag.have_sample = false;
+		memset(mag.min_lsb, 0, sizeof(mag.min_lsb));
+		memset(mag.max_lsb, 0, sizeof(mag.max_lsb));
 	}
+	CALIB_UNLOCK();
 
-	mag.state = LGPS_CALIB_STATE_COLLECTING;
-	mag.samples = 0U;
-	mag.have_sample = false;
-	memset(mag.min_lsb, 0, sizeof(mag.min_lsb));
-	memset(mag.max_lsb, 0, sizeof(mag.max_lsb));
-
-	return 0;
+	return ret;
 }
 
 int lgps_calib_mag_cancel(void)
 {
-	if (mag.state != LGPS_CALIB_STATE_COLLECTING) {
-		return 0;
+	CALIB_LOCK();
+	if (mag.state == LGPS_CALIB_STATE_COLLECTING) {
+		mag.state = LGPS_CALIB_STATE_IDLE;
+		mag.samples = 0U;
+		mag.have_sample = false;
 	}
-
-	mag.state = LGPS_CALIB_STATE_IDLE;
-	mag.samples = 0U;
-	mag.have_sample = false;
+	CALIB_UNLOCK();
 
 	return 0;
 }
@@ -908,14 +949,17 @@ int lgps_calib_mag_finish(void)
 	uint8_t axis;
 	int ret;
 
+	CALIB_LOCK();
 	/* Same as the accelerometer: finishing during collection is the normal flow. */
 	ret = lgps_calib_mag_math(mag.min_lsb, mag.max_lsb, bias_lsb, scale_ppm, coverage_pct);
 	if (ret < 0) {
+		CALIB_UNLOCK();
 		return -EAGAIN;
 	}
 
 	for (axis = 0U; axis < 3U; axis++) {
 		if (coverage_pct[axis] < LGPS_CALIB_MAG_COVERAGE_MIN_PCT) {
+			CALIB_UNLOCK();
 			return -EAGAIN;
 		}
 	}
@@ -929,11 +973,17 @@ int lgps_calib_mag_finish(void)
 	mag.state = LGPS_CALIB_STATE_IDLE;
 	mag.have_sample = false;
 
-	return persist_current(false);
+	ret = persist_current(false);
+	CALIB_UNLOCK();
+
+	return ret;
 }
 
 int lgps_calib_mag_clear(void)
 {
+	int ret;
+
+	CALIB_LOCK();
 	memset(coeffs.mag_bias_lsb, 0, sizeof(coeffs.mag_bias_lsb));
 	memset(coeffs.mag_scale_ppm, 0, sizeof(coeffs.mag_scale_ppm));
 	memset(coeffs.mag_coverage_pct, 0, sizeof(coeffs.mag_coverage_pct));
@@ -942,21 +992,20 @@ int lgps_calib_mag_clear(void)
 	 */
 	flags &= (uint8_t)~LGPS_CALIB_FLAG_MAG_VALID;
 
-	return persist_current(true);
+	ret = persist_current(true);
+	CALIB_UNLOCK();
+
+	return ret;
 }
 
 /* --- feeding --------------------------------------------------------------- */
 
-void lgps_calib_feed_imu(const struct lgps_imu_sample *sample, uint32_t now_ms)
+static void calib_feed_imu_locked(const struct lgps_imu_sample *sample, uint32_t now_ms)
 {
 	float magnitude_g2;
 	float accel_g[3];
 	uint8_t axis;
 	int face;
-
-	if (sample == NULL) {
-		return;
-	}
 
 	if (accel.state != LGPS_CALIB_STATE_COLLECTING) {
 		return;
@@ -1046,11 +1095,28 @@ void lgps_calib_feed_imu(const struct lgps_imu_sample *sample, uint32_t now_ms)
 	accel_store_face((uint8_t)face);
 }
 
+void lgps_calib_feed_imu(const struct lgps_imu_sample *sample, uint32_t now_ms)
+{
+	if (sample == NULL) {
+		return;
+	}
+
+	CALIB_LOCK();
+	calib_feed_imu_locked(sample, now_ms);
+	CALIB_UNLOCK();
+}
+
 void lgps_calib_feed_mag(const int16_t raw_lsb[3])
 {
 	uint8_t axis;
 
-	if ((raw_lsb == NULL) || (mag.state != LGPS_CALIB_STATE_COLLECTING)) {
+	if (raw_lsb == NULL) {
+		return;
+	}
+
+	CALIB_LOCK();
+	if (mag.state != LGPS_CALIB_STATE_COLLECTING) {
+		CALIB_UNLOCK();
 		return;
 	}
 
@@ -1076,4 +1142,5 @@ void lgps_calib_feed_mag(const int16_t raw_lsb[3])
 	if (mag.samples < UINT16_MAX) {
 		mag.samples++;
 	}
+	CALIB_UNLOCK();
 }

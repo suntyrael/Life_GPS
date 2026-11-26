@@ -279,11 +279,13 @@ static int init_subsystems(void)
 
 static struct lgps_telemetry_snapshot *build_snapshot(uint32_t now_ms,
 					      const struct lgps_imu_sample *sample,
-					      bool imu_valid, int32_t bat_mv, bool bat_valid)
+					      bool imu_valid, int32_t bat_mv, bool bat_valid,
+					      bool refresh_hub)
 {
 	static struct lgps_telemetry_snapshot snap;
-	struct lgps_imu_mag mag;
-	struct lgps_imu_baro baro;
+	static struct lgps_imu_mag cached_mag;
+	static struct lgps_imu_baro cached_baro;
+	static bool cached_hub_valid;
 	struct lgps_ring_stats ring;
 	bool charging = false;
 	int ret;
@@ -327,63 +329,61 @@ static struct lgps_telemetry_snapshot *build_snapshot(uint32_t now_ms,
 		}
 	}
 
-	ret = lgps_imu_read_hub(&mag, &baro);
-	if (ret == 0) {
+	/* Decouple external I2C Sensor Hub reads (LIS2MDL + BMP388) from 10 Hz BLE
+	 * Status notifications: refresh at 1 Hz or on first boot, then reuse cache.
+	 */
+	if (refresh_hub || !cached_hub_valid) {
+		ret = lgps_imu_read_hub(&cached_mag, &cached_baro);
+		if (ret == 0) {
+			float mag_ut[3];
+
+			cached_hub_valid = true;
+			lgps_calib_feed_mag(cached_mag.raw);
+
+			for (uint8_t axis = 0U; axis < 3U; axis++) {
+				mag_ut[axis] = (float)cached_mag.raw[axis] * LGPS_LIS2MDL_UT_PER_LSB;
+			}
+
+			lgps_calib_apply_mag(mag_ut);
+			lgps_nav_body_from_mag(mag_ut, hub_mag_body_ut);
+			hub_mag_valid = true;
+		} else if (ret != -EAGAIN) {
+			static uint32_t last_hub_warn_ms;
+
+			if ((uint32_t)(now_ms - last_hub_warn_ms) >= 10000U) {
+				last_hub_warn_ms = now_ms;
+				LOG_WRN("sensor hub read failed (%d)", ret);
+			}
+		}
+	}
+
+	if (cached_hub_valid) {
 		snap.hub_valid = true;
-		snap.mag_valid = mag.valid;
-		snap.baro_valid = baro.valid;
+		snap.mag_valid = cached_mag.valid;
+		snap.baro_valid = cached_baro.valid;
 		for (uint8_t axis = 0U; axis < 3U; axis++) {
-			snap.mag_lsb[axis] = mag.raw[axis];
+			snap.mag_lsb[axis] = cached_mag.raw[axis];
 		}
 		/* LIS2MDL TEMP_OUT: 8 LSB/degC with the +25 degC zero level. */
-		snap.mag_temp_cc = (int16_t)(((float)mag.raw_temp / LGPS_LIS2MDL_TEMP_LSB_PER_C +
+		snap.mag_temp_cc = (int16_t)(((float)cached_mag.raw_temp /
+					      LGPS_LIS2MDL_TEMP_LSB_PER_C +
 					      LGPS_LIS2MDL_TEMP_OFFSET_C) * 100.0F);
-		snap.mag_temp_valid = mag.valid;
-		snap.baro_press_raw = baro.raw_pressure;
-		snap.baro_temp_raw = baro.raw_temperature;
-		snap.baro_comp_valid = baro.compensated;
+		snap.mag_temp_valid = cached_mag.valid;
+		snap.baro_press_raw = cached_baro.raw_pressure;
+		snap.baro_temp_raw = cached_baro.raw_temperature;
+		snap.baro_comp_valid = cached_baro.compensated;
 
-		if (baro.compensated) {
-			/* BMP388 TPG output is already Pa and degC. Clamp to the part's
-			 * specified range before the integer casts: a float outside int16
-			 * range is undefined behaviour on Cortex-M, and anything outside the
-			 * range is a fault the driver has already warned about.
-			 */
-			const float temp_c = CLAMP(baro.temperature_c,
+		if (cached_baro.compensated) {
+			const float temp_c = CLAMP(cached_baro.temperature_c,
 						   LGPS_BMP388_TEMP_MIN_C,
 						   LGPS_BMP388_TEMP_MAX_C);
-			const float press_pa = CLAMP(baro.pressure_pa,
+			const float press_pa = CLAMP(cached_baro.pressure_pa,
 						     LGPS_BMP388_PRESS_MIN_PA,
 						     LGPS_BMP388_PRESS_MAX_PA);
 
 			snap.baro_temp_cc = (int16_t)(temp_c * 100.0F);
 			snap.baro_press_pa = (int32_t)press_pa;
 			snap.baro_temp_valid = true;
-		}
-
-		{
-			float mag_ut[3];
-
-			lgps_calib_feed_mag(mag.raw);
-
-			for (uint8_t axis = 0U; axis < 3U; axis++) {
-				mag_ut[axis] = (float)mag.raw[axis] * LGPS_LIS2MDL_UT_PER_LSB;
-			}
-
-			lgps_calib_apply_mag(mag_ut);
-
-			lgps_nav_body_from_mag(mag_ut, hub_mag_body_ut);
-			hub_mag_valid = true;
-		}
-	} else if (ret != -EAGAIN) {
-		static uint32_t last_hub_warn_ms;
-
-		/* The snapshot is now rebuilt at the BLE publication rate, so a dead
-		 * sensor hub must not turn into ten warning lines per second.
-		 */
-		if ((uint32_t)(now_ms - last_hub_warn_ms) >= 10000U) {
-			last_hub_warn_ms = now_ms;
-			LOG_WRN("sensor hub read failed (%d)", ret);
 		}
 	}
 
@@ -732,7 +732,8 @@ int main(void)
 
 		if (ble_due || telemetry_due) {
 			struct lgps_telemetry_snapshot *snap =
-				build_snapshot(now_ms, &sample, imu_valid, bat_mv, bat_valid);
+				build_snapshot(now_ms, &sample, imu_valid, bat_mv, bat_valid,
+					       telemetry_due);
 
 			if (ble_due) {
 				last_ble_ms = now_ms;
@@ -741,7 +742,9 @@ int main(void)
 
 			if (telemetry_due) {
 				last_telemetry_ms = now_ms;
-				lgps_telemetry_emit(snap);
+				if (IS_ENABLED(CONFIG_LGPS_DIAG_TELEMETRY)) {
+					lgps_telemetry_emit(snap);
+				}
 
 				/* Barometer, once per second: this cadence is what the automatic
 				 * baseline gate counts (30 samples = 30 s), so it must not run in

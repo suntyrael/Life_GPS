@@ -21,15 +21,15 @@ from schema import PROTOCOL, ROOT, TYPE_SIZES, load_protocol, macro_name
 OUTPUT = (
     ROOT
     / "App"
-    / "app"
+    / "core"
+    / "protocol"
     / "src"
     / "main"
-    / "java"
+    / "kotlin"
     / "com"
     / "lifegps"
-    / "app"
-    / "ble"
-    / "generated"
+    / "core"
+    / "protocol"
     / "GeneratedProtocol.kt"
 )
 
@@ -47,7 +47,7 @@ def render(doc: dict) -> str:
     lines: list[str] = [
         "// SPDX-License-Identifier: MIT",
         f"// {BANNER}",
-        "package com.lifegps.app.ble.generated",
+        "package com.lifegps.core.protocol",
         "",
         "import java.util.UUID",
         "",

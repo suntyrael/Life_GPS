@@ -24,6 +24,8 @@ LOG_MODULE_REGISTER(lgps_power, LOG_LEVEL_INF);
 #define SHUTDOWN_SEQUENCE_MS (3U * 3U * 2U * 500U + 500U)
 
 static bool precision_requested;
+static bool shutdown_pending;
+static struct k_work_delayable shutdown_work;
 
 bool lgps_power_precision_requested(void)
 {
@@ -32,7 +34,7 @@ bool lgps_power_precision_requested(void)
 
 static void enter_system_off(void)
 {
-	LOG_INF("shutdown confirmed, entering System OFF (wake source: reset pin only in M1)");
+	LOG_INF("shutdown confirmed, entering System OFF");
 
 	/* Let the last UART line drain before the rail collapses. */
 	k_msleep(50);
@@ -40,10 +42,21 @@ static void enter_system_off(void)
 	sys_poweroff();
 }
 
+static void shutdown_work_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+
+	enter_system_off();
+}
+
 static void on_key(enum lgps_key_id key, enum lgps_key_event_type event, uint32_t held_ms)
 {
 	switch (event) {
 	case LGPS_KEY_EVENT_LONG_PRESS:
+		if (shutdown_pending) {
+			break;
+		}
+		shutdown_pending = true;
 		LOG_INF("%s held %u ms -> power off sequence", key == LGPS_KEY_POI ? "KEY1_POI"
 										 : "KEY2_MODE",
 			held_ms);
@@ -52,8 +65,14 @@ static void on_key(enum lgps_key_id key, enum lgps_key_event_type event, uint32_
 		 */
 		(void)lgps_led_off_all();
 		(void)lgps_led_play(LGPS_LED_PATTERN_SHUTDOWN_CONFIRM);
-		k_msleep((int32_t)SHUTDOWN_SEQUENCE_MS);
-		enter_system_off();
+		(void)k_work_schedule(&shutdown_work, K_MSEC(SHUTDOWN_SEQUENCE_MS));
+		break;
+
+	case LGPS_KEY_EVENT_PAIRING_PRESS:
+		if (key == LGPS_KEY_POI) {
+			LOG_INF("BLE pairing hold detected (KEY1_POI, %u ms)", held_ms);
+			(void)lgps_led_play(LGPS_LED_PATTERN_SYNC);
+		}
 		break;
 
 	case LGPS_KEY_EVENT_PRESS:
@@ -88,6 +107,8 @@ static void on_key(enum lgps_key_id key, enum lgps_key_event_type event, uint32_
 int lgps_power_sm_init(void)
 {
 	int ret;
+
+	k_work_init_delayable(&shutdown_work, shutdown_work_handler);
 
 	ret = lgps_keys_init(on_key);
 	if (ret < 0) {

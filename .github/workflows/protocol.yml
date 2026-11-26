@@ -7,7 +7,7 @@ on:
       - "tools/protocol-gen/**"
       - "Firmware/include/generated/**"
       - "Firmware/tests/lifegps.protogen/src/generated_vectors.h"
-      - "App/app/src/main/java/com/lifegps/app/ble/generated/**"
+      - "App/core/protocol/src/main/kotlin/com/lifegps/core/protocol/GeneratedProtocol.kt"
       - ".github/workflows/protocol.yml"
   pull_request:
     paths:
@@ -15,7 +15,7 @@ on:
       - "tools/protocol-gen/**"
       - "Firmware/include/generated/**"
       - "Firmware/tests/lifegps.protogen/src/generated_vectors.h"
-      - "App/app/src/main/java/com/lifegps/app/ble/generated/**"
+      - "App/core/protocol/src/main/kotlin/com/lifegps/core/protocol/GeneratedProtocol.kt"
       - ".github/workflows/protocol.yml"
   workflow_dispatch:
 

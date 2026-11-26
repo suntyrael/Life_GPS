@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Generated from protocol/lifegps_protocol.yaml by tools/protocol-gen/gen_kt.py - do not edit.
-package com.lifegps.app.ble.generated
+package com.lifegps.core.protocol
 
 import java.util.UUID
 

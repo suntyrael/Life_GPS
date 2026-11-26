@@ -9,7 +9,7 @@ enum class LogLevel(val short: String) {
 
 enum class LogSource(val label: String) {
     BLE("BLE"),
-    USB("USB"),
+    APP("APP"),
 }
 
 data class LogEntry(

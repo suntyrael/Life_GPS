@@ -110,3 +110,20 @@ config LGPS_BARO_SECTOR_INDEX
 	int "External NOR sector holding the barometric baseline record"
 	default 17
 	range 16 4095
+
+# Dual-profile switches (prod default vs conf/debug.conf overlay):
+# Keep UART 1 Hz five-line bring-up telemetry and BLE log forwarding off in the
+# default production profile to save UART airtime, RAM stack and flash space.
+config LGPS_DIAG_TELEMETRY
+	bool "Emit 1 Hz five-line diagnostic telemetry on DEBUG_UART"
+	default n
+
+config LGPS_BLE_LOG
+	bool "Forward Zephyr log lines to the BLE Log characteristic"
+	default n
+
+# System OFF wake confirmation (README section 4.1): enabled in M2 once SENSE
+# wake from System OFF is wired up. Off in debug builds for fast bench resets.
+config LGPS_BOOT_HOLD_8S
+	bool "Require 8 s key hold to confirm wake from System OFF"
+	default n

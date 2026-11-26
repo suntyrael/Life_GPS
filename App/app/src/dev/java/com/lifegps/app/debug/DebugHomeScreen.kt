@@ -160,8 +160,8 @@ fun DebugHomeScreen(
                 SectionHeader("调试工具", "硬件 bring-up 优先")
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     ToolCard(
-                        "串口日志",
-                        "USB / BLE Log\n级别过滤、暂停、导出",
+                        "设备日志",
+                        "BLE Log / 本地事件\n级别过滤、暂停、导出",
                         { onNavigate(Routes.SERIAL) },
                         Modifier.weight(1f),
                     )
