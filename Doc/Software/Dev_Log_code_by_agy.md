@@ -144,19 +144,24 @@
    - `docs` Run `45823408124` ✅ 通过。
    - `app` Run `45823408285` 暴露 `ProductTrackRepository.kt:220` 使用了 API-33 `FileWriter(file, Charsets.UTF_8)`，已在 M5 提交中改为全版本兼容的 `file.bufferedWriter(Charsets.UTF_8)`。
 
-### Milestone 5：MCUboot 内部 RRAM 双槽 OTA、ZMS 绑定持久化与 Android 发布加固（已推送，待 Actions 复核）
+### Milestone 5：MCUboot 内部 RRAM 双槽 OTA、ZMS 绑定持久化与 Android 发布加固（已完成，Actions 全绿 ✅）
 
 1. **固件侧（100% 兼容 32 MB / 64 MB 外部 NOR）**：
-   - 新增 [sysbuild.conf](../../Firmware/sysbuild.conf)（`SB_CONFIG_BOOTLOADER_MCUBOOT=y`），通过 NCS v3.4.2 Partition Manager 在 nRF54L15 **内部 1524 KB RRAM** 中自动划分 `mcuboot` + `mcuboot_primary` + `mcuboot_secondary`（`SWAP_USING_MOVE` + 内置 Ed25519 密钥，无需 KMU OTP 烧录，亦不依赖外部 Flash slot1）。
-   - 更新 [prj.conf](../../Firmware/prj.conf)：开启 ZMS 持久化存储（`CONFIG_SETTINGS=y` / `CONFIG_SETTINGS_ZMS=y` / `CONFIG_ZMS=y` / `CONFIG_BT_SETTINGS=y` / `CONFIG_PM_PARTITION_SIZE_SETTINGS_STORAGE=0x8000`），使 BLE 配对绑定掉电不丢失；开启官方 SMP over BLE OTA（`CONFIG_NCS_SAMPLE_MCUMGR_BT_OTA_DFU=y` + `CONFIG_MCUMGR_TRANSPORT_BT_PERM_RW_ENCRYPT=y`，匹配 Just Works SC Level 2 加密链路）。
+   - 新增 [sysbuild.conf](../../Firmware/sysbuild.conf)（`SB_CONFIG_BOOTLOADER_MCUBOOT=y`），并在板级 DTS [lifegps_nrf54l15_cpuapp.dts](../../Firmware/boards/lifegps/lifegps/lifegps_nrf54l15_cpuapp.dts) 中引入官方 `#include <vendor/nordic/nrf54l15_cpuapp_partition.dtsi>`（`boot_partition 62 KB` / `slot0 712 KB` / `slot1 712 KB` / `storage 36 KB`），采用 `SWAP_USING_MOVE` + 内置 Ed25519 密钥（无需 KMU OTP 烧录，亦不依赖外部 Flash slot1）。
+   - 更新 [prj.conf](../../Firmware/prj.conf)：开启 ZMS 持久化存储（`CONFIG_SETTINGS=y` / `CONFIG_SETTINGS_ZMS=y` / `CONFIG_ZMS=y` / `CONFIG_BT_SETTINGS=y`），使 BLE 配对绑定掉电不丢失；开启官方 SMP over BLE OTA（`CONFIG_NCS_SAMPLE_MCUMGR_BT_OTA_DFU=y` + `CONFIG_MCUMGR_TRANSPORT_BT_PERM_RW_ENCRYPT=y`，匹配 Just Works SC Level 2 加密链路）。
    - 在 [ble_gatt.c](../../Firmware/src/ble/ble_gatt.c) 的 `lgps_ble_init()` 中于 `bt_enable()` 之后调用 `settings_load()` 加载持久化绑定表，并在 `GET_CAPS` 中对外宣告 `LGPS_BLE_CAP_OTA_SMP`。
    - 新增 [ota_mgr.h](../../Firmware/include/lifegps/ota_mgr.h) / [ota_mgr.c](../../Firmware/src/power/ota_mgr.c) 并在 [main.c](../../Firmware/src/main.c) 的 `init_subsystems()` 成功后调用 `lgps_ota_confirm_boot()` 自确认镜像（若启动异常看门狗复位则由 MCUboot 自动回滚）。
-   - 重写 [PARTITIONS.md](../../Firmware/docs/PARTITIONS.md) 与更新 [firmware.yml](../../.github/workflows/firmware.yml)，打印 `partitions.yml` 并上传 `merged.hex`（J-Link 首次烧录）、`zephyr.signed.bin`（BLE OTA 镜像）与 `dfu_application.zip`。
+   - 重写 [PARTITIONS.md](../../Firmware/docs/PARTITIONS.md) 与更新 [firmware.yml](../../.github/workflows/firmware.yml)，合成并上传 `merged.hex`（J-Link 首次烧录）、`zephyr.signed.bin`（BLE OTA 镜像）、`mcuboot/zephyr/zephyr.hex`、`zephyr.signed.hex`、`zephyr.elf`、`zephyr.map`。
 2. **Android 侧（SMP OTA + R8 发布加固）**：
    - 修复 [ProductTrackRepository.kt](../../App/app/src/main/java/com/lifegps/app/data/ProductTrackRepository.kt) `FileWriter` API-33 lint 报错。
    - 在 [libs.versions.toml](../../App/gradle/libs.versions.toml) 与 [build.gradle.kts](../../App/app/build.gradle.kts) 引入 `no.nordicsemi.android:mcumgr-ble:2.5.0`，开启 `release` 的 `isMinifyEnabled = true` / `isShrinkResources = true`，并将应用版本号同步至 `0.5.0`。
    - 新增 [OtaUpdateScreen.kt](../../App/app/src/main/java/com/lifegps/app/prod/OtaUpdateScreen.kt)（SAF 选择 `zephyr.signed.bin`、MCUboot 魔数 `0x96F3B83D` + 体积 + 版本 + SHA-256 校验、电量 ≥ 50% 前置检查、断开业务 GATT 后经 `McuMgrBleTransport` + `FirmwareUpgradeManager` `TEST_AND_CONFIRM` 模式完成上传/交换/确认）与 [OtaImageParserTest.kt](../../App/app/src/test/java/com/lifegps/app/prod/OtaImageParserTest.kt)，并接入 [ProdAppHost.kt](../../App/app/src/main/java/com/lifegps/app/prod/ProdAppHost.kt) 设置页（`prod` / `dev` 双风味共用）。
    - 完善 [proguard-rules.pro](../../App/app/proguard-rules.pro)（保留 MapLibre JNI、MCUmgr/Jackson CBOR 及协议模型）并在 [app.yml](../../.github/workflows/app.yml) 中增加 `:app:assembleProdRelease` R8 门禁与 `app-prod-release-unsigned` 产物上传。
+3. **最终全链路 CI 验收（提交 `bf2a4cf`，全绿 ✅）**：
+   - `firmware` Run `45826060120` ✅：`prod` Flash `339,780 B / 729,088 B`（46.6%，RAM `100,672 B / 262,144 B`，`zephyr.signed.bin` 333 KB，`merged.hex` 1019 KB）；`debug` Flash `346,692 B / 729,088 B`（47.5%，RAM `103,263 B / 262,144 B`，`zephyr.signed.bin` 339 KB，`merged.hex` 1.1 MB）；`twister` **20/20**（100% 零警告）。
+   - `app` Run `45826060094` ✅：`:core:protocol` / `:core:model` / `:core:data` 纯 JVM 单测 + `devDebug` / `prodDebug` 编译/单测/Lint + `prodRelease` R8 混淆加固全通过，产出 `app-dev-debug`、`app-prod-debug`、`app-prod-release-unsigned`。
+   - `docs` Run `45826060099` ✅：35 篇 Markdown 链接检查全通过。
+
 
 
 
