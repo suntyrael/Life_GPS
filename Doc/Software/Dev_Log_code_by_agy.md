@@ -47,4 +47,8 @@
 
 ### 本地自检与 CI 状态
 - 本地只读自检：`make proto-check` 通过，`make docs-check` 通过（35 Markdown 文件）。
-- GitHub Actions：推送 `code_by_agy` 后追踪 `protocol` / `firmware` / `app` / `docs` 四条流水线结果。
+- GitHub Actions（提交 `91636c6`）：
+  - `protocol`（Run `45777917913`）：✅ 通过（`validate` + `gen_c/gen_kt/gen_vectors --check`）
+  - `docs`（Run `45777917901`）：✅ 通过
+  - `firmware`（Run `45777917995`）：✅ 通过（`flash=271508 B / 729088 B`，`ram=64613 B / 262144 B`，`twister` 13/13 全过含 `lifegps.protogen` C 侧 Golden Vectors 校验）
+  - `app`（Run `45777917983`）：首次因 `GoldenVectorsTest.kt` KDoc 中 `/*.bin` 触发 Kotlin 嵌套注释语法错失败，已立即修复并重推验证。

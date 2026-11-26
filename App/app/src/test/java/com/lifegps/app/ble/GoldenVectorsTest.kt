@@ -7,8 +7,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Cross-language contract tests reading the exact same `protocol/vectors/*.bin`
- * golden vectors that `Firmware/tests/lifegps.protogen` validates in C.
+ * Cross-language contract tests reading the exact same golden vector binaries
+ * under `protocol/vectors/` that `Firmware/tests/lifegps.protogen` validates in C.
  */
 class GoldenVectorsTest {
 
