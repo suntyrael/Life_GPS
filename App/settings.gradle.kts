@@ -26,3 +26,4 @@ rootProject.name = "LifeGPS"
 include(":app")
 include(":core:protocol")
 include(":core:model")
+include(":core:data")

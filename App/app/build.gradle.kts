@@ -67,6 +67,7 @@ android {
 dependencies {
     implementation(project(":core:protocol"))
     implementation(project(":core:model"))
+    implementation(project(":core:data"))
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)

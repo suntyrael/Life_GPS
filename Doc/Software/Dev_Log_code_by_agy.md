@@ -114,3 +114,14 @@
    - [ble_frame.h](../../Firmware/include/lifegps/ble_frame.h) / [ble_frame.c](../../Firmware/src/ble/ble_frame.c) 实现 `0x5A` Data 帧编解码；
    - [ble_gatt.c](../../Firmware/src/ble/ble_gatt.c) 补齐 `DATA (0004)`、`CONFIG (0007)` 特征、10 B 扫描响应厂商广播（`LGPS_ADV_*`）、KEY1 3 s 触发 60 s 配对窗口 `lgps_ble_open_pairing_window()`，以及全部 11 条产品命令：`SET_CONFIG (0x13)`、`GET_CONFIG (0x14)`、`SYNC_BEGIN (0x20)`、`SYNC_READ (0x21)`、`SYNC_END (0x22)`、`GET_DAY_INDEX (0x23)`、`GET_ARCHIVE (0x24)`、`SELFTEST (0x40)`、`ERASE_DAY (0x50)`、`FACTORY_RESET (0x51)`、`GET_FAULT_LOG (0x70)`。
 4. **单元测试扩展**：新增 `lifegps.archive`、`lifegps.config` 两套 `twister` 用例（验证 32 MB / 64 MB 边界与全量 TLV 回滚），并扩展 `lifegps.protogen` 直接以 C 真实解码器校验 `data_chunk_trajectory.bin` 与 `day_package_hs.bin`。
+5. **CI 构建修复**：`CONFIG_BT_BUF_ACL_TX_COUNT=10` 触发 Zephyr `buf.h` 静态断言要求 `CONFIG_BT_BUF_EVT_RX_COUNT > CONFIG_BT_BUF_ACL_TX_COUNT`，在 [prj.conf](../../Firmware/prj.conf) 补齐 `CONFIG_BT_BUF_EVT_RX_COUNT=12`。
+
+### M3-B Android 本地存储 + 断点续传同步引擎 + 导出核心
+1. **纯 JVM 模块 `:core:data`**：
+   - [ConfigTlvCodec.kt](../../App/core/data/src/main/kotlin/com/lifegps/core/data/ConfigTlvCodec.kt)：11 项配置 TLV 全量与增量编解码；
+   - [LocalDayStore.kt](../../App/core/data/src/main/kotlin/com/lifegps/core/data/LocalDayStore.kt)：`.lgd` 归档包原子写盘（`.tmp` -> rename）与损坏隔离区 `quarantine/`、`.lgs` 实时流 `seqId` 去重追加、Haversine 里程与日统计；
+   - [TrackSimplifier.kt](../../App/core/data/src/main/kotlin/com/lifegps/core/data/TrackSimplifier.kt)：保留起终点与 POI 的 Douglas-Peucker 轨迹抽稀；
+   - [TrackExporter.kt](../../App/core/data/src/main/kotlin/com/lifegps/core/data/TrackExporter.kt)：严格 WGS-84 的 GPX 1.1 / KML 2.2 / GeoJSON / CSV 流式导出；
+   - [SyncProtocol.kt](../../App/core/data/src/main/kotlin/com/lifegps/core/data/SyncProtocol.kt) + [SyncEngine.kt](../../App/core/data/src/main/kotlin/com/lifegps/core/data/SyncEngine.kt)：双通道断点续传同步（实时环 `0x20/0x21/0x22` + 归档日包 `0x23/0x24`），并补齐 4 套纯 JVM 单元测试接入 [app.yml](../../.github/workflows/app.yml)。
+2. **Android 索引与仓层**：新增 WAL 模式 [TrackIndexDb.kt](../../App/app/src/main/java/com/lifegps/app/data/TrackIndexDb.kt) 与 [ProductTrackRepository.kt](../../App/app/src/main/java/com/lifegps/app/data/ProductTrackRepository.kt)，经 [AppContainer](../../App/app/src/main/java/com/lifegps/app/LifeGpsApplication.kt) 注入全应用。
+

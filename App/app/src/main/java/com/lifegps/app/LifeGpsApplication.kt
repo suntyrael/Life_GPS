@@ -4,6 +4,7 @@ package com.lifegps.app
 import android.app.Application
 import com.lifegps.app.ble.BleDebugRepository
 import com.lifegps.app.ble.BleTransport
+import com.lifegps.app.data.ProductTrackRepository
 import com.lifegps.core.model.CoordSystem
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -12,9 +13,9 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * Application-scoped dependency container.
  *
- * Owns the single [BleTransport] and [BleDebugRepository] instance so BLE links,
- * active calibration sessions, and sync state survive Activity configuration
- * changes (screen rotation, dark-mode toggle, multi-window resize).
+ * Owns the single [BleTransport], [BleDebugRepository], and [ProductTrackRepository]
+ * instances so BLE links, active calibration sessions, and sync state survive Activity
+ * configuration changes (screen rotation, dark-mode toggle, multi-window resize).
  */
 class AppContainer(application: Application) {
     val transport = BleTransport(
@@ -22,6 +23,7 @@ class AppContainer(application: Application) {
         initialDebugStreamsEnabled = true,
     )
     val repo = BleDebugRepository(application, transport)
+    val trackRepo = ProductTrackRepository(application, repo)
 
     private val _displayCoordSystem = MutableStateFlow(CoordSystem.WGS84)
     val displayCoordSystem: StateFlow<CoordSystem> = _displayCoordSystem.asStateFlow()
@@ -31,6 +33,7 @@ class AppContainer(application: Application) {
     }
 
     fun close() {
+        trackRepo.close()
         repo.close()
     }
 }

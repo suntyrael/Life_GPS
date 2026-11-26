@@ -61,7 +61,7 @@ jobs:
             gradle-${{ runner.os }}-
 
       - name: Pure JVM core tests
-        run: ./gradlew :core:protocol:test :core:model:test --stacktrace
+        run: ./gradlew :core:protocol:test :core:model:test :core:data:test --stacktrace
 
       - name: Build, unit test, lint (dev & prod)
         run: >

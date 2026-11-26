@@ -57,7 +57,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
+import com.lifegps.core.data.SyncCommandReply
 import com.lifegps.core.model.BondState
+import com.lifegps.core.protocol.DataFrame
 import com.lifegps.core.protocol.TrajectoryRecord
 
 /**
@@ -76,8 +78,33 @@ class BleDebugRepository(
     val linkState: StateFlow<LinkState> get() = transport.state
     val bondState: StateFlow<BondState> get() = transport.bondState
 
+    @Volatile
+    private var productDataListener: ((DataFrame) -> Unit)? = null
+
     fun setDebugStreamsEnabled(enabled: Boolean) {
         transport.setDebugStreamsEnabled(enabled)
+    }
+
+    fun setProductDataListener(listener: ((DataFrame) -> Unit)?) {
+        productDataListener = listener
+    }
+
+    suspend fun sendProductCommand(
+        opcodeCode: Int,
+        payload: ByteArray,
+        timeoutMs: Long = 3_500L,
+    ): SyncCommandReply? {
+        if (transport.state.value != LinkState.READY) return null
+        val seq = nextSequence()
+        val deferred = CompletableDeferred<CommandResult>()
+        synchronized(pendingLock) { pending[seq] = deferred }
+        transport.send(BleFrame.encodeCommand(opcodeCode, seq, payload))
+        val result = try {
+            withTimeoutOrNull(timeoutMs) { deferred.await() }
+        } finally {
+            synchronized(pendingLock) { pending.remove(seq) }
+        }
+        return result?.let { SyncCommandReply(it.status, it.payload) }
     }
 
     private val appContext: Context = context.applicationContext
@@ -214,6 +241,7 @@ class BleDebugRepository(
         transport.onLog = { bytes -> handleLogPacket(bytes) }
         transport.onFrame = { bytes -> handleResponseFrame(bytes) }
         transport.onTelemetry = { bytes -> handleTelemetry(bytes) }
+        transport.onData = { bytes -> DataFrame.decode(bytes)?.let { productDataListener?.invoke(it) } }
 
         scope.launch {
             transport.state.collect { link -> handleLinkState(link) }
