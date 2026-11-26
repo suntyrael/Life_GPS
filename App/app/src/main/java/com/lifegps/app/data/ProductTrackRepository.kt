@@ -21,7 +21,6 @@ import com.lifegps.core.protocol.DataFrame
 import com.lifegps.core.protocol.GeneratedProtocol
 import com.lifegps.core.protocol.TrajectoryRecord
 import java.io.File
-import java.io.FileWriter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -217,7 +216,7 @@ class ProductTrackRepository(
         if (records.isEmpty()) return@withContext null
         val exportDir = File(appContext.cacheDir, "exports").apply { mkdirs() }
         val file = File(exportDir, "lifegps_${dayId}.${format.extension}")
-        FileWriter(file, Charsets.UTF_8).use { writer ->
+        file.bufferedWriter(Charsets.UTF_8).use { writer ->
             TrackExporter.export(format, "Life_GPS $dayId", records, writer)
         }
         file

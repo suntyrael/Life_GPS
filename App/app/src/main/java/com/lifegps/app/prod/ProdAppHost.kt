@@ -116,11 +116,20 @@ fun ProdAppHost(
     var currentTab by rememberSaveable { mutableStateOf(ProdTab.HOME) }
     var selectedDayId by rememberSaveable { mutableIntStateOf(0) }
     var showDeviceScanner by rememberSaveable { mutableStateOf(false) }
+    var showOtaScreen by rememberSaveable { mutableStateOf(false) }
 
     if (showDeviceScanner) {
         ProdDeviceScanScreen(
             container = container,
             onBack = { showDeviceScanner = false },
+        )
+        return
+    }
+
+    if (showOtaScreen) {
+        OtaUpdateScreen(
+            container = container,
+            onBack = { showOtaScreen = false },
         )
         return
     }
@@ -203,7 +212,7 @@ fun ProdAppHost(
                 ProdTab.SETTINGS -> ProdSettingsTab(
                     container = container,
                     onOpenScanner = { showDeviceScanner = true },
-                    onOpenOta = onOpenOta,
+                    onOpenOta = onOpenOta ?: { showOtaScreen = true },
                 )
             }
         }

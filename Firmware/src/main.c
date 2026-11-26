@@ -48,6 +48,7 @@
 #include <lifegps/keys.h>
 #include <lifegps/led.h>
 #include <lifegps/nav.h>
+#include <lifegps/ota_mgr.h>
 #include <lifegps/power_sm.h>
 #include <lifegps/recorder.h>
 #include <lifegps/telemetry.h>
@@ -807,6 +808,8 @@ int main(void)
 
 	if (init_subsystems() < 0) {
 		LOG_ERR("subsystem bring-up aborted, watchdog will reset the device");
+	} else {
+		(void)lgps_ota_confirm_boot();
 	}
 
 	for (;;) {

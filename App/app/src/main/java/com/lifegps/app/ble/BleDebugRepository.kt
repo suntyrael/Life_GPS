@@ -78,6 +78,9 @@ class BleDebugRepository(
     val linkState: StateFlow<LinkState> get() = transport.state
     val bondState: StateFlow<BondState> get() = transport.bondState
 
+    private val _lastDeviceAddress = MutableStateFlow<String?>(null)
+    val lastDeviceAddress: StateFlow<String?> = _lastDeviceAddress.asStateFlow()
+
     @Volatile
     private var productDataListener: ((DataFrame) -> Unit)? = null
 
@@ -1249,6 +1252,7 @@ class BleDebugRepository(
             return
         }
         val label = device.name.ifBlank { device.address }
+        _lastDeviceAddress.value = device.address
         _device.update { it.copy(name = label, connected = false) }
         addLog(
             LogLevel.INFO,

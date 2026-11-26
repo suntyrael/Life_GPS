@@ -1,134 +1,51 @@
-# Flash 分区与 OTA
+# Flash 分区与 OTA（nRF54L15 Main_V0.2 + 32 MB / 64 MB 外部 NOR 兼容）
 
-> 这是固件/硬件/App 的共同契约。改偏移必须同时改 DTS、生成头文件、App 常量和 CI 校验。
+> 本文件记录 **M5 最终落地** 的内部 RRAM 与外部 SPI NOR 分区契约，所有固件编译与 OTA 流程均以此为准。
 
-## 运行槽与备份槽
+## 1. 为什么采用内部 RRAM 双槽（而非外部 Flash slot1）
 
-**固件最终永远从内部 `slot0` 启动。** `slot1` 只是 OTA 新镜像的暂存/回滚副本：
+nRF54L15 内置 **1524 KB RRAM**，而 Life_GPS 生产固件体积约 260–320 KB。将 MCUboot 主备双槽（`mcuboot_primary` 与 `mcuboot_secondary`）和 `settings_storage` 全部置于内部 RRAM 具有三大优势：
 
-1. App 通过 SMP 把新镜像上传到外部 `slot1`。
-2. 重启后 MCUboot 校验签名，把 `slot1` 镜像 swap 到 `slot0`。
-3. MCUboot 从 `slot0` 启动新固件；`slot1` 保留旧镜像/回滚信息。
-4. 新固件 confirm 后，`slot1` 可作为下一次 OTA 的暂存区。
+1. **100% 兼容 32 MB（W25Q256）与 64 MB（W25Q512）两版硬件**：外部 Flash 末尾偏移不再硬编码 `0x3F00000`，外部 NOR 全部用于轨迹环、标定/气压/配置与 LGD1 归档日志，容量由 `CONFIG_SPI_NOR_SFDP_RUNTIME=y` 运行时探测。
+2. **零外部 Flash 掉电/DPD 变砖风险**：MCUboot 无需初始化外部 SPI NOR 或在看门狗复位后发送 `0xAB` 唤醒 DPD 即可完成镜像校验与 `SWAP_USING_MOVE` 回滚。
+3. **快速安全升级**：内部 RRAM 无需扇区擦除时间开销，通过 SMP over BLE（`CONFIG_NCS_SAMPLE_MCUMGR_BT_OTA_DFU=y` + `CONFIG_MCUMGR_TRANSPORT_BT_PERM_RW_ENCRYPT=y`）加密上传，新固件在 `main.c` 完成全部子系统初始化后调用 `lgps_ota_confirm_boot()` 自确认；若初始化异常则看门狗复位并自动回滚旧版本。
 
-`slot1` **不执行**，也不做 XIP；它只在 OTA 期间被 MCUboot 读写。
+## 2. 内部 RRAM 1524 KB 分区（NCS v3.4.2 sysbuild Partition Manager 自动生成）
 
-## 内部 RRAM 1524KB（nRF54L15）
+通过 `Firmware/sysbuild.conf`（`SB_CONFIG_BOOTLOADER_MCUBOOT=y`）与 `Firmware/prj.conf`（`CONFIG_PM_PARTITION_SIZE_SETTINGS_STORAGE=0x8000`），NCS Partition Manager 自动分配以下布局（精确地址以每次 CI 构建产物中的 `partitions.yml` 为准）：
 
-> ⚠️ 下表为 nRF52840（1MB Flash）时代的分区方案，**迁移到 nRF54L15（1524KB RRAM）后必须重算**，M1 出表前不得作为实现依据。
-
-| 区域 | 偏移 | 大小 | 说明 |
+| 区域 | 预算大小 | 后端 / 算法 | 用途 |
 | :--- | :--- | :--- | :--- |
-| MCUboot | `0x00000` | 64KB | 含 SPI NOR/flash map；M1 实测可调 |
-| slot0 | `0x10000` | 896KB | 当前运行固件；镜像预算 860KB |
-| scratch | `0xF0000` | 32KB | swap 暂存 |
-| settings/NVS | `0xF8000` | 32KB | 绑定/配置 |
+| `mcuboot` | ~48–64 KB | Ed25519 + SHA-512（内置公钥，无需 KMU OTP 烧录） | 不可变引导加载器 |
+| `mcuboot_primary` (`slot0`) | ~700–712 KB | RRAM，CI 体积门禁上限 **712 KB** | 当前运行固件 |
+| `mcuboot_secondary` (`slot1`) | ~700–712 KB | RRAM，`SWAP_USING_MOVE`（无需 scratch 分区） | SMP over BLE OTA 新镜像暂存与回滚槽 |
+| `settings_storage` | 32 KB (`0x8000`) | Zephyr ZMS (`CONFIG_SETTINGS_ZMS=y`) | BLE 配对/绑定密钥持久化 (`CONFIG_BT_SETTINGS=y`) |
 
-## 外部 64MB（W25Q512，4KB sectors）
+### 烧录与 OTA 产物说明（Actions `lifegps-firmware-{prod,debug}`）
 
-| 区域 | 偏移 | 大小 | 说明 |
-| :--- | :--- | :--- | :--- |
-| 轨迹暂存/归档/索引 | `0x0000000` | 63MB | App 只写此区；AES-CTR |
-| OTA slot1 | `0x3F00000` | 1MB | MCUboot 只写此区；只签名 |
-
-## DTS 参考
-
-```dts
-&spi1 {
-  w25q512: flash@0 {
-    compatible = "jedec,spi-nor";
-    reg = <0>;
-    spi-max-frequency = <8000000>;
-    size = <0x4000000>;
-    partitions {
-      compatible = "fixed-partitions";
-      #address-cells = <1>;
-      #size-cells = <1>;
-      traj_partition: partition@0 {
-        label = "traj";
-        reg = <0x0000000 0x3F00000>;
-      };
-      slot1_partition: partition@3F00000 {
-        label = "slot1";
-        reg = <0x3F00000 0x100000>;
-      };
-    };
-  };
-};
-```
-
-内部 Flash 还需要：`boot_partition`、`slot0_partition`、`scratch_partition`、`settings_partition`。
-
-## MCUboot 配置要点
-
-```conf
-CONFIG_BOOTLOADER_MCUBOOT=y
-CONFIG_BOOT_SWAP_USING_SCRATCH=y
-CONFIG_BOOT_MAX_IMG_SECTORS=256
-CONFIG_SPI_NOR=y
-CONFIG_FLASH=y
-CONFIG_FLASH_MAP=y
-CONFIG_FLASH_PAGE_LAYOUT=y
-CONFIG_MCUMGR_TRANSPORT_BLE=y
-CONFIG_MCUMGR_GRP_IMG=y
-```
-
-- slot1 1MB = 256 × 4KB sectors，`BOOT_MAX_IMG_SECTORS` 必须覆盖。
-- MCUboot 要编译 SPI NOR 驱动，并在初始化时发送 **0xAB Release Deep Power-Down**，否则 App 关机/看门狗复位后读不到外部 Flash。
-- App 只使用 `traj_partition`；最后 1MB 绝不写。
-
-## M1 POC 清单
-
-1. DK + W25Q512 接线，MCUboot 能读 JEDEC ID。
-2. SMP 上传到外部 slot1 → swap → 启动 → confirm → 再升级。
-3. 上传/swap 中断电，重启可回滚/继续。
-4. App 把 Flash 置 DPD 后看门狗复位，MCUboot 能 0xAB 释放。
-5. 实测 896KB swap 时间/电流，OTA <60s。
-6. `traj_partition` 末尾写入/擦除不触碰 `0x3F00000` 之后。
-
-## 失败兜底
-
-1. 回退内部双槽 456KB/槽，App 预算 430KB（功能裁剪）。
-2. 单槽 + 外部 OTA 暂存区（需批准；不做 XIP）。
-3. 单槽 + 物理调试口恢复（仅救砖）。
-
-详细讨论见 [Android_App_Plan.md](../../Doc/Software/Android_App_Plan.md) §5.9 与附录 C。
-
-## 外部 NOR：标定记录（0x10000，1 个扇区）
-
-轨迹环只用前 16 个 4 KB 扇区（`LGPS_RING_SECTOR_COUNT`），第 17 个扇区
-（**偏移 `0x10000`，扇区号 16**）单独留给传感器标定记录，由
-`Firmware/src/calib/calib_store.c` 管理（Kconfig `CONFIG_LGPS_CALIB_SECTOR_INDEX`，
-默认 16，`BUILD_ASSERT` 保证它不低于环的扇区数）。
-
-| 属性 | 值 |
+| 文件 | 用途 |
 | :--- | :--- |
-| 记录大小 | 80 字节（`LGPS_CALIB_RECORD_SIZE`） |
-| 每扇区槽位 | 51（`4096 / 80`） |
-| 写策略 | append-only：每次保存写下一个未编程槽位，带 magic / format_ver / seq / CRC-16 |
-| 满扇区 | 51 次保存后擦除扇区再写第 0 槽（约 45–400 ms 无有效记录窗口，掉电即回落默认值） |
-| 读取 | 启动时扫描全扇区，取 seq 最大且 CRC 通过的那条；缺失/损坏不算错误 |
+| `merged.hex` | **首次 J-Link 烧录**（包含 MCUboot + 已签名应用镜像） |
+| `zephyr.signed.bin` | **Android App BLE SMP OTA 升级文件**（由 `OtaUpdateScreen` 校验 MCUboot 魔数 `0x96F3B83D` 后通过 SMP 上传） |
+| `dfu_application.zip` | 供 Nordic nRF Connect Device Manager 使用的标准 DFU 包（如 sysbuild 生成） |
+| `zephyr.elf` / `zephyr.map` | 符号表与体积门禁检查 |
 
-**为什么不用 `CONFIG_SETTINGS` + NVS**：那需要在本文件上面那张内部 RRAM 分区表里
-新增 `settings_partition`，而那张表自己写着"nRF52840 时代方案，迁到 nRF54L15 后必须
-重算、M1 出表前不得作为实现依据"。为 80 字节去动内部镜像区分区，风险与收益不成比例。
-`lifegps/calib_store.h` 只暴露 load/save/erase 三个函数，将来要换后端只换实现。
+## 3. 外部 SPI NOR 分区（32 MB W25Q256 / 64 MB W25Q512 动态兼容）
 
-**谁不能碰这个扇区**：轨迹环（16 个扇区之后才会外扩）、App 的 SYNC/FLASH_* 读取、
-`FACTORY_RESET`（将来实现时应把本扇区一并擦除，并在协议文档里写明）。
+外部 SPI NOR 挂在 `spi00`（8 MHz，CS `P2.05`，4 KB 扇区），所有模块均通过 `flash_get_page_info_by_offs` / `flash_get_size` 读取 SFDP 实际容量，**绝不硬编码 64 MB 地址**。
 
-## 外部 NOR：气压基准记录（0x11000，1 个扇区）
+| 扇区号 | 字节偏移 | 大小 | 所属模块 | 策略与说明 |
+| :--- | :--- | :--- | :--- | :--- |
+| `0..15` | `0x00000..0x0FFFF` | 64 KB | `flash_ring.c` | 实时 32 B 轨迹环形缓冲区（每扇区 127 条 + 16 B 扇区头） |
+| `16` | `0x10000` | 4 KB | `calib_store.c` | 传感器标定记录（80 B append-only，51 槽/扇区，带 CRC-16） |
+| `17` | `0x11000` | 4 KB | `baro_store.c` | 气压基准记录（20 B append-only，204 槽/扇区，带 CRC-16） |
+| `18` | `0x12000` | 4 KB | `app_config_store.c` | 设备运行配置（Config TLV 全部 11 项，append-only + CRC-16） |
+| `19` | `0x13000` | 4 KB | 保留 | 故障日志 / 未来扩展保留扇区 |
+| `20..21` | `0x14000..0x15FFF` | 8 KB | `journal_store.c` | 按天归档目录双扇区 Ping-Pong 索引（`LIDX` 魔数 + 代际计数 + CRC-32） |
+| `22..END` | `0x16000..SFDP_SIZE` | ~31.9 MB（32M）或 ~63.9 MB（64M） | `journal_store.c` | `LGD1` 日归档包日志区（32 B Byte-Delta + Heatshrink W=8/L=4 压缩，带 CRC-32 与按需覆盖最旧日包） |
 
-第 18 个扇区（**偏移 `0x11000`，扇区号 17**）独立存放气压基准，由
-`Firmware/src/nav/baro_store.c` 管理（Kconfig `CONFIG_LGPS_BARO_SECTOR_INDEX`，默认 17，
-`BUILD_ASSERT` 保证它不在环内、也不等于标定扇区）。
+### 关键保护不变量
 
-| 属性 | 值 |
-| :--- | :--- |
-| 记录大小 | 20 字节（`LGPS_BARO_RECORD_SIZE`，v2：magic `LBAR` / `u8 version=2` / `u8 flags`（bit0 自动、bit1 海平面基准）/ `baseline_pa_q4` / `reference_alt_mm` / unix_s / CRC-16；v1 记录仍可读，按“局地基准、无高度”解码） |
-| 每扇区槽位 | 204（`4096 / 20`） |
-| 写策略 | append-only；新的基准才写（`u32` 值变化 > 1 hPa 或手动设定） |
-| 读取 | 取最后一条 CRC 通过的记录（槽号大的更新） |
-
-**为什么不和标定记录共用一个扇区**：`lgps_calib_store_erase()` 是“删光整个 4 KB 扇区”，
-共用时“清除校准”或“扇区写满后擦除”会默默把高度参考一起丢掉；分成两个扇区后两边互不影响。
+- `calib_store`（16）、`baro_store`（17）、`app_config_store`（18）、`journal_index`（20..21）均通过 `BUILD_ASSERT` 保证互不重叠且不侵入轨迹环（0..15）。
+- `FACTORY_RESET`（`0x51`）会统一擦除配置、标定、气压基准、轨迹环与日归档索引，使设备回到出厂默认状态。
+- 详细架构背景参见 [Dev_Log_code_by_agy.md](../../Doc/Software/Dev_Log_code_by_agy.md)。

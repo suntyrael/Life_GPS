@@ -42,6 +42,7 @@ target_sources(app PRIVATE
   src/power/battery_soc.c
   src/power/keys.c
   src/power/led.c
+  src/power/ota_mgr.c
   src/power/power_sm.c
   src/power/power_sm_logic.c
   src/power/wdt.c

@@ -35,6 +35,9 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/reboot.h>
+#if defined(CONFIG_SETTINGS)
+#include <zephyr/settings/settings.h>
+#endif
 
 #include <generated/lifegps_protocol.h>
 #include <lifegps/app_config.h>
@@ -684,6 +687,7 @@ static uint8_t cmd_get_caps(uint8_t *payload, size_t capacity, size_t *out_len)
 			LGPS_BLE_CAP_DEBUG_UNLOCK | LGPS_BLE_CAP_DATA_SYNC |
 			LGPS_BLE_CAP_CONFIG_TLV | LGPS_BLE_CAP_GNSS_DEBUG | LGPS_BLE_CAP_GNSS_CFG |
 			LGPS_BLE_CAP_GNSS_RESTART | LGPS_BLE_CAP_BARO_BASELINE |
+			(IS_ENABLED(CONFIG_MCUMGR_TRANSPORT_BT) ? LGPS_BLE_CAP_OTA_SMP : 0U) |
 			(IS_ENABLED(CONFIG_LGPS_CALIB)
 				 ? (LGPS_BLE_CAP_MAG_CAL | LGPS_BLE_CAP_ACCEL_CAL)
 				 : 0U),
@@ -2428,6 +2432,13 @@ int lgps_ble_init(void)
 		LOG_ERR("Bluetooth enable failed (%d)", err);
 		return err;
 	}
+
+#if defined(CONFIG_SETTINGS)
+	err = settings_load();
+	if (err != 0) {
+		LOG_WRN("settings_load failed (%d); BLE bonds may be empty", err);
+	}
+#endif
 
 	k_work_init_delayable(&reboot_work, reboot_work_handler);
 	k_work_init_delayable(&adv_restart_work, adv_restart_handler);

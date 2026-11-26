@@ -143,6 +143,10 @@ jobs:
           for profile in prod debug; do
             elf="${NCS_WORKSPACE}/build-fw-${profile}/Firmware/zephyr/zephyr.elf"
             echo "=== Size gate: ${profile} ==="
+            if [ -f "${NCS_WORKSPACE}/build-fw-${profile}/partitions.yml" ]; then
+              echo "--- Partition Manager layout (${profile}) ---"
+              cat "${NCS_WORKSPACE}/build-fw-${profile}/partitions.yml"
+            fi
             ${SIZE_TOOL} "${elf}"
             python3 - "${profile}" "${elf}" <<'PY'
           import subprocess
@@ -178,11 +182,23 @@ jobs:
           "${ZEPHYR_BASE}/scripts/twister" -p native_sim -T Firmware/tests \
             -O "${NCS_WORKSPACE}/twister-out" --inline-logs -v
 
+      - name: Verify sysbuild MCUboot & OTA outputs
+        run: |
+          set -eux
+          for profile in prod debug; do
+            ls -lh "${NCS_WORKSPACE}/build-fw-${profile}/merged.hex"
+            ls -lh "${NCS_WORKSPACE}/build-fw-${profile}/Firmware/zephyr/zephyr.signed.bin"
+          done
+
       - name: Upload prod firmware artifacts
         uses: actions/upload-artifact@v4
         with:
           name: lifegps-firmware-prod
           path: |
+            /opt/ncs-workspace/build-fw-prod/merged.hex
+            /opt/ncs-workspace/build-fw-prod/dfu_application.zip
+            /opt/ncs-workspace/build-fw-prod/partitions.yml
+            /opt/ncs-workspace/build-fw-prod/Firmware/zephyr/zephyr.signed.bin
             /opt/ncs-workspace/build-fw-prod/Firmware/zephyr/zephyr.hex
             /opt/ncs-workspace/build-fw-prod/Firmware/zephyr/zephyr.elf
             /opt/ncs-workspace/build-fw-prod/Firmware/zephyr/zephyr.map
@@ -193,6 +209,10 @@ jobs:
         with:
           name: lifegps-firmware-debug
           path: |
+            /opt/ncs-workspace/build-fw-debug/merged.hex
+            /opt/ncs-workspace/build-fw-debug/dfu_application.zip
+            /opt/ncs-workspace/build-fw-debug/partitions.yml
+            /opt/ncs-workspace/build-fw-debug/Firmware/zephyr/zephyr.signed.bin
             /opt/ncs-workspace/build-fw-debug/Firmware/zephyr/zephyr.hex
             /opt/ncs-workspace/build-fw-debug/Firmware/zephyr/zephyr.elf
             /opt/ncs-workspace/build-fw-debug/Firmware/zephyr/zephyr.map
