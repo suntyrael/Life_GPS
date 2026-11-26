@@ -25,6 +25,7 @@
 		zephyr,shell-uart = &uart30;
 		zephyr,flash-controller = &rram_controller;
 		zephyr,flash = &cpuapp_rram;
+		zephyr,code-partition = &slot0_partition;
 		zephyr,sram = &cpuapp_sram;
 	};
 
@@ -292,3 +293,11 @@
 &wdt30 {
 	status = "okay";
 };
+
+/* Official nRF54L15 internal 1524 KB RRAM layout (NCS v3.4.2):
+ *   boot_partition    0x000000 (62 KB)  - MCUboot
+ *   slot0_partition   0x010000 (712 KB) - active image
+ *   slot1_partition   0x0C2000 (712 KB) - SMP OTA staging / rollback slot
+ *   storage_partition 0x174000 (36 KB)  - ZMS BLE bonding settings
+ */
+#include <vendor/nordic/nrf54l15_cpuapp_partition.dtsi>

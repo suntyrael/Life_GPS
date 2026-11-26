@@ -242,7 +242,6 @@ fun OtaUpdateScreen(
                         FirmwareUpgradeManager.State.TEST -> "标记测试启动（TEST）…"
                         FirmwareUpgradeManager.State.RESET -> "重启设备并由 MCUboot 交换镜像…"
                         FirmwareUpgradeManager.State.CONFIRM -> "重连并确认新固件（CONFIRM）…"
-                        FirmwareUpgradeManager.State.SUCCESS -> "升级完成"
                         else -> newState.name
                     }
                 }

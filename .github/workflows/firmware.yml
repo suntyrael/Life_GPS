@@ -186,8 +186,29 @@ jobs:
         run: |
           set -eux
           for profile in prod debug; do
-            ls -lh "${NCS_WORKSPACE}/build-fw-${profile}/merged.hex"
+            echo "=== Sysbuild outputs (${profile}) ==="
+            ls -la "${NCS_WORKSPACE}/build-fw-${profile}/"
             ls -lh "${NCS_WORKSPACE}/build-fw-${profile}/Firmware/zephyr/zephyr.signed.bin"
+            ls -lh "${NCS_WORKSPACE}/build-fw-${profile}/mcuboot/zephyr/zephyr.hex"
+            # Generate a unified merged.hex (MCUboot + signed app) if sysbuild did not emit one directly.
+            if [ ! -f "${NCS_WORKSPACE}/build-fw-${profile}/merged.hex" ]; then
+              python3 - "${NCS_WORKSPACE}/build-fw-${profile}/mcuboot/zephyr/zephyr.hex" \
+                "${NCS_WORKSPACE}/build-fw-${profile}/Firmware/zephyr/zephyr.signed.hex" \
+                "${NCS_WORKSPACE}/build-fw-${profile}/merged.hex" <<'PY'
+          import sys
+          from intelhex import IntelHex
+
+          boot_hex, app_hex, out_hex = sys.argv[1], sys.argv[2], sys.argv[3]
+          merged = IntelHex()
+          merged.fromfile(boot_hex, format="hex")
+          app = IntelHex()
+          app.fromfile(app_hex, format="hex")
+          merged.merge(app, overlap="error")
+          merged.write_hex_file(out_hex)
+          print(f"Merged {boot_hex} + {app_hex} -> {out_hex}")
+          PY
+            fi
+            ls -lh "${NCS_WORKSPACE}/build-fw-${profile}/merged.hex"
           done
 
       - name: Upload prod firmware artifacts
@@ -196,9 +217,9 @@ jobs:
           name: lifegps-firmware-prod
           path: |
             /opt/ncs-workspace/build-fw-prod/merged.hex
-            /opt/ncs-workspace/build-fw-prod/dfu_application.zip
-            /opt/ncs-workspace/build-fw-prod/partitions.yml
+            /opt/ncs-workspace/build-fw-prod/mcuboot/zephyr/zephyr.hex
             /opt/ncs-workspace/build-fw-prod/Firmware/zephyr/zephyr.signed.bin
+            /opt/ncs-workspace/build-fw-prod/Firmware/zephyr/zephyr.signed.hex
             /opt/ncs-workspace/build-fw-prod/Firmware/zephyr/zephyr.hex
             /opt/ncs-workspace/build-fw-prod/Firmware/zephyr/zephyr.elf
             /opt/ncs-workspace/build-fw-prod/Firmware/zephyr/zephyr.map
@@ -210,9 +231,9 @@ jobs:
           name: lifegps-firmware-debug
           path: |
             /opt/ncs-workspace/build-fw-debug/merged.hex
-            /opt/ncs-workspace/build-fw-debug/dfu_application.zip
-            /opt/ncs-workspace/build-fw-debug/partitions.yml
+            /opt/ncs-workspace/build-fw-debug/mcuboot/zephyr/zephyr.hex
             /opt/ncs-workspace/build-fw-debug/Firmware/zephyr/zephyr.signed.bin
+            /opt/ncs-workspace/build-fw-debug/Firmware/zephyr/zephyr.signed.hex
             /opt/ncs-workspace/build-fw-debug/Firmware/zephyr/zephyr.hex
             /opt/ncs-workspace/build-fw-debug/Firmware/zephyr/zephyr.elf
             /opt/ncs-workspace/build-fw-debug/Firmware/zephyr/zephyr.map

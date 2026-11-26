@@ -10,25 +10,25 @@ nRF54L15 内置 **1524 KB RRAM**，而 Life_GPS 生产固件体积约 260–320 
 2. **零外部 Flash 掉电/DPD 变砖风险**：MCUboot 无需初始化外部 SPI NOR 或在看门狗复位后发送 `0xAB` 唤醒 DPD 即可完成镜像校验与 `SWAP_USING_MOVE` 回滚。
 3. **快速安全升级**：内部 RRAM 无需扇区擦除时间开销，通过 SMP over BLE（`CONFIG_NCS_SAMPLE_MCUMGR_BT_OTA_DFU=y` + `CONFIG_MCUMGR_TRANSPORT_BT_PERM_RW_ENCRYPT=y`）加密上传，新固件在 `main.c` 完成全部子系统初始化后调用 `lgps_ota_confirm_boot()` 自确认；若初始化异常则看门狗复位并自动回滚旧版本。
 
-## 2. 内部 RRAM 1524 KB 分区（NCS v3.4.2 sysbuild Partition Manager 自动生成）
+## 2. 内部 RRAM 1524 KB 分区（官方 `vendor/nordic/nrf54l15_cpuapp_partition.dtsi`）
 
-通过 `Firmware/sysbuild.conf`（`SB_CONFIG_BOOTLOADER_MCUBOOT=y`）与 `Firmware/prj.conf`（`CONFIG_PM_PARTITION_SIZE_SETTINGS_STORAGE=0x8000`），NCS Partition Manager 自动分配以下布局（精确地址以每次 CI 构建产物中的 `partitions.yml` 为准）：
+通过 `Firmware/sysbuild.conf`（`SB_CONFIG_BOOTLOADER_MCUBOOT=y`）与 `Firmware/boards/lifegps/lifegps/lifegps_nrf54l15_cpuapp.dts` 引入官方 `#include <vendor/nordic/nrf54l15_cpuapp_partition.dtsi>`，分配如下精确布局：
 
-| 区域 | 预算大小 | 后端 / 算法 | 用途 |
-| :--- | :--- | :--- | :--- |
-| `mcuboot` | ~48–64 KB | Ed25519 + SHA-512（内置公钥，无需 KMU OTP 烧录） | 不可变引导加载器 |
-| `mcuboot_primary` (`slot0`) | ~700–712 KB | RRAM，CI 体积门禁上限 **712 KB** | 当前运行固件 |
-| `mcuboot_secondary` (`slot1`) | ~700–712 KB | RRAM，`SWAP_USING_MOVE`（无需 scratch 分区） | SMP over BLE OTA 新镜像暂存与回滚槽 |
-| `settings_storage` | 32 KB (`0x8000`) | Zephyr ZMS (`CONFIG_SETTINGS_ZMS=y`) | BLE 配对/绑定密钥持久化 (`CONFIG_BT_SETTINGS=y`) |
+| 分区节点 | 偏移 | 大小 | 后端 / 算法 | 用途 |
+| :--- | :--- | :--- | :--- | :--- |
+| `boot_partition` (`mcuboot`) | `0x000000` | 62 KB | Ed25519 + SHA-512（内置公钥，无需 KMU OTP 烧录） | 不可变引导加载器 |
+| `slot0_partition` (`image-0`) | `0x010000` | 712 KB | RRAM，CI 体积门禁上限 **712 KB** | 当前运行固件 |
+| `slot1_partition` (`image-1`) | `0x0C2000` | 712 KB | RRAM，`SWAP_USING_MOVE`（无需 scratch 分区） | SMP over BLE OTA 新镜像暂存与回滚槽 |
+| `storage_partition` (`storage`) | `0x174000` | 36 KB | Zephyr ZMS (`CONFIG_SETTINGS_ZMS=y`) | BLE 配对/绑定密钥持久化 (`CONFIG_BT_SETTINGS=y`) |
 
 ### 烧录与 OTA 产物说明（Actions `lifegps-firmware-{prod,debug}`）
 
 | 文件 | 用途 |
 | :--- | :--- |
 | `merged.hex` | **首次 J-Link 烧录**（包含 MCUboot + 已签名应用镜像） |
-| `zephyr.signed.bin` | **Android App BLE SMP OTA 升级文件**（由 `OtaUpdateScreen` 校验 MCUboot 魔数 `0x96F3B83D` 后通过 SMP 上传） |
-| `dfu_application.zip` | 供 Nordic nRF Connect Device Manager 使用的标准 DFU 包（如 sysbuild 生成） |
-| `zephyr.elf` / `zephyr.map` | 符号表与体积门禁检查 |
+| `Firmware/zephyr/zephyr.signed.bin` | **Android App BLE SMP OTA 升级文件**（由 `OtaUpdateScreen` 校验 MCUboot 魔数 `0x96F3B83D` 后通过 SMP 上传） |
+| `Firmware/zephyr/zephyr.signed.hex` / `mcuboot/zephyr/zephyr.hex` | 分离的已签名应用镜像与 MCUboot 镜像 |
+| `Firmware/zephyr/zephyr.elf` / `zephyr.map` | 符号表与体积门禁检查 |
 
 ## 3. 外部 SPI NOR 分区（32 MB W25Q256 / 64 MB W25Q512 动态兼容）
 
