@@ -919,7 +919,7 @@ void lgps_gnss_force_off(void)
 {
 	atomic_set(&policy_deep_sleep, 1);
 	atomic_set(&policy_high_precision, 0);
-	(void)lgps_board_io_gnss_power(false);
+	(void)lgps_gnss_rail_set(false);
 }
 
 /*

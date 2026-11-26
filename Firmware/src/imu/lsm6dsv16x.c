@@ -1791,7 +1791,7 @@ int lgps_imu_read_wake_src(uint8_t *src)
 	}
 
 	k_mutex_lock(&imu_lock, K_FOREVER);
-	ret = imu_read(REG_WAKE_UP_SRC, src, 1U);
+	ret = imu_read_buf(REG_WAKE_UP_SRC, src, 1U);
 	k_mutex_unlock(&imu_lock);
 
 	return ret;
