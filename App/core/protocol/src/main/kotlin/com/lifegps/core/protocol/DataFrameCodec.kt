@@ -40,13 +40,13 @@ data class DataFrame(
         const val FLAG_LAST = 1 shl 1
 
         fun encode(frame: DataFrame): ByteArray {
-            require(frame.payload.size <= GeneratedProtocol.DataFrame.MAX_PAYLOAD) {
-                "DataFrame payload ${frame.payload.size} exceeds max ${GeneratedProtocol.DataFrame.MAX_PAYLOAD}"
+            require(frame.payload.size <= GeneratedProtocol.Meta.MAX_DATA_PAYLOAD) {
+                "DataFrame payload ${frame.payload.size} exceeds max ${GeneratedProtocol.Meta.MAX_DATA_PAYLOAD}"
             }
             val hdrLen = GeneratedProtocol.DataFrame.HEADER_SIZE
-            val out = ByteArray(hdrLen + frame.payload.size + GeneratedProtocol.DataFrame.CRC_SIZE)
+            val out = ByteArray(hdrLen + frame.payload.size + GeneratedProtocol.DataFrame.TRAILER_SIZE)
             out[0] = GeneratedProtocol.DataFrame.MAGIC.toByte()
-            out[1] = GeneratedProtocol.DataFrame.VERSION.toByte()
+            out[1] = GeneratedProtocol.Meta.VERSION_MAJOR.toByte()
             out[2] = (frame.stream and 0xFF).toByte()
             out[3] = (frame.flags and 0xFF).toByte()
             putU32(out, 4, frame.transferId)
@@ -59,12 +59,12 @@ data class DataFrame(
         }
 
         fun decode(bytes: ByteArray): DataFrame? {
-            val minLen = GeneratedProtocol.DataFrame.HEADER_SIZE + GeneratedProtocol.DataFrame.CRC_SIZE
+            val minLen = GeneratedProtocol.DataFrame.HEADER_SIZE + GeneratedProtocol.DataFrame.TRAILER_SIZE
             if (bytes.size < minLen) return null
             if ((bytes[0].toInt() and 0xFF) != GeneratedProtocol.DataFrame.MAGIC) return null
-            if ((bytes[1].toInt() and 0xFF) != GeneratedProtocol.DataFrame.VERSION) return null
+            if ((bytes[1].toInt() and 0xFF) != GeneratedProtocol.Meta.VERSION_MAJOR) return null
             val payloadLen = getU16(bytes, 12)
-            val expectedTotal = GeneratedProtocol.DataFrame.HEADER_SIZE + payloadLen + GeneratedProtocol.DataFrame.CRC_SIZE
+            val expectedTotal = GeneratedProtocol.DataFrame.HEADER_SIZE + payloadLen + GeneratedProtocol.DataFrame.TRAILER_SIZE
             if (bytes.size != expectedTotal) return null
             val crcOffset = GeneratedProtocol.DataFrame.HEADER_SIZE + payloadLen
             val expectedCrc = ProtocolCrc.crc16CcittFalse(bytes, 0, crcOffset)

@@ -16,14 +16,14 @@ data class DayPackageHeader(
     val codecId: Int,
     val dayId: Long,
     val recordCount: Long,
-    val flags: Long,
+    val reserved0: Long,
     val rawLen: Long,
     val packedLen: Long,
-    val poiCount: Long,
-    val totalSteps: Long,
-    val prevDayId: Long,
     val reserved1: Long,
-    val reserved2: Int,
+    val reserved2: Long,
+    val prevDayId: Long,
+    val reserved3: Long,
+    val flags: Int,
 )
 
 data class DecodedDayPackage(
@@ -72,17 +72,17 @@ object DayPackageCodec {
         }
         return DayPackageHeader(
             headerVer = headerVer,
-            codecId = getU16(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_CODEC_ID),
+            codecId = getU16(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_CODEC),
             dayId = getU32(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_DAY_ID),
             recordCount = getU32(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_RECORD_COUNT),
-            flags = getU32(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_FLAGS),
-            rawLen = getU32(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_RAW_LEN),
-            packedLen = getU32(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_PACKED_LEN),
-            poiCount = getU32(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_POI_COUNT),
-            totalSteps = getU32(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_TOTAL_STEPS),
-            prevDayId = getU32(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_PREV_DAY_ID),
+            reserved0 = getU32(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_RESERVED0),
+            rawLen = getU32(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_TRAJ_RAW_LEN),
+            packedLen = getU32(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_TRAJ_PACKED_LEN),
             reserved1 = getU32(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_RESERVED1),
-            reserved2 = getU16(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_RESERVED2),
+            reserved2 = getU32(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_RESERVED2),
+            prevDayId = getU32(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_PREV_DAY_ID),
+            reserved3 = getU32(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_RESERVED3),
+            flags = getU16(bytes, GeneratedProtocol.DayPackage.HEADER_OFF_FLAGS),
         )
     }
 

@@ -58,7 +58,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 import com.lifegps.core.model.BondState
-import com.lifegps.core.protocol.GeneratedProtocol
+import com.lifegps.core.protocol.TrajectoryRecord
 
 /**
  * Data source backed by the real GATT link (or a test [LifeGpsTransport]).
@@ -1239,7 +1239,7 @@ class BleDebugRepository(
     /** Sends `SET_TIME (0x11)` with the phone's current UTC in Life_GPS epoch seconds. */
     fun syncTimeNow() {
         val unixSec = Instant.now().epochSecond
-        val lgpsEpoch = (unixSec - GeneratedProtocol.Meta.EPOCH_UNIX_OFFSET).coerceAtLeast(0L)
+        val lgpsEpoch = (unixSec - com.lifegps.core.protocol.TrajectoryRecord.LIFE_GPS_EPOCH_UNIX_S).coerceAtLeast(0L)
         val b0 = (lgpsEpoch and 0xFFL).toInt()
         val b1 = ((lgpsEpoch ushr 8) and 0xFFL).toInt()
         val b2 = ((lgpsEpoch ushr 16) and 0xFFL).toInt()

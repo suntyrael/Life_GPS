@@ -29,7 +29,7 @@ class FakeTransport : LifeGpsTransport {
     private val _scanError = MutableStateFlow<String?>(null)
     override val scanError: StateFlow<String?> = _scanError.asStateFlow()
 
-    override var connectionMtu: Int = GeneratedProtocol.Meta.ATT_MTU_TARGET
+    override var connectionMtu: Int = GeneratedProtocol.Meta.MTU
 
     override var onDeviceFound: ((ScannedDevice) -> Unit)? = null
     override var onStatus: ((ByteArray) -> Unit)? = null

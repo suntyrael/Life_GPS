@@ -28,7 +28,7 @@ data class TrajectoryRecord(
     val hdop: Double get() = hdopDeci / 10.0
 
     val unixEpochMs: Long
-        get() = (timestampSec + GeneratedProtocol.Meta.EPOCH_UNIX_OFFSET) * 1000L + subsecondMs
+        get() = (timestampSec + LIFE_GPS_EPOCH_UNIX_S) * 1000L + subsecondMs
 
     val isGnssValid: Boolean get() = (statusFlags and FLAG_GNSS_VALID) != 0
     val isPdrSource: Boolean get() = (statusFlags and FLAG_PDR_SOURCE) != 0
@@ -55,12 +55,15 @@ data class TrajectoryRecord(
         out[GeneratedProtocol.TrajectoryRecord.OFF_STATUS_FLAGS] = (statusFlags and 0xFF).toByte()
         out[GeneratedProtocol.TrajectoryRecord.OFF_BATTERY_LEVEL] = (batteryLevel and 0xFF).toByte()
         out[GeneratedProtocol.TrajectoryRecord.OFF_FLOOR_LEVEL] = floorLevel.toByte()
-        out[GeneratedProtocol.TrajectoryRecord.OFF_CRC8] =
-            ProtocolCrc.crc8(out, 0, GeneratedProtocol.TrajectoryRecord.OFF_CRC8).toByte()
+        out[GeneratedProtocol.TrajectoryRecord.OFF_CHECKSUM] =
+            ProtocolCrc.crc8(out, 0, GeneratedProtocol.TrajectoryRecord.OFF_CHECKSUM).toByte()
         return out
     }
 
     companion object {
+        /** Life_GPS epoch origin: 2020-01-01T00:00:00Z in Unix seconds. */
+        const val LIFE_GPS_EPOCH_UNIX_S: Long = 1_577_836_800L
+
         const val FLAG_GNSS_VALID = 1 shl 0
         const val FLAG_PDR_SOURCE = 1 shl 1
         const val FLAG_MOVING = 1 shl 2
@@ -73,8 +76,8 @@ data class TrajectoryRecord(
         fun decode(bytes: ByteArray, offset: Int = 0): TrajectoryRecord? {
             val size = GeneratedProtocol.TrajectoryRecord.SIZE
             if (offset < 0 || offset + size > bytes.size) return null
-            val expectedCrc = ProtocolCrc.crc8(bytes, offset, GeneratedProtocol.TrajectoryRecord.OFF_CRC8)
-            val actualCrc = bytes[offset + GeneratedProtocol.TrajectoryRecord.OFF_CRC8].toInt() and 0xFF
+            val expectedCrc = ProtocolCrc.crc8(bytes, offset, GeneratedProtocol.TrajectoryRecord.OFF_CHECKSUM)
+            val actualCrc = bytes[offset + GeneratedProtocol.TrajectoryRecord.OFF_CHECKSUM].toInt() and 0xFF
             if (expectedCrc != actualCrc) return null
             return TrajectoryRecord(
                 seqId = getU32(bytes, offset + GeneratedProtocol.TrajectoryRecord.OFF_SEQ_ID),
