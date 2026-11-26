@@ -399,6 +399,25 @@ void lgps_attitude_correct_from_mag(struct lgps_attitude *att, const float mag_b
 	quat_yaw_world(att->q, clampf(gain, 0.0F, 1.0F) * error);
 }
 
+bool lgps_attitude_correct_from_mag_guarded(struct lgps_attitude *att, const float mag_body_ut[3],
+					    float reference_ut, float gain)
+{
+	float norm_ut;
+
+	if ((att == NULL) || (mag_body_ut == NULL)) {
+		return false;
+	}
+
+	norm_ut = sqrtf((mag_body_ut[0] * mag_body_ut[0]) + (mag_body_ut[1] * mag_body_ut[1]) +
+			(mag_body_ut[2] * mag_body_ut[2]));
+	if (lgps_nav_mag_anomaly(norm_ut, reference_ut)) {
+		return true;
+	}
+
+	lgps_attitude_correct_from_mag(att, mag_body_ut, gain);
+	return false;
+}
+
 void lgps_attitude_learn_mag_offset(struct lgps_attitude *att, const float mag_body_ut[3],
 				    float alpha)
 {

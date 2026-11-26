@@ -10,9 +10,11 @@
 #include <zephyr/sys/util.h>
 
 #include <stddef.h>
+#include <string.h>
 
 #include <lifegps/flash_ring.h>
 #include <lifegps/sector_format.h>
+#include <lifegps/traj.h>
 
 LOG_MODULE_REGISTER(lgps_ring, LOG_LEVEL_INF);
 
@@ -290,6 +292,34 @@ int lgps_ring_init(void)
 	return 0;
 }
 
+static uint32_t last_seq_id;
+
+static uint32_t read_record_seq_id(const uint8_t rec[LGPS_RING_RECORD_SIZE])
+{
+	return (uint32_t)rec[0] | ((uint32_t)rec[1] << 8) |
+	       ((uint32_t)rec[2] << 16) | ((uint32_t)rec[3] << 24);
+}
+
+static void recover_last_seq_locked(uint8_t sector, uint16_t used_records)
+{
+	uint8_t rec[LGPS_RING_RECORD_SIZE];
+
+	if (used_records == 0U) {
+		return;
+	}
+
+	off_t offset = sector_offset(sector) + (off_t)LGPS_RING_HEADER_SIZE +
+		       (off_t)((uint32_t)(used_records - 1U) * LGPS_RING_RECORD_SIZE);
+
+	if (flash_read(nor, offset, rec, sizeof(rec)) == 0 && lgps_traj_record_valid(rec)) {
+		uint32_t seq = read_record_seq_id(rec);
+
+		if (seq > last_seq_id) {
+			last_seq_id = seq;
+		}
+	}
+}
+
 int lgps_ring_append(const uint8_t *record)
 {
 	off_t offset;
@@ -326,8 +356,115 @@ int lgps_ring_append(const uint8_t *record)
 	stats.records_in_sector++;
 	stats.records_written++;
 
+	{
+		uint32_t seq = read_record_seq_id(record);
+
+		if (seq > last_seq_id) {
+			last_seq_id = seq;
+		}
+	}
+
 	k_mutex_unlock(&ring_lock);
 
+	return 0;
+}
+
+uint32_t lgps_ring_last_seq_id(void)
+{
+	uint32_t seq;
+
+	k_mutex_lock(&ring_lock, K_FOREVER);
+	if (ring_ready && (last_seq_id == 0U) && (stats.records_in_sector > 0U)) {
+		recover_last_seq_locked(active_sector, stats.records_in_sector);
+	}
+	seq = last_seq_id;
+	k_mutex_unlock(&ring_lock);
+
+	return seq;
+}
+
+int lgps_ring_read_from_seq(uint32_t start_seq, uint8_t *out_buf, uint16_t max_records,
+			    uint16_t *out_count)
+{
+	struct lgps_sector_header headers[LGPS_RING_SECTOR_COUNT];
+	bool valid[LGPS_RING_SECTOR_COUNT];
+	uint8_t order[LGPS_RING_SECTOR_COUNT];
+	uint8_t valid_count = 0U;
+	uint16_t copied = 0U;
+	static uint8_t scan_chunk[RING_SCAN_CHUNK_BYTES];
+
+	if ((out_buf == NULL) || (out_count == NULL)) {
+		return -EINVAL;
+	}
+	*out_count = 0U;
+
+	if (!ring_ready) {
+		return -EACCES;
+	}
+	if (max_records == 0U) {
+		return 0;
+	}
+
+	k_mutex_lock(&ring_lock, K_FOREVER);
+
+	for (uint8_t s = 0U; s < LGPS_RING_SECTOR_COUNT; s++) {
+		valid[s] = (header_read(s, &headers[s]) == 0) &&
+			   lgps_sector_header_valid(&headers[s]);
+		if (valid[s]) {
+			order[valid_count++] = s;
+		}
+	}
+
+	/* Simple insertion sort of <=16 sectors by ascending sector_seq. */
+	for (uint8_t i = 1U; i < valid_count; i++) {
+		uint8_t key_s = order[i];
+		uint32_t key_seq = headers[key_s].sector_seq;
+		int j = (int)i - 1;
+
+		while ((j >= 0) && (headers[order[j]].sector_seq > key_seq)) {
+			order[j + 1] = order[j];
+			j--;
+		}
+		order[j + 1] = key_s;
+	}
+
+	for (uint8_t oi = 0U; (oi < valid_count) && (copied < max_records); oi++) {
+		uint8_t s = order[oi];
+
+		for (uint16_t base = 0U;
+		     (base < LGPS_RING_RECORDS_PER_SECTOR) && (copied < max_records);
+		     base = (uint16_t)(base + RING_SCAN_RECORDS)) {
+			uint16_t slots = (uint16_t)MIN((uint32_t)RING_SCAN_RECORDS,
+						       (uint32_t)LGPS_RING_RECORDS_PER_SECTOR -
+							       base);
+			off_t offset = sector_offset(s) + (off_t)LGPS_RING_HEADER_SIZE +
+				       (off_t)((uint32_t)base * LGPS_RING_RECORD_SIZE);
+			size_t len_bytes = (size_t)slots * (size_t)LGPS_RING_RECORD_SIZE;
+			int ret = flash_read(nor, offset, scan_chunk, len_bytes);
+
+			if (ret < 0) {
+				k_mutex_unlock(&ring_lock);
+				return ret;
+			}
+
+			for (uint16_t k = 0U; (k < slots) && (copied < max_records); k++) {
+				const uint8_t *rec = &scan_chunk[(size_t)k * LGPS_RING_RECORD_SIZE];
+
+				if (!lgps_traj_record_valid(rec)) {
+					continue;
+				}
+				if (read_record_seq_id(rec) < start_seq) {
+					continue;
+				}
+				memcpy(&out_buf[(size_t)copied * LGPS_RING_RECORD_SIZE], rec,
+				       LGPS_RING_RECORD_SIZE);
+				copied++;
+			}
+		}
+	}
+
+	k_mutex_unlock(&ring_lock);
+	*out_count = copied;
 	return 0;
 }
 

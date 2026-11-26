@@ -15,8 +15,8 @@
 | 阶段 | 主题 | 状态 |
 | :--- | :--- | :--- |
 | **M0** | 协议 SSOT 补全、跨端代码生成（C + Kotlin + Golden Vectors）与高危止血修债 | ✅ 已完成（CI 全绿） |
-| **M1** | 固件去轮询事件化 + 双配置骨架；App 纯 JVM 核心模块 + `LifeGpsTransport` + `dev`/`prod` 双 Flavor 隔离 | 🚧 已完成编码，CI 验证中 |
-| **M2** | 固件超低功耗 4 态电源状态机 + IMU 运动唤醒 + 导航补盲（磁异常/Weinberg/楼层/乘车）+ 周期轨迹落盘 | 待启动 |
+| **M1** | 固件去轮询事件化 + 双配置骨架；App 纯 JVM 核心模块 + `LifeGpsTransport` + `dev`/`prod` 双 Flavor 隔离 | ✅ 已完成（CI 全绿） |
+| **M2** | 固件超低功耗 4 态电源状态机 + IMU 运动唤醒 + 导航补盲（磁异常/Weinberg/楼层/乘车）+ 周期轨迹落盘 | 🚧 已完成编码，CI 验证中 |
 | **M3** | BLE 配对绑定 + 完整 6 特征（Data/Config）+ 夜间无加密原子归档（Byte-Delta+Heatshrink+Journal）+ App 双通道同步与 Room 本地库 | 待启动 |
 | **M4** | Android `prod` 产品终端（MapLibre 地图 + WGS-84/GCJ-02 渲染开关 + 时间线/统计 + POI + GPX/KML/GeoJSON/CSV 导出 + 设置/灯语帮助） | 待启动 |
 | **M5** | MCUboot + SMP over BLE OTA 闭环（兼容 32 MB / 64 MB Flash 策略）+ 发布固化 | 待启动 |
@@ -70,4 +70,27 @@
    - 抽象 [LifeGpsTransport.kt](../../App/app/src/main/java/com/lifegps/app/ble/LifeGpsTransport.kt)，升级 [BleTransport.kt](../../App/app/src/main/java/com/lifegps/app/ble/BleTransport.kt)（API 33+ 非弃用 GATT API、2M PHY 请求、`DATA`/`CONFIG` 特征发现、`BondState` 广播监听、按需启停 Telemetry/Log CCCD）；
    - 将全部 13 个硬件调试页迁入 `App/app/src/dev/java/com/lifegps/app/debug/`，使 `prod` APK 编译期物理隔离调试代码；新增产品外壳 [ProdAppHost.kt](../../App/app/src/main/java/com/lifegps/app/prod/ProdAppHost.kt)（首页/地图预览/时间轴/设置 + 按键灯语速查 + `SET_TIME` 对时），`dev` flavor 可一键在「硬件调试」与「产品模式」间无缝切换并共享同一 BLE 连接。
 4. **CI 门禁扩容**：[firmware.yml](../../.github/workflows/firmware.yml) 双构建 `prod` + `debug`；[app.yml](../../.github/workflows/app.yml) 运行纯 JVM 核心单测 + `devDebug` 与 `prodDebug` 双构建/单测/Lint 并上传双 APK。
+
+### M1 GitHub Actions 验证结果（`b4d563c` + `81a0d21` + `0ba8701`）
+- `protocol`（Run `45783044531`）：✅ 通过
+- `docs`（Run `45783044520`）：✅ 通过
+- `firmware`（Run `45783044530`）：✅ 通过（`[prod] flash=271288 B / 729088 B, ram=60602 B / 262144 B`；`[debug] flash=276292 B / 729088 B, ram=63185 B / 262144 B`；`twister` 14/14 全过）
+- `app`（Run `45784768861`）：✅ 通过（`:core:protocol:test` + `:core:model:test` + `devDebug` & `prodDebug` 构建/单测/Lint + 双 APK 上传）
+
+---
+
+## 2026-11-26 · Milestone 2：超低功耗 4 态电源管理 + IMU 运动唤醒 + 完整导航与自动落盘
+
+### 关键设计决策
+1. **4 态电源状态机与运动确认门**：新增纯 C [power_sm_logic.c](../../Firmware/src/power/power_sm_logic.c)（`DEEP_SLEEP` / `ACTIVE` / `HIGH_PRECISION` / `SYSTEM_OFF`），实现静止 30 s 自动进 `DEEP_SLEEP`（BLE 未连且非调试常开）、IMU INT1 唤醒后 3 s ≥ 2 步确认门、低电 ≤10% 降级及 ≤3% 保护关机；[power_sm.c](../../Firmware/src/power/power_sm.c) 关机前依次关闭 GNSS 供电、IMU power-down、LED 并配置 `KEY1_POI`（P1.06）`GPIO_INT_LEVEL_LOW` 唤醒后调用 `sys_poweroff()`。
+2. **IMU 运动唤醒与 GNSS 联动**：[lsm6dsv16x.c](../../Firmware/src/imu/lsm6dsv16x.c) 接入 `imu-int1-gpios`（P0.02, GPIOTE30）上升沿中断，依据 `M1_BRINGUP.md` 已核实寄存器进入 15 Hz XL + 陀螺掉电 + 0.25 g 唤醒阈值（`WAKE_UP_THS=32`）；[gnss.c](../../Firmware/src/gnss/gnss.c) 新增 `lgps_gnss_set_policy()` 与 `lgps_gnss_force_off()`，响应 `DEEP_SLEEP` 断电与 `HIGH_PRECISION` 保持供电。
+3. **导航补盲**：
+   - [attitude.c](../../Firmware/src/nav/attitude.c) 新增 `lgps_attitude_correct_from_mag_guarded()`，磁异常（`|B|` 偏离地磁参考 >30%）时抑制磁力计航向拉偏并置位 `LGPS_FLAG_MAG_ANOMALY`；
+   - [nav.c](../../Firmware/src/nav/nav.c) 新增 Weinberg `K` 户外在线标定（`[0.30, 0.55]` EMA）与 PDR 局部切平面 WGS-84 投影（室内断星连续输出坐标）；
+   - 新增纯 C 气压楼层检测 [floor.c](../../Firmware/src/nav/floor.c)（3.0 m 层高 + 0.8 m 滞回 + 楼梯/电梯速度分类）与活动分类 [activity.c](../../Firmware/src/nav/activity.c)（静止/步行/乘车/室内 + `status_flags` 位映射）。
+4. **跨重启单调 `seq_id` 与自动轨迹记录**：
+   - [flash_ring.c](../../Firmware/src/storage/flash_ring.c) 保持 SFDP 动态 32 MB / 64 MB 兼容，新增开机恢复最高 `seq_id`（`lgps_ring_last_seq_id()`）与按 `seq_id` 顺序读游标 `lgps_ring_read_from_seq()`（为 M3 同步铺路）；
+   - 新增纯 C 落盘策略 [recorder.c](../../Firmware/src/storage/recorder.c)（高精度 1 s / 移动 10 s / 静止 60 s / 转向 ≥30° / 换层 / KEY1 POI 即刻落盘），在 [main.c](../../Firmware/src/main.c) 自动编码并写入 Flash Ring；[ble_gatt.c](../../Firmware/src/ble/ble_gatt.c) 补齐 `SET_MODE (0x10)` 与 `BUTTON_EVENT (0x33)`。
+5. **单元测试扩展**：新增 `lifegps.power_sm`、`lifegps.floor`、`lifegps.activity`、`lifegps.recorder` 4 套 `twister` 用例（总数 14 → 18）并在 `lifegps.nav` 追加 3 项导航回归测试。
+
 

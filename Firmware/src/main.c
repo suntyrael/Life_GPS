@@ -31,6 +31,7 @@
 #include <math.h>
 #include <string.h>
 
+#include <lifegps/activity.h>
 #include <lifegps/battery.h>
 #include <lifegps/baro.h>
 #include <lifegps/ble.h>
@@ -39,20 +40,24 @@
 #include <lifegps/calib.h>
 #include <lifegps/diag.h>
 #include <lifegps/flash_ring.h>
+#include <lifegps/floor.h>
 #include <lifegps/gnss.h>
 #include <lifegps/imu.h>
 #include <lifegps/keys.h>
 #include <lifegps/led.h>
 #include <lifegps/nav.h>
 #include <lifegps/power_sm.h>
+#include <lifegps/recorder.h>
 #include <lifegps/telemetry.h>
 #include <lifegps/time.h>
+#include <lifegps/traj.h>
 #include <lifegps/wdt.h>
 
 LOG_MODULE_REGISTER(lgps_main, LOG_LEVEL_INF);
 
 /* Poll faster than the 30 Hz ODR and let the data-ready bit do the pacing. */
 #define MAIN_LOOP_PERIOD_MS 10U
+#define DEEP_SLEEP_LOOP_PERIOD_MS 200U
 /* The five-line text frame on DEBUG_UART keeps its 1 Hz cadence: it is the
  * scope-free instrument for bring-up and changing it would invalidate every
  * earlier capture.
@@ -75,11 +80,38 @@ LOG_MODULE_REGISTER(lgps_main, LOG_LEVEL_INF);
  */
 #define HEADING_ALIGN_MIN_SPEED_CMS 150U
 #define RAD_TO_DEG 57.2957795F
+#define EARTH_MAG_REF_UT 48.0F
 
 static struct lgps_zupt zupt;
 static struct lgps_pdr pdr;
 static struct lgps_attitude attitude;
 static struct lgps_step step_detector;
+static struct lgps_floor_detector floor_det;
+static struct lgps_activity_state activity_state;
+static struct lgps_geo_anchor geo_anchor;
+static struct lgps_recorder recorder;
+
+static bool mag_anomaly_active;
+static atomic_t imu_wake_pending = ATOMIC_INIT(0);
+static atomic_t poi_button_pending = ATOMIC_INIT(0);
+static enum lgps_power_state applied_power_state = LGPS_PWR_ACTIVE;
+
+/* Weinberg K online calibration accumulators (outdoor GNSS leg). */
+static bool cal_leg_active;
+static int32_t cal_start_lat_e7;
+static int32_t cal_start_lon_e7;
+static uint32_t cal_leg_steps;
+static float cal_sum_pow025;
+
+static void on_imu_wake_irq(void)
+{
+	(void)atomic_set(&imu_wake_pending, 1);
+}
+
+static void on_poi_button(void)
+{
+	(void)atomic_set(&poi_button_pending, 1);
+}
 
 /* Last magnetometer sample in the body frame, refreshed whenever the sensor hub
  * is read. The attitude filter consumes it at the IMU rate, but the hub itself
@@ -264,6 +296,14 @@ static int init_subsystems(void)
 	lgps_pdr_init(&pdr);
 	lgps_attitude_reset(&attitude, NULL);
 	lgps_step_reset(&step_detector, lgps_diag_uptime_ms());
+	lgps_floor_init(&floor_det);
+	lgps_activity_init(&activity_state, lgps_diag_uptime_ms());
+	lgps_recorder_init(&recorder, lgps_ring_last_seq_id() + 1U);
+
+	if (lgps_imu_wake_irq_init(on_imu_wake_irq) < 0) {
+		LOG_WRN("IMU INT1 motion wake IRQ unavailable");
+	}
+	lgps_power_register_callbacks(on_poi_button, NULL);
 
 	/* The BLE link is the product's only display, so it starts last: every
 	 * stage above has already reported a failure on the console before the
@@ -447,7 +487,10 @@ static void update_heading_reference(const struct lgps_gnss_fix *fix)
 	}
 
 	if (hub_mag_valid) {
-		lgps_attitude_correct_from_mag(&attitude, hub_mag_body_ut, 0.02F);
+		mag_anomaly_active = lgps_attitude_correct_from_mag_guarded(
+			&attitude, hub_mag_body_ut, EARTH_MAG_REF_UT, 0.02F);
+	} else {
+		mag_anomaly_active = false;
 	}
 }
 
@@ -597,7 +640,136 @@ static void update_steps(const float accel_body[3], uint32_t now_ms)
 	}
 
 	(void)lgps_pdr_step(&pdr, delta_accel_g, lgps_attitude_heading_rad(&attitude));
+	if (cal_leg_active && (delta_accel_g > 0.0F)) {
+		cal_leg_steps++;
+		cal_sum_pow025 += sqrtf(sqrtf(delta_accel_g));
+	}
 	publish_pdr();
+}
+
+static void update_outdoor_calibration(const struct lgps_gnss_fix *fix)
+{
+	if (!fix->valid || (fix->fix_type < 3U) || (fix->hdop_1e2 > 250U)) {
+		cal_leg_active = false;
+		return;
+	}
+
+	lgps_nav_anchor_set(&geo_anchor, fix->lat_e7, fix->lon_e7, pdr.position_x_m,
+			    pdr.position_y_m);
+
+	if (!cal_leg_active) {
+		cal_leg_active = true;
+		cal_start_lat_e7 = fix->lat_e7;
+		cal_start_lon_e7 = fix->lon_e7;
+		cal_leg_steps = 0U;
+		cal_sum_pow025 = 0.0F;
+		return;
+	}
+
+	if ((activity_state.kind == LGPS_ACT_WALKING) &&
+	    (cal_leg_steps >= LGPS_WEINBERG_CAL_MIN_STEPS)) {
+		float dlat_m = ((float)(fix->lat_e7 - cal_start_lat_e7) * 1e-7F) * 111320.0F;
+		float lat_rad = ((float)fix->lat_e7 * 1e-7F) * 0.01745329252F;
+		float dlon_m =
+			((float)(fix->lon_e7 - cal_start_lon_e7) * 1e-7F) * 111320.0F *
+			cosf(lat_rad);
+		float dist_m = sqrtf((dlat_m * dlat_m) + (dlon_m * dlon_m));
+
+		if (lgps_pdr_calibrate_k(&pdr, dist_m, cal_sum_pow025, cal_leg_steps)) {
+			LOG_INF("Weinberg K calibrated -> %.3f (dist=%.1f m, steps=%u)",
+				(double)pdr.k, (double)dist_m, cal_leg_steps);
+			cal_start_lat_e7 = fix->lat_e7;
+			cal_start_lon_e7 = fix->lon_e7;
+			cal_leg_steps = 0U;
+			cal_sum_pow025 = 0.0F;
+		}
+	}
+}
+
+static void maybe_record_trajectory(uint32_t now_ms, const struct lgps_telemetry_snapshot *snap,
+				    enum lgps_power_state pwr_state, bool force_poi)
+{
+	float heading_deg = lgps_attitude_heading_rad(&attitude) * RAD_TO_DEG;
+	uint16_t heading_ddeg;
+	struct lgps_recorder_sample rsample;
+	struct lgps_traj_sample traj;
+	uint8_t raw[LGPS_RECORD_TRAJECTORY_SIZE];
+	int32_t lat_e7 = 0;
+	int32_t lon_e7 = 0;
+	bool have_pos = false;
+	bool pdr_source = false;
+	bool baro_alt = false;
+	uint8_t soc_pct = 0U;
+
+	if (heading_deg < 0.0F) {
+		heading_deg += 360.0F;
+	}
+	heading_ddeg = (uint16_t)((heading_deg >= 359.9F) ? 3599U : (uint32_t)(heading_deg * 10.0F));
+
+	rsample.now_ms = now_ms;
+	rsample.power_state = pwr_state;
+	rsample.activity = activity_state.kind;
+	rsample.heading_ddeg = snap->fix.valid ? snap->fix.heading_ddeg : heading_ddeg;
+	rsample.floor_level = lgps_floor_level(&floor_det);
+	rsample.force_poi = force_poi;
+
+	if (!lgps_recorder_should_record(&recorder, &rsample)) {
+		return;
+	}
+
+	if (snap->fix.valid) {
+		lat_e7 = snap->fix.lat_e7;
+		lon_e7 = snap->fix.lon_e7;
+		have_pos = true;
+	} else if (lgps_nav_anchor_project(&geo_anchor, pdr.position_x_m, pdr.position_y_m,
+					   &lat_e7, &lon_e7)) {
+		have_pos = true;
+		pdr_source = true;
+	}
+
+	if (!have_pos && !force_poi) {
+		return;
+	}
+
+	if (snap->bat_valid) {
+		uint8_t pct = LGPS_BATT_SOC_UNKNOWN;
+
+		if ((lgps_battery_soc_pct(snap->bat_mv, snap->charging, &pct) == 0) &&
+		    (pct <= 100U)) {
+			soc_pct = pct;
+		}
+	}
+
+	memset(&traj, 0, sizeof(traj));
+	traj.seq_id = lgps_recorder_commit(&recorder, &rsample);
+	traj.timestamp_s = lgps_time_now_utc_s(now_ms);
+	traj.subsecond_ms = (uint16_t)(now_ms % 1000U);
+	traj.lat_e7 = lat_e7;
+	traj.lon_e7 = lon_e7;
+	if (snap->baro_msl_valid) {
+		traj.alt_m = (int16_t)CLAMP(snap->baro_msl_alt_mm / 1000, INT16_MIN, INT16_MAX);
+		baro_alt = true;
+	} else if (snap->fix.valid) {
+		traj.alt_m = (int16_t)CLAMP(snap->fix.hmsl_mm / 1000, INT16_MIN, INT16_MAX);
+	}
+	traj.speed_cms = snap->fix.valid ? snap->fix.speed_cms : 0U;
+	traj.heading_ddeg = (rsample.heading_ddeg <= 3599U) ? rsample.heading_ddeg : 0U;
+	traj.step_count = (uint16_t)(pdr.steps_total & 0xFFFFU);
+	traj.hdop_d1 = (uint8_t)MIN((uint32_t)(snap->fix.hdop_1e2 / 10U), 255U);
+	traj.satellites = snap->fix.satellites;
+	traj.status_flags = lgps_activity_status_flags(
+		&activity_state, have_pos, pdr_source, snap->fix.valid && (snap->fix.fix_type >= 3U),
+		lgps_zupt_locked(&zupt), mag_anomaly_active, baro_alt, force_poi);
+	traj.battery_pct = soc_pct;
+	traj.floor_level = rsample.floor_level;
+
+	if (lgps_traj_encode(&traj, raw) == 0) {
+		int err = lgps_ring_append(raw);
+
+		if (err < 0) {
+			LOG_WRN("trajectory append seq=%u failed (%d)", traj.seq_id, err);
+		}
+	}
 }
 
 int main(void)
@@ -625,13 +797,28 @@ int main(void)
 
 	for (;;) {
 		uint32_t now_ms = lgps_diag_uptime_ms();
-		int ret = lgps_imu_read_sample_if_ready(&sample);
+		enum lgps_power_state pwr_state;
+		bool force_poi = atomic_cas(&poi_button_pending, 1, 0);
+		int ret = -EAGAIN;
 		uint32_t ble_period_ms = lgps_ble_status_subscribed() ? BLE_STATUS_PERIOD_MS
 								      : BLE_STATUS_IDLE_PERIOD_MS;
 		bool ble_due = (uint32_t)(now_ms - last_ble_ms) >= ble_period_ms;
 		bool telemetry_due = (uint32_t)(now_ms - last_telemetry_ms) >= TELEMETRY_PERIOD_MS;
 
 		lgps_wdt_checkin(LGPS_WDT_TASK_MAIN);
+
+		if (atomic_cas(&imu_wake_pending, 1, 0)) {
+			uint8_t wake_src = 0U;
+
+			(void)lgps_imu_read_wake_src(&wake_src);
+			LOG_INF("IMU INT1 wake IRQ (WAKE_UP_SRC=0x%02x)", wake_src);
+			lgps_power_on_motion_irq(now_ms, pdr.steps_total);
+		}
+
+		pwr_state = lgps_power_get_state();
+		if (pwr_state != LGPS_PWR_DEEP_SLEEP) {
+			ret = lgps_imu_read_sample_if_ready(&sample);
+		}
 
 		if (ret == 0) {
 			float accel_body[3];
@@ -730,37 +917,78 @@ int main(void)
 			}
 		}
 
-		if (ble_due || telemetry_due) {
+		if (ble_due || telemetry_due || force_poi) {
 			struct lgps_telemetry_snapshot *snap =
 				build_snapshot(now_ms, &sample, imu_valid, bat_mv, bat_valid,
-					       telemetry_due);
+					       telemetry_due || force_poi);
 
 			if (ble_due) {
 				last_ble_ms = now_ms;
 				lgps_ble_publish(snap);
 			}
 
-			if (telemetry_due) {
-				last_telemetry_ms = now_ms;
-				if (IS_ENABLED(CONFIG_LGPS_DIAG_TELEMETRY)) {
-					lgps_telemetry_emit(snap);
+			if (telemetry_due || force_poi) {
+				uint8_t soc_pct = LGPS_BATT_SOC_UNKNOWN;
+
+				if (snap->bat_valid) {
+					(void)lgps_battery_soc_pct(snap->bat_mv, snap->charging,
+								   &soc_pct);
 				}
 
-				/* Barometer, once per second: this cadence is what the automatic
-				 * baseline gate counts (30 samples = 30 s), so it must not run in
-				 * build_snapshot(), which also runs at the BLE rate.
-				 */
-				lgps_baro_note_utc(snap->fix.utc_epoch_s);
-				(void)lgps_baro_feed(snap->baro_comp_valid,
-						     (float)snap->baro_press_pa, &snap->fix);
+				if (telemetry_due) {
+					struct lgps_activity_inputs act_in = {
+						.now_ms = now_ms,
+						.steps_total = pdr.steps_total,
+						.zupt_locked = lgps_zupt_locked(&zupt),
+						.gnss_fix_valid = snap->fix.valid,
+						.gnss_age_ms = snap->gnss_age_ms,
+						.gnss_speed_cms = snap->fix.speed_cms,
+					};
 
-				/* Position heartbeat, so the phone still knows where the
-				 * device stands after a pause in walking.
-				 */
-				publish_pdr();
-				publish_gnss(snap);
-				publish_sat();
-				publish_baro(snap);
+					last_telemetry_ms = now_ms;
+					if (IS_ENABLED(CONFIG_LGPS_DIAG_TELEMETRY)) {
+						lgps_telemetry_emit(snap);
+					}
+
+					lgps_baro_note_utc(snap->fix.utc_epoch_s);
+					(void)lgps_baro_feed(snap->baro_comp_valid,
+							     (float)snap->baro_press_pa,
+							     &snap->fix);
+
+					if (snap->baro_alt_valid) {
+						if (snap->fix.valid && (snap->fix.fix_type >= 3U)) {
+							lgps_floor_reset_outdoor(
+								&floor_det, snap->baro_rel_alt_mm,
+								now_ms);
+						} else {
+							(void)lgps_floor_update(
+								&floor_det, snap->baro_rel_alt_mm,
+								now_ms);
+						}
+					}
+
+					lgps_activity_update(&activity_state, &act_in);
+					update_outdoor_calibration(&snap->fix);
+
+					publish_pdr();
+					publish_gnss(snap);
+					publish_sat();
+					publish_baro(snap);
+				}
+
+				pwr_state = lgps_power_tick(now_ms, pdr.steps_total,
+							    lgps_zupt_locked(&zupt),
+							    lgps_ble_connected(), snap->charging,
+							    soc_pct);
+				if (pwr_state != applied_power_state) {
+					applied_power_state = pwr_state;
+					(void)lgps_imu_set_low_power(
+						pwr_state == LGPS_PWR_DEEP_SLEEP);
+					lgps_gnss_set_policy(pwr_state == LGPS_PWR_DEEP_SLEEP,
+							     pwr_state == LGPS_PWR_HIGH_PRECISION);
+				}
+
+				maybe_record_trajectory(now_ms, snap, pwr_state, force_poi);
 			}
 		}
 
@@ -768,7 +996,8 @@ int main(void)
 
 		lgps_wdt_feed();
 
-		k_msleep(MAIN_LOOP_PERIOD_MS);
+		k_msleep((pwr_state == LGPS_PWR_DEEP_SLEEP) ? DEEP_SLEEP_LOOP_PERIOD_MS
+							    : MAIN_LOOP_PERIOD_MS);
 	}
 
 	return 0;

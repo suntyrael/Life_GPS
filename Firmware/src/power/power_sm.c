@@ -3,11 +3,17 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/poweroff.h>
 
+#include <errno.h>
+
+#include <lifegps/battery.h>
 #include <lifegps/diag.h>
+#include <lifegps/gnss.h>
+#include <lifegps/imu.h>
 #include <lifegps/keys.h>
 #include <lifegps/led.h>
 #include <lifegps/power_sm.h>
@@ -16,25 +22,45 @@ LOG_MODULE_REGISTER(lgps_power, LOG_LEVEL_INF);
 
 /*
  * Nine slow blinks (three colours x on/off) plus a small margin.
- * The shutdown pattern must start immediately, so the request purges anything
- * queued first (see on_key): the boot confirmation is 9 s long and would otherwise
- * push the shutdown pattern behind it, making this wait expire before the LEDs were
- * done - sys_poweroff() then cut the rail mid-pattern.
  */
 #define SHUTDOWN_SEQUENCE_MS (3U * 3U * 2U * 500U + 500U)
 
-static bool precision_requested;
-static bool shutdown_pending;
-static struct k_work_delayable shutdown_work;
+static const struct gpio_dt_spec key_poi_wake = GPIO_DT_SPEC_GET(DT_NODELABEL(key_poi), gpios);
 
-bool lgps_power_precision_requested(void)
+static K_MUTEX_DEFINE(power_lock);
+static struct lgps_power_sm_logic sm_logic;
+static bool shutdown_pending;
+static uint8_t last_soc_pct = LGPS_BATT_SOC_UNKNOWN;
+static bool last_charging;
+static struct k_work_delayable shutdown_work;
+static lgps_power_poi_cb_t poi_callback;
+static lgps_power_pairing_cb_t pairing_callback;
+
+static void schedule_shutdown_locked(void)
 {
-	return precision_requested;
+	if (shutdown_pending) {
+		return;
+	}
+
+	shutdown_pending = true;
+	lgps_power_logic_request_shutdown(&sm_logic);
+	(void)lgps_led_off_all();
+	(void)lgps_led_play(LGPS_LED_PATTERN_SHUTDOWN_CONFIRM);
+	(void)k_work_schedule(&shutdown_work, K_MSEC(SHUTDOWN_SEQUENCE_MS));
 }
 
 static void enter_system_off(void)
 {
-	LOG_INF("shutdown confirmed, entering System OFF");
+	LOG_INF("shutdown confirmed: powering down GNSS/IMU and entering System OFF");
+
+	lgps_gnss_force_off();
+	(void)lgps_imu_power_down();
+	(void)lgps_led_off_all();
+
+	/* Configure KEY1_POI (P1.06, active-low with internal pull-up) as System OFF wake. */
+	if (gpio_is_ready_dt(&key_poi_wake)) {
+		(void)gpio_pin_interrupt_configure_dt(&key_poi_wake, GPIO_INT_LEVEL_LOW);
+	}
 
 	/* Let the last UART line drain before the rail collapses. */
 	k_msleep(50);
@@ -51,49 +77,50 @@ static void shutdown_work_handler(struct k_work *work)
 
 static void on_key(enum lgps_key_id key, enum lgps_key_event_type event, uint32_t held_ms)
 {
+	bool call_poi = false;
+	bool call_pairing = false;
+
+	k_mutex_lock(&power_lock, K_FOREVER);
+
 	switch (event) {
 	case LGPS_KEY_EVENT_LONG_PRESS:
-		if (shutdown_pending) {
-			break;
-		}
-		shutdown_pending = true;
-		LOG_INF("%s held %u ms -> power off sequence", key == LGPS_KEY_POI ? "KEY1_POI"
-										 : "KEY2_MODE",
-			held_ms);
-		/* Cancel/drop whatever is playing or queued (e.g. the 9 s boot
-		 * confirmation) so the shutdown pattern starts now.
-		 */
-		(void)lgps_led_off_all();
-		(void)lgps_led_play(LGPS_LED_PATTERN_SHUTDOWN_CONFIRM);
-		(void)k_work_schedule(&shutdown_work, K_MSEC(SHUTDOWN_SEQUENCE_MS));
+		LOG_INF("%s held %u ms -> power off sequence",
+			key == LGPS_KEY_POI ? "KEY1_POI" : "KEY2_MODE", held_ms);
+		schedule_shutdown_locked();
 		break;
 
 	case LGPS_KEY_EVENT_PAIRING_PRESS:
 		if (key == LGPS_KEY_POI) {
 			LOG_INF("BLE pairing hold detected (KEY1_POI, %u ms)", held_ms);
 			(void)lgps_led_play(LGPS_LED_PATTERN_SYNC);
+			call_pairing = true;
 		}
 		break;
 
 	case LGPS_KEY_EVENT_PRESS:
-		/*
-		 * POI is marked the moment the press is debounced: the waypoint belongs to
-		 * where the user stood when pressing, and the feedback must not wait for the
-		 * release.
-		 */
 		if (key == LGPS_KEY_POI) {
 			LOG_INF("POI mark (KEY1_POI pressed)");
 			(void)lgps_led_play(LGPS_LED_PATTERN_FIX);
+			call_poi = true;
 		}
 		break;
 
 	case LGPS_KEY_EVENT_SHORT_PRESS:
 		if (key == LGPS_KEY_MODE) {
-			precision_requested = !precision_requested;
-			LOG_INF("high precision continuous mode %s (KEY2_MODE, held %u ms)",
-				precision_requested ? "requested" : "cancelled", held_ms);
-			if (precision_requested) {
-				(void)lgps_led_play(LGPS_LED_PATTERN_PRECISION);
+			bool changed = lgps_power_logic_toggle_precision(
+				&sm_logic, lgps_diag_uptime_ms(), last_soc_pct, last_charging);
+
+			if (changed) {
+				bool hp = (sm_logic.state == LGPS_PWR_HIGH_PRECISION);
+
+				LOG_INF("high precision mode %s (KEY2_MODE, held %u ms)",
+					hp ? "enabled" : "disabled", held_ms);
+				if (hp) {
+					(void)lgps_led_play(LGPS_LED_PATTERN_PRECISION);
+				}
+			} else {
+				LOG_WRN("HIGH_PRECISION refused (low battery %u%%)", last_soc_pct);
+				(void)lgps_led_play(LGPS_LED_PATTERN_LOW_BATTERY);
 			}
 		}
 		break;
@@ -102,11 +129,123 @@ static void on_key(enum lgps_key_id key, enum lgps_key_event_type event, uint32_
 	default:
 		break;
 	}
+
+	k_mutex_unlock(&power_lock);
+
+	if (call_poi && (poi_callback != NULL)) {
+		poi_callback();
+	}
+	if (call_pairing && (pairing_callback != NULL)) {
+		pairing_callback();
+	}
+}
+
+void lgps_power_register_callbacks(lgps_power_poi_cb_t poi_cb,
+				   lgps_power_pairing_cb_t pairing_cb)
+{
+	k_mutex_lock(&power_lock, K_FOREVER);
+	poi_callback = poi_cb;
+	pairing_callback = pairing_cb;
+	k_mutex_unlock(&power_lock);
+}
+
+enum lgps_power_state lgps_power_get_state(void)
+{
+	enum lgps_power_state st;
+
+	k_mutex_lock(&power_lock, K_FOREVER);
+	st = sm_logic.state;
+	k_mutex_unlock(&power_lock);
+
+	return st;
+}
+
+bool lgps_power_precision_requested(void)
+{
+	return lgps_power_get_state() == LGPS_PWR_HIGH_PRECISION;
+}
+
+enum lgps_power_state lgps_power_tick(uint32_t now_ms, uint32_t steps_total, bool zupt_locked,
+				      bool ble_connected, bool charging, uint8_t soc_pct)
+{
+	struct lgps_power_inputs in = {
+		.now_ms = now_ms,
+		.steps_total = steps_total,
+		.zupt_locked = zupt_locked,
+		.ble_connected = ble_connected,
+		.charging = charging,
+		.soc_pct = soc_pct,
+	};
+	enum lgps_power_state prev;
+	enum lgps_power_state cur;
+
+	k_mutex_lock(&power_lock, K_FOREVER);
+	last_soc_pct = soc_pct;
+	last_charging = charging;
+	prev = sm_logic.state;
+	(void)lgps_power_logic_step(&sm_logic, &in);
+	cur = sm_logic.state;
+
+	if (sm_logic.system_off_requested && !shutdown_pending) {
+		LOG_WRN("critical battery (%u%%), entering System OFF", soc_pct);
+		schedule_shutdown_locked();
+	}
+	k_mutex_unlock(&power_lock);
+
+	if (cur != prev) {
+		LOG_INF("power state: %d -> %d", (int)prev, (int)cur);
+	}
+
+	return cur;
+}
+
+void lgps_power_on_motion_irq(uint32_t now_ms, uint32_t steps_total)
+{
+	bool woke;
+
+	k_mutex_lock(&power_lock, K_FOREVER);
+	woke = lgps_power_logic_on_motion_irq(&sm_logic, now_ms, steps_total);
+	k_mutex_unlock(&power_lock);
+
+	if (woke) {
+		LOG_INF("motion IRQ -> tentative ACTIVE wake window (3 s / >=2 steps)");
+	}
+}
+
+int lgps_power_set_mode(enum lgps_power_state target)
+{
+	int ret;
+
+	k_mutex_lock(&power_lock, K_FOREVER);
+	ret = lgps_power_logic_set_mode(&sm_logic, target, lgps_diag_uptime_ms(), last_soc_pct,
+					last_charging);
+	if ((ret == 0) && (target == LGPS_PWR_SYSTEM_OFF)) {
+		schedule_shutdown_locked();
+	}
+	k_mutex_unlock(&power_lock);
+
+	return ret;
+}
+
+int lgps_power_inject_key(enum lgps_key_id key, enum lgps_key_event_type event)
+{
+	if (key >= LGPS_KEY_COUNT) {
+		return -EINVAL;
+	}
+
+	on_key(key, event, 100U);
+	return 0;
 }
 
 int lgps_power_sm_init(void)
 {
 	int ret;
+
+	lgps_power_logic_init(&sm_logic, lgps_diag_uptime_ms());
+	/* In debug builds (GNSS always on), disable auto-sleep so bench tests stay active. */
+	if (IS_ENABLED(CONFIG_LGPS_GNSS_ALWAYS_ON)) {
+		lgps_power_logic_set_auto_sleep_ms(&sm_logic, 0U);
+	}
 
 	k_work_init_delayable(&shutdown_work, shutdown_work_handler);
 
@@ -117,7 +256,7 @@ int lgps_power_sm_init(void)
 
 	(void)lgps_led_play(LGPS_LED_PATTERN_BOOT_CONFIRM);
 
-	LOG_INF("power state machine ready (boot confirmation playing)");
+	LOG_INF("power state machine ready (4-state, auto_sleep=%u ms)", sm_logic.auto_sleep_ms);
 
 	return 0;
 }

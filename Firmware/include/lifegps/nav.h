@@ -251,4 +251,40 @@ void lgps_step_reset(struct lgps_step *step, uint32_t now_ms);
 bool lgps_step_update(struct lgps_step *step, float accel_norm_g, uint32_t now_ms,
 		      float *delta_accel_g);
 
+/* Online Weinberg K calibration bounds & minimum GNSS validation window. */
+#define LGPS_WEINBERG_K_MIN 0.30F
+#define LGPS_WEINBERG_K_MAX 0.55F
+#define LGPS_WEINBERG_CAL_MIN_DIST_M 25.0F
+#define LGPS_WEINBERG_CAL_MIN_STEPS 20U
+
+/*
+ * Update Weinberg K via EMA when an outdoor GNSS leg has moved far enough.
+ * Returns true if K was updated.
+ */
+bool lgps_pdr_calibrate_k(struct lgps_pdr *pdr, float gnss_dist_m, float sum_delta_a_pow025,
+			  uint32_t steps_in_window);
+
+/* Local tangent-plane anchor projecting PDR (dx_m, dy_m) onto WGS-84 (1e-7 deg). */
+struct lgps_geo_anchor {
+	int32_t lat_e7;
+	int32_t lon_e7;
+	float pdr_x_m;
+	float pdr_y_m;
+	bool valid;
+};
+
+void lgps_nav_anchor_set(struct lgps_geo_anchor *anchor, int32_t lat_e7, int32_t lon_e7,
+			 float pdr_x_m, float pdr_y_m);
+
+bool lgps_nav_anchor_project(const struct lgps_geo_anchor *anchor, float pdr_x_m, float pdr_y_m,
+			     int32_t *out_lat_e7, int32_t *out_lon_e7);
+
+/*
+ * Same as lgps_attitude_correct_from_mag(), except it rejects magnetic anomalies
+ * whose total field norm |B| deviates > LGPS_MAG_ANOMALY_RATIO_MAX from @p reference_ut.
+ * Returns true when an anomaly was detected and yaw pull was suppressed.
+ */
+bool lgps_attitude_correct_from_mag_guarded(struct lgps_attitude *att, const float mag_body_ut[3],
+					    float reference_ut, float gain);
+
 #endif /* LIFEGPS_NAV_H_ */

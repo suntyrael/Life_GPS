@@ -249,3 +249,81 @@ bool lgps_pdr_is_frozen(const struct lgps_pdr *pdr)
 
 	return pdr->frozen;
 }
+
+bool lgps_pdr_calibrate_k(struct lgps_pdr *pdr, float gnss_dist_m, float sum_delta_a_pow025,
+			  uint32_t steps_in_window)
+{
+	float k_obs;
+	float k_new;
+
+	if (pdr == NULL) {
+		return false;
+	}
+	if (!lgps_float_is_finite(gnss_dist_m) || !lgps_float_is_finite(sum_delta_a_pow025)) {
+		return false;
+	}
+	if ((gnss_dist_m < LGPS_WEINBERG_CAL_MIN_DIST_M) ||
+	    (steps_in_window < LGPS_WEINBERG_CAL_MIN_STEPS) || (sum_delta_a_pow025 <= 0.1F)) {
+		return false;
+	}
+
+	k_obs = gnss_dist_m / sum_delta_a_pow025;
+	if (k_obs < LGPS_WEINBERG_K_MIN) {
+		k_obs = LGPS_WEINBERG_K_MIN;
+	} else if (k_obs > LGPS_WEINBERG_K_MAX) {
+		k_obs = LGPS_WEINBERG_K_MAX;
+	}
+
+	k_new = (0.85F * pdr->k) + (0.15F * k_obs);
+	pdr->k = k_new;
+	return true;
+}
+
+void lgps_nav_anchor_set(struct lgps_geo_anchor *anchor, int32_t lat_e7, int32_t lon_e7,
+			 float pdr_x_m, float pdr_y_m)
+{
+	if (anchor == NULL) {
+		return;
+	}
+
+	anchor->lat_e7 = lat_e7;
+	anchor->lon_e7 = lon_e7;
+	anchor->pdr_x_m = pdr_x_m;
+	anchor->pdr_y_m = pdr_y_m;
+	anchor->valid = true;
+}
+
+bool lgps_nav_anchor_project(const struct lgps_geo_anchor *anchor, float pdr_x_m, float pdr_y_m,
+			     int32_t *out_lat_e7, int32_t *out_lon_e7)
+{
+	float dx_m;
+	float dy_m;
+	float lat_rad;
+	float cos_lat;
+	float dlat_e7;
+	float dlon_e7;
+
+	if ((anchor == NULL) || !anchor->valid || (out_lat_e7 == NULL) || (out_lon_e7 == NULL)) {
+		return false;
+	}
+
+	dx_m = pdr_x_m - anchor->pdr_x_m;
+	dy_m = pdr_y_m - anchor->pdr_y_m;
+	if (!lgps_float_is_finite(dx_m) || !lgps_float_is_finite(dy_m)) {
+		return false;
+	}
+
+	/* 1 deg latitude ~ 111320 m -> 1e7 units / 111320 m = 89.8315284 units/m. */
+	lat_rad = ((float)anchor->lat_e7 * 1e-7F) * 0.01745329252F;
+	cos_lat = cosf(lat_rad);
+	if (fabsf(cos_lat) < 0.05F) {
+		cos_lat = (cos_lat >= 0.0F) ? 0.05F : -0.05F;
+	}
+
+	dlat_e7 = dy_m * (1e7F / 111320.0F);
+	dlon_e7 = dx_m * (1e7F / (111320.0F * cos_lat));
+
+	*out_lat_e7 = anchor->lat_e7 + (int32_t)dlat_e7;
+	*out_lon_e7 = anchor->lon_e7 + (int32_t)dlon_e7;
+	return true;
+}

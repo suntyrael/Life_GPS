@@ -37,6 +37,7 @@
  */
 
 #include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/spi.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -65,7 +66,12 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 #define REG_FIFO_STATUS2 0x1CU
 #define REG_STATUS_REG 0x1EU
 #define REG_OUT_TEMP_L 0x20U
+#define REG_WAKE_UP_SRC 0x45U
 #define REG_STATUS_MASTER_MAINPAGE 0x48U
+#define REG_FUNCTIONS_ENABLE 0x50U
+#define REG_WAKE_UP_THS 0x5BU
+#define REG_WAKE_UP_DUR 0x5CU
+#define REG_MD1_CFG 0x5EU
 #define REG_FIFO_DATA_OUT_TAG 0x78U
 
 /* Embedded functions bank (visible while EMB_FUNC_REG_ACCESS is set). */
@@ -111,9 +117,15 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 #define EMB_FUNC_EN_A_SFLP_GAME BIT(1)      /* EMB_FUNC_EN_A (0x04), table 266 */
 #define EMB_FUNC_FIFO_EN_A_SFLP_GAME BIT(1)    /* (0x44), table 296 */
 #define EMB_FUNC_FIFO_EN_A_SFLP_GRAVITY BIT(4)
+#define FUNCTIONS_ENABLE_INT_EN BIT(7)      /* FUNCTIONS_ENABLE (0x50), M1_BRINGUP.md */
+#define MD1_CFG_INT1_WU BIT(5)              /* MD1_CFG (0x5E), M1_BRINGUP.md */
+#define WAKE_UP_THS_0P25G 32U               /* 32 * 7.8125 mg/LSB = 0.25 g */
 
 /* Control values picked for this firmware. */
+#define CTRL1_ODR_POWER_DOWN 0x00U
+#define CTRL1_ODR_15HZ 0x03U      /* ODR_XL[3:0] = 0011b, table 52 (15 Hz) */
 #define CTRL1_ODR_30HZ 0x04U      /* ODR_XL[3:0] = 0100b, table 52 (30 Hz) */
+#define CTRL2_ODR_POWER_DOWN 0x00U
 #define CTRL2_ODR_30HZ 0x04U      /* ODR_G[3:0] = 0100b, table 55 (30 Hz) */
 #define CTRL6_FS_1000DPS 0x03U    /* FS_G[3:0] = 0011b, table 63 (+/-1000 dps) */
 #define CTRL8_FS_4G 0x01U         /* FS_XL[1:0] = 01b, table 68 (+/-4 g) */
@@ -1626,5 +1638,161 @@ int lgps_imu_init(void)
 
 out:
 	k_mutex_unlock(&imu_lock);
+	return ret;
+}
+
+static const struct gpio_dt_spec imu_int1 =
+	GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), imu_int1_gpios);
+static struct gpio_callback imu_int1_cb;
+static lgps_imu_wake_cb_t imu_wake_cb;
+static bool imu_low_power;
+
+static void imu_int1_isr(const struct device *port, struct gpio_callback *cb, uint32_t pins)
+{
+	ARG_UNUSED(port);
+	ARG_UNUSED(cb);
+	ARG_UNUSED(pins);
+
+	if (imu_wake_cb != NULL) {
+		imu_wake_cb();
+	}
+}
+
+int lgps_imu_wake_irq_init(lgps_imu_wake_cb_t cb)
+{
+	int ret;
+
+	imu_wake_cb = cb;
+
+	if (!gpio_is_ready_dt(&imu_int1)) {
+		LOG_ERR("IMU INT1 GPIO (P0.02) not ready");
+		return -ENODEV;
+	}
+
+	ret = gpio_pin_configure_dt(&imu_int1, GPIO_INPUT);
+	if (ret < 0) {
+		return ret;
+	}
+
+	gpio_init_callback(&imu_int1_cb, imu_int1_isr, BIT(imu_int1.pin));
+	ret = gpio_add_callback(imu_int1.port, &imu_int1_cb);
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = gpio_pin_interrupt_configure_dt(&imu_int1, GPIO_INT_DISABLE);
+	return ret;
+}
+
+int lgps_imu_set_low_power(bool low_power)
+{
+	int ret;
+
+	if (detected_who_am_i == 0U) {
+		return -ENODEV;
+	}
+
+	if (low_power == imu_low_power) {
+		return 0;
+	}
+
+	k_mutex_lock(&imu_lock, K_FOREVER);
+
+	if (low_power) {
+		/* Stop DRDY pulse on INT1, enable 0.25 g wake-up routed to INT1,
+		 * power down gyro (2.6 uA), drop XL to 15 Hz.
+		 */
+		ret = imu_write(REG_INT1_CTRL, 0x00U);
+		if (ret == 0) {
+			ret = imu_write(REG_WAKE_UP_DUR, 0x00U);
+		}
+		if (ret == 0) {
+			ret = imu_write(REG_WAKE_UP_THS, WAKE_UP_THS_0P25G);
+		}
+		if (ret == 0) {
+			ret = imu_write(REG_MD1_CFG, MD1_CFG_INT1_WU);
+		}
+		if (ret == 0) {
+			ret = imu_write(REG_FUNCTIONS_ENABLE, FUNCTIONS_ENABLE_INT_EN);
+		}
+		if (ret == 0) {
+			ret = imu_write(REG_CTRL2, CTRL2_ODR_POWER_DOWN);
+		}
+		if (ret == 0) {
+			ret = imu_write(REG_CTRL1, CTRL1_ODR_15HZ);
+		}
+		if (ret == 0) {
+			imu_low_power = true;
+			if (gpio_is_ready_dt(&imu_int1)) {
+				(void)gpio_pin_interrupt_configure_dt(&imu_int1,
+								      GPIO_INT_EDGE_RISING);
+			}
+			LOG_INF("IMU -> low-power wake mode (XL 15 Hz, gyro PD, INT1 WU 0.25 g)");
+		}
+	} else {
+		if (gpio_is_ready_dt(&imu_int1)) {
+			(void)gpio_pin_interrupt_configure_dt(&imu_int1, GPIO_INT_DISABLE);
+		}
+		ret = imu_write(REG_MD1_CFG, 0x00U);
+		if (ret == 0) {
+			ret = imu_write(REG_FUNCTIONS_ENABLE, 0x00U);
+		}
+		if (ret == 0) {
+			ret = imu_write(REG_CTRL1, CTRL1_ODR_30HZ | OP_MODE_HIGH_PERFORMANCE);
+		}
+		if (ret == 0) {
+			ret = imu_write(REG_CTRL2, CTRL2_ODR_30HZ | OP_MODE_HIGH_PERFORMANCE);
+		}
+		if (ret == 0) {
+			ret = imu_write(REG_INT1_CTRL, INT1_DRDY_XL | INT1_DRDY_G);
+		}
+		if (ret == 0) {
+			imu_low_power = false;
+			LOG_INF("IMU -> active 30 Hz HP mode");
+		}
+	}
+
+	k_mutex_unlock(&imu_lock);
+	return ret;
+}
+
+int lgps_imu_power_down(void)
+{
+	int ret;
+
+	if (detected_who_am_i == 0U) {
+		return 0;
+	}
+
+	if (gpio_is_ready_dt(&imu_int1)) {
+		(void)gpio_pin_interrupt_configure_dt(&imu_int1, GPIO_INT_DISABLE);
+	}
+
+	k_mutex_lock(&imu_lock, K_FOREVER);
+	(void)imu_write(REG_MD1_CFG, 0x00U);
+	(void)imu_write(REG_INT1_CTRL, 0x00U);
+	(void)imu_write(REG_CTRL2, CTRL2_ODR_POWER_DOWN);
+	ret = imu_write(REG_CTRL1, CTRL1_ODR_POWER_DOWN);
+	imu_low_power = false;
+	k_mutex_unlock(&imu_lock);
+
+	return ret;
+}
+
+int lgps_imu_read_wake_src(uint8_t *src)
+{
+	int ret;
+
+	if (src == NULL) {
+		return -EINVAL;
+	}
+	if (detected_who_am_i == 0U) {
+		return -ENODEV;
+	}
+
+	k_mutex_lock(&imu_lock, K_FOREVER);
+	ret = imu_read(REG_WAKE_UP_SRC, src, 1U);
+	k_mutex_unlock(&imu_lock);
+
 	return ret;
 }

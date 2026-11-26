@@ -48,6 +48,7 @@
 #include <lifegps/flash_ring.h>
 #include <lifegps/gnss.h>
 #include <lifegps/led.h>
+#include <lifegps/power_sm.h>
 #include <lifegps/telemetry.h>
 #include <lifegps/time.h>
 #include <lifegps/traj.h>
@@ -1278,6 +1279,42 @@ static uint8_t cmd_set_time(const struct lgps_ble_cmd *cmd, uint8_t *payload, si
 	return LGPS_BLE_OK;
 }
 
+static uint8_t cmd_set_mode(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t capacity,
+			    size_t *out_len)
+{
+	int ret;
+
+	if ((cmd->payload_len != 1U) || (capacity < 2U)) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	ret = lgps_power_set_mode((enum lgps_power_state)cmd->payload[0]);
+	if (ret == -EPERM) {
+		return LGPS_BLE_LOW_BATTERY;
+	}
+	if (ret < 0) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	payload[1] = (uint8_t)lgps_power_get_state();
+	*out_len = 2U;
+	return LGPS_BLE_OK;
+}
+
+static uint8_t cmd_button_event(const struct lgps_ble_cmd *cmd)
+{
+	if (cmd->payload_len != 2U) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	if (lgps_power_inject_key((enum lgps_key_id)cmd->payload[0],
+				  (enum lgps_key_event_type)cmd->payload[1]) < 0) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	return LGPS_BLE_OK;
+}
+
 static uint8_t dispatch(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t capacity,
 			size_t *out_len)
 {
@@ -1288,10 +1325,14 @@ static uint8_t dispatch(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t
 		return cmd_get_caps(payload, capacity, out_len);
 	case LGPS_CMD_GET_STATUS:
 		return cmd_get_status(payload, capacity, out_len);
+	case LGPS_CMD_SET_MODE:
+		return cmd_set_mode(cmd, payload, capacity, out_len);
 	case LGPS_CMD_SET_TIME:
 		return cmd_set_time(cmd, payload, capacity, out_len);
 	case LGPS_CMD_POI_MARK:
 		return cmd_poi_mark(payload, capacity, out_len);
+	case LGPS_CMD_BUTTON_EVENT:
+		return cmd_button_event(cmd);
 	case LGPS_CMD_MAG_CAL:
 		return cmd_mag_cal(cmd, payload, capacity, out_len);
 	case LGPS_CMD_ACCEL_CAL:
@@ -1548,6 +1589,11 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 bool lgps_ble_status_subscribed(void)
 {
 	return status_subscribed;
+}
+
+bool lgps_ble_connected(void)
+{
+	return link_up;
 }
 
 void lgps_ble_publish(const struct lgps_telemetry_snapshot *snap)

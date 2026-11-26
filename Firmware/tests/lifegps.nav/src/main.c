@@ -614,4 +614,43 @@ ZTEST(lifegps_nav, test_step_detector_enforces_the_minimum_interval)
 	zassert_true(steps <= 4, "the 260 ms limiter must cap 4 Hz at 4 steps, got %d", steps);
 }
 
+ZTEST(lifegps_nav, test_weinberg_k_online_calibration_and_clamp)
+{
+	struct lgps_pdr pdr;
+
+	lgps_pdr_init(&pdr);
+	zassert_false(lgps_pdr_calibrate_k(&pdr, 10.0F, 20.0F, 10U));
+	/* 40 m over 80 sum_pow025 -> k_obs = 0.50 -> EMA 0.85*0.415 + 0.15*0.50 = 0.42775. */
+	zassert_true(lgps_pdr_calibrate_k(&pdr, 40.0F, 80.0F, 30U));
+	zassert_within(pdr.k, 0.42775F, 0.001F, "unexpected calibrated K");
+}
+
+ZTEST(lifegps_nav, test_pdr_geo_anchor_projection)
+{
+	struct lgps_geo_anchor anchor;
+	int32_t lat_e7 = 0;
+	int32_t lon_e7 = 0;
+
+	lgps_nav_anchor_set(&anchor, 312304160, 1214737010, 0.0F, 0.0F);
+	/* Walk +111.32 m north -> +0.001 deg = +10000 e7 units. */
+	zassert_true(lgps_nav_anchor_project(&anchor, 0.0F, 111.32F, &lat_e7, &lon_e7));
+	zassert_within((float)(lat_e7 - 312304160), 10000.0F, 20.0F, "north projection");
+	zassert_equal(lon_e7, 1214737010);
+}
+
+ZTEST(lifegps_nav, test_mag_anomaly_suppresses_yaw_pull)
+{
+	struct lgps_attitude att;
+	const float up[3] = { 0.0F, 0.0F, 1.0F };
+	/* 120 uT east -> >30% away from 48 uT reference -> must be rejected. */
+	const float strong_mag[3] = { 120.0F, 0.0F, 0.0F };
+	float before;
+
+	lgps_attitude_reset(&att, up);
+	before = lgps_attitude_heading_rad(&att);
+	zassert_true(lgps_attitude_correct_from_mag_guarded(&att, strong_mag, 48.0F, 0.5F));
+	zassert_within(lgps_attitude_heading_rad(&att), before, 1e-5F,
+		       "anomalous mag must not pull yaw");
+}
+
 ZTEST_SUITE(lifegps_nav, NULL, NULL, NULL, NULL, NULL);

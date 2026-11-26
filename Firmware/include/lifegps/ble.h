@@ -39,6 +39,9 @@ int lgps_ble_init(void);
  */
 bool lgps_ble_status_subscribed(void);
 
+/* True while a BLE central is connected. */
+bool lgps_ble_connected(void);
+
 /*
  * Encode @p snap as the 82-byte Status frame, cache it for reads and notify the
  * subscribed central. Thread context: any thread (the main loop calls it at the

@@ -79,4 +79,14 @@ void lgps_ring_get_stats(struct lgps_ring_stats *out);
  */
 void lgps_ring_get_capacity(struct lgps_ring_capacity *out);
 
+/* Highest trajectory seq_id recovered on mount or appended since boot (0 when empty). */
+uint32_t lgps_ring_last_seq_id(void);
+
+/*
+ * Read up to @p max_records valid 32-byte trajectory records whose seq_id >= @p start_seq,
+ * ordered by sector_seq then slot index. Used by BLE SYNC_READ and nightly archiver.
+ */
+int lgps_ring_read_from_seq(uint32_t start_seq, uint8_t *out_buf, uint16_t max_records,
+			    uint16_t *out_count);
+
 #endif /* LIFEGPS_FLASH_RING_H_ */

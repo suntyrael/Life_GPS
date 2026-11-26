@@ -905,15 +905,35 @@ static bool gnss_debug_hold_power(void)
 	return (flags & LGPS_GNSS_DEBUG_HOLD_POWER) != 0U;
 }
 
+static atomic_t policy_deep_sleep = ATOMIC_INIT(0);
+static atomic_t policy_high_precision = ATOMIC_INIT(0);
+
+void lgps_gnss_set_policy(bool deep_sleep, bool high_precision)
+{
+	atomic_set(&policy_deep_sleep, deep_sleep ? 1 : 0);
+	atomic_set(&policy_high_precision, high_precision ? 1 : 0);
+	k_sem_give(&gnss_wake_sem);
+}
+
+void lgps_gnss_force_off(void)
+{
+	atomic_set(&policy_deep_sleep, 1);
+	atomic_set(&policy_high_precision, 0);
+	(void)lgps_board_io_gnss_power(false);
+}
+
 /*
  * The single question the state machine is allowed to ask before dropping the
- * rail. Two independent sources can say no: the build-time switch
- * CONFIG_LGPS_GNSS_ALWAYS_ON (bench debugging, full multi-GNSS tracking) and a
- * live debug session that holds power for its TTL.
+ * rail. Three independent sources can say no: CONFIG_LGPS_GNSS_ALWAYS_ON,
+ * HIGH_PRECISION mode, and a live debug session holding power for its TTL.
  */
 static bool gnss_may_cut_power(void)
 {
 	if (IS_ENABLED(CONFIG_LGPS_GNSS_ALWAYS_ON)) {
+		return false;
+	}
+
+	if (atomic_get(&policy_high_precision) != 0) {
 		return false;
 	}
 
@@ -2500,7 +2520,9 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 			break;
 
 		case LGPS_GNSS_STATE_BACKOFF:
-			if (elapsed >= backoff_ms) {
+			if (atomic_get(&policy_deep_sleep) != 0 && gnss_may_cut_power()) {
+				set_state(LGPS_GNSS_STATE_OFF, 0U);
+			} else if (elapsed >= backoff_ms) {
 				LOG_INF("backoff expired (%u ms), retrying GNSS", backoff_ms);
 				gnss_power_up();
 				set_state(LGPS_GNSS_STATE_COLD_START,
@@ -2509,8 +2531,22 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 			break;
 
 		case LGPS_GNSS_STATE_OFF:
+			if (atomic_get(&policy_deep_sleep) == 0) {
+				LOG_INF("leaving deep sleep, powering GNSS rail up");
+				gnss_power_up();
+				set_state(LGPS_GNSS_STATE_COLD_START,
+					  LGPS_GNSS_COLD_START_TIMEOUT_MS);
+			}
+			break;
 		default:
 			break;
+		}
+
+		if ((atomic_get(&policy_deep_sleep) != 0) && gnss_may_cut_power() &&
+		    (gnss_state != LGPS_GNSS_STATE_OFF)) {
+			LOG_INF("deep sleep requested, powering GNSS rail down");
+			gnss_power_down();
+			set_state(LGPS_GNSS_STATE_OFF, 0U);
 		}
 
 		{

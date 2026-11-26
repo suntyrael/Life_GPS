@@ -32,17 +32,21 @@ target_sources(app PRIVATE
   src/imu/lsm6dsv16x.c
   src/imu/bmp388.c
   src/imu/sflp.c
+  src/nav/activity.c
   src/nav/attitude.c
   src/nav/baro.c
   src/nav/baro_store.c
+  src/nav/floor.c
   src/nav/nav.c
   src/power/battery.c
   src/power/battery_soc.c
   src/power/keys.c
   src/power/led.c
   src/power/power_sm.c
+  src/power/power_sm_logic.c
   src/power/wdt.c
   src/storage/flash_ring.c
+  src/storage/recorder.c
   src/storage/traj.c
   src/util/crc.c
   src/util/time.c

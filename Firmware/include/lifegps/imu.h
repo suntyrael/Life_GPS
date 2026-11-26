@@ -240,4 +240,22 @@ int lgps_imu_read_hub(struct lgps_imu_mag *mag, struct lgps_imu_baro *baro);
  */
 int lgps_imu_read_sflp(struct lgps_imu_sflp *out);
 
+/* Callback invoked from GPIO ISR context when LSM6DSV16X INT1 (P0.02) fires. */
+typedef void (*lgps_imu_wake_cb_t)(void);
+
+/* Configure P0.02 (imu-int1-gpios, GPIOTE30) rising-edge interrupt for motion wake. */
+int lgps_imu_wake_irq_init(lgps_imu_wake_cb_t cb);
+
+/*
+ * Toggle between active 30 Hz HP + gyro and low-power 15 Hz XL + gyro power-down
+ * with INT1 wake-up (WK_THS=32 -> 0.25 g at reset default 7.8125 mg/LSB).
+ */
+int lgps_imu_set_low_power(bool low_power);
+
+/* Put both accelerometer and gyroscope into power-down (CTRL1=0, CTRL2=0) for SYSTEM_OFF. */
+int lgps_imu_power_down(void);
+
+/* Read and clear WAKE_UP_SRC (0x45) after a motion wake-up event. */
+int lgps_imu_read_wake_src(uint8_t *src);
+
 #endif /* LIFEGPS_IMU_H_ */

@@ -303,4 +303,10 @@ enum lgps_gnss_start_mode {
 
 int lgps_gnss_restart(enum lgps_gnss_start_mode mode);
 
+/* Feed power-state policy to the GNSS thread (sleep cuts rail; high_precision keeps rail on). */
+void lgps_gnss_set_policy(bool deep_sleep, bool high_precision);
+
+/* Immediately disable GNSS power rail before entering SYSTEM_OFF. */
+void lgps_gnss_force_off(void);
+
 #endif /* LIFEGPS_GNSS_H_ */
