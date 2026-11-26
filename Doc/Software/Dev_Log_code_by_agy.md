@@ -124,4 +124,20 @@
    - [TrackExporter.kt](../../App/core/data/src/main/kotlin/com/lifegps/core/data/TrackExporter.kt)：严格 WGS-84 的 GPX 1.1 / KML 2.2 / GeoJSON / CSV 流式导出；
    - [SyncProtocol.kt](../../App/core/data/src/main/kotlin/com/lifegps/core/data/SyncProtocol.kt) + [SyncEngine.kt](../../App/core/data/src/main/kotlin/com/lifegps/core/data/SyncEngine.kt)：双通道断点续传同步（实时环 `0x20/0x21/0x22` + 归档日包 `0x23/0x24`），并补齐 4 套纯 JVM 单元测试接入 [app.yml](../../.github/workflows/app.yml)。
 2. **Android 索引与仓层**：新增 WAL 模式 [TrackIndexDb.kt](../../App/app/src/main/java/com/lifegps/app/data/TrackIndexDb.kt) 与 [ProductTrackRepository.kt](../../App/app/src/main/java/com/lifegps/app/data/ProductTrackRepository.kt)，经 [AppContainer](../../App/app/src/main/java/com/lifegps/app/LifeGpsApplication.kt) 注入全应用。
+3. **测试对齐**：修正 `day_package_hs.bin` Golden Vector 记录数断言（`manifest.json` 实际为 8 条 `trajectory_delta_wrap.bin` / 256 B / CRC-32 `0xCC798479`，而非 3 条）。
+
+---
+
+## 2026-11-26 · Milestone 4：Android `prod` 产品终端完整交付（MapLibre 零 GMS）
+
+### 关键设计决策
+1. **零 GMS MapLibre Native 交互地图**：在 [libs.versions.toml](../../App/gradle/libs.versions.toml) 接入 `org.maplibre.gl:android-sdk:11.8.8`（Apache-2.0，无 GMS 依赖，内置 SQLite 离线瓦片缓存），实现 [MapLibreTrackView.kt](../../App/app/src/main/java/com/lifegps/app/prod/MapLibreTrackView.kt)：
+   - 按定位来源/活动模式动态着色分段（GNSS 青色、PDR 琥珀色、乘车紫色、静止灰色）、POI 绿点与实时/回放红点游标；
+   - 仅在渲染层根据 `displayCoordSystem` 执行 WGS-84 ↔ GCJ-02 转换，磁盘 `.lgd`/`.lgs` 与导出文件严格保持 WGS-84。
+2. **完整产品端四页签 ([ProdAppHost.kt](../../App/app/src/main/java/com/lifegps/app/prod/ProdAppHost.kt))**：
+   - **首页**：设备卡片（电量/绑定状态/32M·64M 存储）、一键「同步轨迹」与实时 `SyncProgress` 进度条、标准/高精度模式快切、对时与打点、最近 3 天轨迹快捷入口；
+   - **地图**：MapLibre 交互底图、日期快切条、WGS-84/GCJ-02 切换、联动海拔剖面曲线与轨迹回放滑块；
+   - **时间轴**：本地每日轨迹列表、POI 名称/备注编辑器，以及通过 [AndroidManifest.xml](../../App/app/src/main/AndroidManifest.xml) + [file_paths.xml](../../App/app/src/main/res/xml/file_paths.xml) `FileProvider` 调起系统分享菜单导出 **GPX 1.1 / KML 2.2 / GeoJSON / CSV**；
+   - **设置**：11 项 `Config TLV`（`GET_CONFIG` / `SET_CONFIG`）实时编辑器（LED、GNSS 采样率、自动关机、时区偏移、归档时刻）、设备端 Flash 日包擦除（`ERASE_DAY`）、OTA 升级入口与两键灯语速查。
+
 

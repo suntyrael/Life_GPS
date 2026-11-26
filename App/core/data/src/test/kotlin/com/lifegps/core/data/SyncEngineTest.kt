@@ -25,8 +25,9 @@ class SyncEngineTest {
         try {
             val store = LocalDayStore(tmpDir)
             val liveBytes = loadVector("trajectory_basic.bin")
+            val archiveRawBytes = loadVector("trajectory_delta_wrap.bin")
             val hsPkg = loadVector("day_package_hs.bin")
-            val archiveDayId = 20260705
+            val archiveDayId = 20261126
 
             val fakeChannel = object : SyncChannel {
                 private var listener: ((DataFrame) -> Unit)? = null
@@ -77,9 +78,9 @@ class SyncEngineTest {
                             putU32(entry, 0, archiveDayId.toLong())
                             putU32(entry, 4, 0x16000L)
                             putU32(entry, 8, hsPkg.size.toLong())
-                            putU32(entry, 12, 3L)
-                            putU32(entry, 16, 0L)
-                            putU32(entry, 20, 100L)
+                            putU32(entry, 12, 8L)
+                            putU32(entry, 16, 0xCC798479L)
+                            putU32(entry, 20, 200L)
                             putU16(entry, 24, GeneratedProtocol.DayPackage.CODEC_BYTE_DELTA_HEATSHRINK)
                             putU16(entry, 26, 0)
                             out.write(entry)
@@ -114,7 +115,7 @@ class SyncEngineTest {
             assertEquals(103L, result.newWatermarkSeqId)
             assertTrue(store.hasArchivedDay(archiveDayId))
             val loaded = store.loadDayRecords(archiveDayId)
-            assertEquals(TrajectoryRecord.decodeStream(liveBytes), loaded)
+            assertEquals(TrajectoryRecord.decodeStream(archiveRawBytes), loaded)
         } finally {
             tmpDir.deleteRecursively()
         }

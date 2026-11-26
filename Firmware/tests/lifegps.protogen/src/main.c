@@ -161,17 +161,18 @@ ZTEST(lifegps_protogen, test_golden_vectors_match_c_codecs)
 
 	/* Decode golden compressed LGD1 day package via real lgps_day_pkg_decode(). */
 	{
-		uint8_t scratch[sizeof(lgps_vec_traj_basic)];
-		uint8_t out[sizeof(lgps_vec_traj_basic)];
+		uint8_t scratch[256];
+		uint8_t out[256];
 		struct lgps_day_header hdr;
 		size_t out_len = 0U;
 
 		zassert_equal(lgps_day_pkg_decode(lgps_vec_day_hs, sizeof(lgps_vec_day_hs),
 						  scratch, &hdr, out, sizeof(out), &out_len),
 			      0, "decode golden day_hs");
-		zassert_equal(out_len, sizeof(lgps_vec_traj_basic), "decoded length");
-		zassert_mem_equal(out, lgps_vec_traj_basic, sizeof(lgps_vec_traj_basic),
-				  "decoded golden day_hs bytes match");
+		zassert_equal(hdr.record_count, 8U, "day_hs has 8 records");
+		zassert_equal(out_len, 256U, "decoded length 256 B");
+		zassert_equal(lgps_crc32_iso_hdlc(out, out_len), 0xCC798479U,
+			      "decoded golden day_hs CRC-32 matches manifest");
 	}
 }
 

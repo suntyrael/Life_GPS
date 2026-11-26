@@ -39,11 +39,11 @@ ZTEST(lifegps_archive, test_delta_and_heatshrink_roundtrip)
 ZTEST(lifegps_archive, test_golden_day_packages_decode_bit_exact)
 {
 	struct lgps_day_header hdr;
-	uint8_t scratch[sizeof(lgps_vec_traj_basic)];
-	uint8_t raw_out[sizeof(lgps_vec_traj_basic)];
+	uint8_t scratch[256];
+	uint8_t raw_out[256];
 	size_t raw_len = 0U;
 
-	/* Raw golden vector */
+	/* Raw golden vector (3 records = 96 B, trajectory_basic.bin) */
 	zassert_equal(lgps_day_pkg_decode(lgps_vec_day_raw, sizeof(lgps_vec_day_raw), scratch,
 					  &hdr, raw_out, sizeof(raw_out), &raw_len),
 		      0, "decode golden raw LGD1");
@@ -53,17 +53,18 @@ ZTEST(lifegps_archive, test_golden_day_packages_decode_bit_exact)
 	zassert_mem_equal(raw_out, lgps_vec_traj_basic, sizeof(lgps_vec_traj_basic),
 			  "raw LGD1 payload matches golden trajectory");
 
-	/* Compressed (Byte-Delta + Heatshrink) golden vector */
+	/* Compressed golden vector (8 records = 256 B, trajectory_delta_wrap.bin) */
 	memset(raw_out, 0, sizeof(raw_out));
 	raw_len = 0U;
 	zassert_equal(lgps_day_pkg_decode(lgps_vec_day_hs, sizeof(lgps_vec_day_hs), scratch, &hdr,
 					  raw_out, sizeof(raw_out), &raw_len),
 		      0, "decode golden heatshrink LGD1");
 	zassert_equal(hdr.codec_id, LGPS_PACKAGE_DAY_CODEC_BYTE_DELTA_HEATSHRINK, "hs codec id");
-	zassert_equal(hdr.record_count, 3U, "3 records");
-	zassert_equal(raw_len, sizeof(lgps_vec_traj_basic), "raw length");
-	zassert_mem_equal(raw_out, lgps_vec_traj_basic, sizeof(lgps_vec_traj_basic),
-			  "hs LGD1 payload matches golden trajectory");
+	zassert_equal(hdr.day_id, 20261126U, "hs day_id");
+	zassert_equal(hdr.record_count, 8U, "8 records");
+	zassert_equal(raw_len, 256U, "256 B raw length");
+	zassert_equal(lgps_crc32_iso_hdlc(raw_out, raw_len), 0xCC798479U,
+		      "hs decoded payload CRC-32 matches manifest");
 }
 
 ZTEST(lifegps_archive, test_day_pkg_encode_and_tamper_detection)

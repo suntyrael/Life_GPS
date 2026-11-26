@@ -50,10 +50,10 @@ class LocalDayStoreTest {
         try {
             val store = LocalDayStore(tmpDir)
             val hsPkg = loadVector("day_package_hs.bin")
-            val decoded = store.commitArchivedPackage(20260705, hsPkg)
-            assertEquals(3, decoded.records.size)
-            assertTrue(store.hasArchivedDay(20260705))
-            assertEquals(3, store.loadDayRecords(20260705).size)
+            val decoded = store.commitArchivedPackage(20261126, hsPkg)
+            assertEquals(8, decoded.records.size)
+            assertTrue(store.hasArchivedDay(20261126))
+            assertEquals(8, store.loadDayRecords(20261126).size)
 
             // Corrupted copy must fail and be quarantined
             val bad = hsPkg.copyOf()
