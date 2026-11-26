@@ -31,10 +31,12 @@ class CoreProtocolTest {
         assertEquals(100L, records[0].seqId)
         assertEquals(312304160, records[0].latitudeE7)
         assertEquals(0, records[0].floorLevel)
+        assertTrue(records[0].isPoi)
         assertEquals(-338688200, records[1].latitudeE7)
         assertEquals(-12, records[1].altitudeM)
         assertEquals(-2, records[1].floorLevel)
-        assertTrue(records[1].isPoi)
+        assertTrue(records[1].isPdrSource)
+        assertTrue(records[1].isBaroAltitude)
         assertEquals(5, records[2].floorLevel)
 
         val reencoded = ByteArray(bytes.size)

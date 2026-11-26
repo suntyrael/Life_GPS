@@ -30,14 +30,14 @@ data class TrajectoryRecord(
     val unixEpochMs: Long
         get() = (timestampSec + LIFE_GPS_EPOCH_UNIX_S) * 1000L + subsecondMs
 
-    val isGnssValid: Boolean get() = (statusFlags and FLAG_GNSS_VALID) != 0
-    val isPdrSource: Boolean get() = (statusFlags and FLAG_PDR_SOURCE) != 0
-    val isMoving: Boolean get() = (statusFlags and FLAG_MOVING) != 0
-    val isIndoor: Boolean get() = (statusFlags and FLAG_INDOOR) != 0
-    val isVehicle: Boolean get() = (statusFlags and FLAG_VEHICLE) != 0
-    val isCharging: Boolean get() = (statusFlags and FLAG_CHARGING) != 0
-    val isTimeInvalid: Boolean get() = (statusFlags and FLAG_TIME_INVALID) != 0
-    val isPoi: Boolean get() = (statusFlags and FLAG_POI) != 0
+    val isFixValid: Boolean get() = (statusFlags and FLAG_FIX_VALID) != 0
+    val isPdrSource: Boolean get() = (statusFlags and FLAG_NAV_SRC) != 0
+    val isPoi: Boolean get() = (statusFlags and FLAG_POI_EVENT) != 0
+    val isGnss3d: Boolean get() = (statusFlags and FLAG_GNSS_TYPE) != 0
+    val isVehicle: Boolean get() = (statusFlags and FLAG_VEHICLE_MODE) != 0
+    val isStationaryLocked: Boolean get() = (statusFlags and FLAG_STN_LOCK) != 0
+    val isMagAnomaly: Boolean get() = (statusFlags and FLAG_MAG_ANOMALY) != 0
+    val isBaroAltitude: Boolean get() = (statusFlags and FLAG_ALT_SRC) != 0
 
     fun encode(): ByteArray {
         val out = ByteArray(GeneratedProtocol.TrajectoryRecord.SIZE)
@@ -64,14 +64,15 @@ data class TrajectoryRecord(
         /** Life_GPS epoch origin: 2020-01-01T00:00:00Z in Unix seconds. */
         const val LIFE_GPS_EPOCH_UNIX_S: Long = 1_577_836_800L
 
-        const val FLAG_GNSS_VALID = 1 shl 0
-        const val FLAG_PDR_SOURCE = 1 shl 1
-        const val FLAG_MOVING = 1 shl 2
-        const val FLAG_INDOOR = 1 shl 3
-        const val FLAG_VEHICLE = 1 shl 4
-        const val FLAG_CHARGING = 1 shl 5
-        const val FLAG_TIME_INVALID = 1 shl 6
-        const val FLAG_POI = 1 shl 7
+        /** status_flags bit map matching Firmware/include/lifegps/traj.h (README 7.6). */
+        const val FLAG_FIX_VALID = 0x01
+        const val FLAG_NAV_SRC = 0x02
+        const val FLAG_POI_EVENT = 0x04
+        const val FLAG_GNSS_TYPE = 0x08
+        const val FLAG_VEHICLE_MODE = 0x10
+        const val FLAG_STN_LOCK = 0x20
+        const val FLAG_MAG_ANOMALY = 0x40
+        const val FLAG_ALT_SRC = 0x80
 
         fun decode(bytes: ByteArray, offset: Int = 0): TrajectoryRecord? {
             val size = GeneratedProtocol.TrajectoryRecord.SIZE

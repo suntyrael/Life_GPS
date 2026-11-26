@@ -90,7 +90,8 @@ class FakeTransportTest {
         assertEquals(1, fake.sentFrames.size)
 
         val decoded = BleFrame.parseFrame(fake.sentFrames.first())
-        assertEquals(Opcode.SET_TIME.code, decoded?.opcode)
+        assertEquals(Opcode.SET_TIME.code, decoded?.opcodeCode)
+        assertEquals(Opcode.SET_TIME, decoded?.opcode)
         assertEquals(7, decoded?.seq)
         assertEquals(4, decoded?.payload?.size)
     }
