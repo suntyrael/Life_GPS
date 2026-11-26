@@ -38,13 +38,21 @@
  * a phone reads cannot disagree with the layout it parses.
  */
 #define LGPS_BLE_FW_VERSION_MAJOR 0U
-#define LGPS_BLE_FW_VERSION_MINOR 4U
+#define LGPS_BLE_FW_VERSION_MINOR 5U
 #define LGPS_BLE_FW_VERSION_PATCH 0U
 
 /* Largest command frame: header + max payload + crc16. */
 #define LGPS_BLE_CMD_MAX_FRAME                                                \
 	(LGPS_FRAME_COMMAND_HEADER_SIZE + LGPS_PROTO_MAX_COMMAND_PAYLOAD +     \
 	 LGPS_FRAME_COMMAND_TRAILER_SIZE)
+
+/* Largest data frame: 14-byte header + 228-byte payload + 2-byte CRC-16 = 244 B. */
+#define LGPS_BLE_DATA_MAX_FRAME                                               \
+	(LGPS_FRAME_DATA_HEADER_SIZE + LGPS_PROTO_MAX_DATA_PAYLOAD +           \
+	 LGPS_FRAME_DATA_TRAILER_SIZE)
+
+/* Data frame flags byte. */
+#define LGPS_BLE_DATA_FLAG_LAST_CHUNK 0x01U
 
 /* Command response status, first payload byte of every response. */
 enum lgps_ble_status_code {
@@ -424,6 +432,16 @@ struct lgps_ble_accel_cal_rsp {
 	uint32_t last_calib_unix_s;
 };
 
+/* Parsed view of an incoming 0x5A data frame; payload points into caller's buffer. */
+struct lgps_ble_data_frame {
+	uint8_t stream;
+	uint8_t flags;
+	uint32_t transfer_id;
+	uint32_t cursor;
+	uint16_t payload_len;
+	const uint8_t *payload;
+};
+
 /*
  * Validate and split a command frame.
  * Returns 0 on success, -EINVAL on NULL/short input, -EBADMSG when magic,
@@ -439,6 +457,14 @@ int lgps_ble_cmd_parse(const uint8_t *frame, size_t len_bytes, struct lgps_ble_c
  */
 int lgps_ble_cmd_build(uint8_t opcode, uint8_t flags, uint16_t seq, const uint8_t *payload,
 		       uint16_t payload_len, uint8_t *out, size_t out_size);
+
+/* Validate and split a 0x5A Data characteristic frame. */
+int lgps_ble_data_parse(const uint8_t *frame, size_t len_bytes, struct lgps_ble_data_frame *out);
+
+/* Serialise a 0x5A Data characteristic frame into @p out. */
+int lgps_ble_data_build(uint8_t stream, uint8_t flags, uint32_t transfer_id, uint32_t cursor,
+			const uint8_t *payload, uint16_t payload_len, uint8_t *out,
+			size_t out_size);
 
 /* Serialise the status snapshot. Returns LGPS_BLE_STATUS_SIZE or -EINVAL/-ENOMEM. */
 int lgps_ble_status_encode(const struct lgps_ble_status *status, uint8_t *out, size_t out_size);

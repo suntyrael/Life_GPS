@@ -37,6 +37,8 @@
 #include <zephyr/sys/reboot.h>
 
 #include <generated/lifegps_protocol.h>
+#include <lifegps/app_config.h>
+#include <lifegps/archive.h>
 #include <lifegps/ble.h>
 #include <lifegps/baro.h>
 #include <lifegps/battery.h>
@@ -47,6 +49,7 @@
 #include <lifegps/diag.h>
 #include <lifegps/flash_ring.h>
 #include <lifegps/gnss.h>
+#include <lifegps/imu.h>
 #include <lifegps/led.h>
 #include <lifegps/power_sm.h>
 #include <lifegps/telemetry.h>
@@ -66,31 +69,16 @@ BUILD_ASSERT(LGPS_BATT_SOC_UNKNOWN == LGPS_BLE_SOC_UNKNOWN,
 	     "battery and BLE must agree on the unknown SOC marker");
 
 #define LGPS_BLE_NAME_SIZE 16
-/*
- * Stack sizing, measured against what each thread actually runs:
- *   command thread: traj encode + flash append (mutex, erase possible) + GATT
- *                   notify chain + LOG formatting
- *   log thread:     240-byte packet buffer + GATT notify chain
- * The notify path goes ATT -> L2CAP -> HCI -> SDC and the log formatter
- * (CBPRINTF_COMPLETE + FP) is called in the caller's context because
- * CONFIG_LOG_MODE_IMMEDIATE is on, so 1 KB was not enough: the bench showed a
- * stack overflow in the notify-error path right after a disconnect.
- */
-#define LGPS_BLE_CMD_THREAD_STACK 3072
+#define LGPS_BLE_CMD_THREAD_STACK 3584
 #define LGPS_BLE_LOG_THREAD_STACK 3072
 #define LGPS_BLE_THREAD_PRIO K_PRIO_PREEMPT(10)
 #define LGPS_BLE_LOG_DRAIN_MS 20
 #define LGPS_BLE_REBOOT_DELAY_MS 200
-/*
- * Restart advertising *after* the disconnected callback returns, never inside it.
- * Connectable advertising needs a struct bt_conn slot (adv.c: le_adv_start_add_conn
- * -> bt_conn_add_le -> bt_conn_new over acl_conns[CONFIG_BT_MAX_CONN], default 1),
- * and the dying connection still holds that slot while callbacks run. Starting it
- * inline therefore fails with -ENOMEM (-12) and the device never becomes visible
- * again - which is exactly what happened on the bench.
- */
 #define LGPS_BLE_ADV_RESTART_MS 250U
 #define LGPS_BLE_ADV_RETRY_MS 1000U
+#define LGPS_BLE_PAIRING_WINDOW_MS 60000U
+#define LGPS_BLE_SYNC_RECS_PER_CHUNK 7U /* 7 * 32 = 224 B <= 228 B max data payload */
+#define LGPS_BLE_DAY_INDEX_MAX_PAGE 8U  /* 9 + 8 * 28 = 233 B <= 235 B max cmd payload */
 
 /* --- state ----------------------------------------------------------------- */
 
@@ -106,6 +94,10 @@ static struct bt_uuid_128 control_uuid = {
 	.uuid = { .type = BT_UUID_TYPE_128 },
 	.val = { LGPS_UUID_CONTROL_LE },
 };
+static struct bt_uuid_128 data_uuid = {
+	.uuid = { .type = BT_UUID_TYPE_128 },
+	.val = { LGPS_UUID_DATA_LE },
+};
 static struct bt_uuid_128 log_uuid = {
 	.uuid = { .type = BT_UUID_TYPE_128 },
 	.val = { LGPS_UUID_LOG_LE },
@@ -114,13 +106,22 @@ static struct bt_uuid_128 telem_uuid = {
 	.uuid = { .type = BT_UUID_TYPE_128 },
 	.val = { LGPS_UUID_TELEMETRY_LE },
 };
+static struct bt_uuid_128 config_uuid = {
+	.uuid = { .type = BT_UUID_TYPE_128 },
+	.val = { LGPS_UUID_CONFIG_LE },
+};
 
 static ssize_t status_read(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf,
 			   uint16_t len, uint16_t offset);
 static ssize_t control_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 			     const void *buf, uint16_t len, uint16_t offset, uint8_t flags);
+static ssize_t config_read(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf,
+			   uint16_t len, uint16_t offset);
+static ssize_t config_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+			    const void *buf, uint16_t len, uint16_t offset, uint8_t flags);
 static void status_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 static void control_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
+static void data_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 static void log_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 static void telem_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 
@@ -135,16 +136,23 @@ BT_GATT_SERVICE_DEFINE(lgps_svc,
 				       BT_GATT_CHRC_NOTIFY,
 			       BT_GATT_PERM_WRITE, NULL, control_write, NULL),
 	BT_GATT_CCC(control_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+	BT_GATT_CHARACTERISTIC(&data_uuid.uuid, BT_GATT_CHRC_NOTIFY, BT_GATT_PERM_NONE, NULL, NULL,
+			       NULL),
+	BT_GATT_CCC(data_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 	BT_GATT_CHARACTERISTIC(&log_uuid.uuid, BT_GATT_CHRC_NOTIFY, BT_GATT_PERM_NONE, NULL, NULL,
 			       NULL),
 	BT_GATT_CCC(log_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 	BT_GATT_CHARACTERISTIC(&telem_uuid.uuid, BT_GATT_CHRC_NOTIFY, BT_GATT_PERM_NONE, NULL, NULL,
 			       NULL),
 	BT_GATT_CCC(telem_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+	BT_GATT_CHARACTERISTIC(&config_uuid.uuid, BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+			       BT_GATT_PERM_READ | BT_GATT_PERM_WRITE, config_read, config_write,
+			       NULL),
 );
 
 static struct bt_gatt_attr *status_attr;
 static struct bt_gatt_attr *control_attr;
+static struct bt_gatt_attr *data_attr;
 static struct bt_gatt_attr *log_attr;
 static struct bt_gatt_attr *telem_attr;
 
@@ -154,14 +162,23 @@ static struct bt_gatt_attr *telem_attr;
  */
 static volatile bool status_subscribed;
 static bool control_subscribed;
+static volatile bool data_subscribed;
 static bool log_subscribed;
 static volatile bool telem_subscribed;
 static bool debug_unlocked;
 static bool reboot_pending;
 static bool link_up;
+static bool pairing_window_open;
+static struct bt_conn *active_conn;
 
 static struct k_work_delayable reboot_work;
 static struct k_work_delayable adv_restart_work;
+static struct k_work_delayable pairing_close_work;
+
+/* Active bulk sync session state (owned exclusively by command_thread). */
+static uint32_t sync_next_transfer_id = 1U;
+static uint32_t sync_active_transfer_id;
+static bool sync_session_open;
 
 static void reboot_work_handler(struct k_work *work)
 {
@@ -173,7 +190,7 @@ static void reboot_work_handler(struct k_work *work)
 
 /* Latest encoded Status frame. Written by the main thread, read by the GATT
  * read callback (BT host thread) and by the command thread (GET_STATUS), so the
- * 100-byte copy is short enough to sit behind a spinlock.
+ * copy is short enough to sit behind a spinlock.
  */
 static uint8_t status_frame[LGPS_BLE_STATUS_SIZE];
 
@@ -189,9 +206,7 @@ static uint16_t telem_seq_nmea;
 static bool status_frame_valid;
 static struct k_spinlock status_lock;
 
-/* Published by lgps_ble_publish(); read by POI_MARK. Atomic because the command
- * thread must not see a half-updated pair.
- */
+/* Published by lgps_ble_publish(); read by POI_MARK and scan-response builder. */
 static atomic_t published_steps;
 static atomic_t published_soc_pct;
 
@@ -201,6 +216,8 @@ static atomic_t published_soc_pct;
 static atomic_t notify_failures;
 
 static char device_name[LGPS_BLE_NAME_SIZE];
+/* 2-byte Company ID (0xFFFF) + 10-byte LGPS_ADV_* payload = 12 bytes. */
+static uint8_t mfg_adv_buf[2U + LGPS_ADV_DATA_SIZE];
 
 /* --- advertising ----------------------------------------------------------- */
 
@@ -211,19 +228,55 @@ static const struct bt_data adv_data[] = {
 
 static struct bt_data scan_rsp_data[] = {
 	BT_DATA(BT_DATA_NAME_COMPLETE, device_name, LGPS_BLE_NAME_SIZE),
+	BT_DATA(BT_DATA_MANUFACTURER_DATA, mfg_adv_buf, sizeof(mfg_adv_buf)),
 };
+
+static void refresh_mfg_adv_data(void)
+{
+	atomic_val_t soc = atomic_get(&published_soc_pct);
+	uint16_t storage_permille = lgps_archive_used_permille();
+	uint8_t storage_pct = (uint8_t)(storage_permille / 10U);
+	uint16_t adv_flags = pairing_window_open ? 0x0001U : 0x0000U;
+	uint32_t last_seq = lgps_ring_last_seq_id();
+	uint8_t *p = &mfg_adv_buf[2];
+
+	mfg_adv_buf[0] = (uint8_t)(LGPS_ADV_COMPANY_ID & 0xFFU);
+	mfg_adv_buf[1] = (uint8_t)((LGPS_ADV_COMPANY_ID >> 8) & 0xFFU);
+
+	p[LGPS_ADV_OFF_ADV_VER] = (uint8_t)LGPS_ADV_VERSION;
+	p[LGPS_ADV_OFF_WORK_MODE] = (uint8_t)lgps_power_get_state();
+	p[LGPS_ADV_OFF_BATTERY_PCT] = (soc <= 100) ? (uint8_t)soc : 0xFFU;
+	p[LGPS_ADV_OFF_STORAGE_PCT] = (storage_pct <= 100U) ? storage_pct : 100U;
+	p[LGPS_ADV_OFF_ADV_FLAGS] = (uint8_t)(adv_flags & 0xFFU);
+	p[LGPS_ADV_OFF_ADV_FLAGS + 1U] = (uint8_t)((adv_flags >> 8) & 0xFFU);
+	p[LGPS_ADV_OFF_LAST_SEQ_ID] = (uint8_t)(last_seq & 0xFFU);
+	p[LGPS_ADV_OFF_LAST_SEQ_ID + 1U] = (uint8_t)((last_seq >> 8) & 0xFFU);
+	p[LGPS_ADV_OFF_LAST_SEQ_ID + 2U] = (uint8_t)((last_seq >> 16) & 0xFFU);
+	p[LGPS_ADV_OFF_LAST_SEQ_ID + 3U] = (uint8_t)((last_seq >> 24) & 0xFFU);
+}
 
 static int start_advertising(void)
 {
+	refresh_mfg_adv_data();
 	scan_rsp_data[0].data_len = (uint8_t)strlen(device_name);
 	/* BT_LE_ADV_CONN_FAST_1 is the GAP-recommended undirected connectable
-	 * parameter set in Zephyr 4.4 (the generic BT_LE_ADV_CONN macro no longer
-	 * exists there). The interval is the fast one on purpose: a screenless
-	 * device must be discoverable in seconds, and the link is expected to be
-	 * up for the whole debug session.
+	 * parameter set in Zephyr 4.4.
 	 */
 	return bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, adv_data, ARRAY_SIZE(adv_data), scan_rsp_data,
 			       ARRAY_SIZE(scan_rsp_data));
+}
+
+static void pairing_close_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+
+	pairing_window_open = false;
+	refresh_mfg_adv_data();
+	if (!link_up) {
+		(void)bt_le_adv_update_data(adv_data, ARRAY_SIZE(adv_data), scan_rsp_data,
+					    ARRAY_SIZE(scan_rsp_data));
+	}
+	LOG_INF("BLE pairing window closed");
 }
 
 static void schedule_advertising(uint32_t delay_ms)
@@ -238,10 +291,6 @@ static void adv_restart_handler(struct k_work *work)
 	ARG_UNUSED(work);
 
 	if (link_up) {
-		/* A central won the race and is already connected; advertising now
-		 * would only fail with -EALREADY, and disconnected() will ask again
-		 * when the link really goes down.
-		 */
 		return;
 	}
 
@@ -252,9 +301,6 @@ static void adv_restart_handler(struct k_work *work)
 		return;
 	}
 
-	/* Anything left here is a genuine failure: report it once per retry cycle
-	 * instead of spamming every connection attempt.
-	 */
 	LOG_WRN("advertising restart failed (%d), retrying in %u ms", err,
 		(unsigned int)LGPS_BLE_ADV_RETRY_MS);
 	schedule_advertising(LGPS_BLE_ADV_RETRY_MS);
@@ -341,6 +387,14 @@ static void control_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 	LOG_INF("command responses %s", control_subscribed ? "on" : "off");
 }
 
+static void data_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+	ARG_UNUSED(attr);
+
+	data_subscribed = (value == BT_GATT_CCC_NOTIFY);
+	LOG_INF("data stream %s", data_subscribed ? "on" : "off");
+}
+
 static void log_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
 	ARG_UNUSED(attr);
@@ -355,6 +409,50 @@ static void telem_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 
 	telem_subscribed = (value == BT_GATT_CCC_NOTIFY);
 	LOG_INF("telemetry stream %s", telem_subscribed ? "on" : "off");
+}
+
+static ssize_t config_read(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf,
+			   uint16_t len, uint16_t offset)
+{
+	struct lgps_app_config cfg;
+	uint8_t tlv[64];
+	int encoded;
+
+	lgps_app_config_get(&cfg);
+	encoded = lgps_app_config_encode_all_tlv(&cfg, tlv, sizeof(tlv));
+	if (encoded < 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+	}
+
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, tlv, (size_t)encoded);
+}
+
+static ssize_t config_write(struct bt_conn *conn, const struct bt_gatt_attr *attr, const void *buf,
+			    uint16_t len, uint16_t offset, uint8_t flags)
+{
+	int ret;
+
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
+
+	if (offset != 0U) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
+
+	if ((buf == NULL) || (len == 0U)) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+
+	ret = lgps_app_config_update_tlv((const uint8_t *)buf, len);
+	if (ret == -ERANGE) {
+		return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+	}
+	if (ret < 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+
+	return (ssize_t)len;
 }
 
 /* --- command queue --------------------------------------------------------- */
@@ -583,7 +681,8 @@ static uint8_t cmd_get_caps(uint8_t *payload, size_t capacity, size_t *out_len)
 		.caps = LGPS_BLE_CAP_STATUS_NOTIFY |
 			(IS_ENABLED(CONFIG_LGPS_BLE_LOG) ? LGPS_BLE_CAP_LOG_NOTIFY : 0U) |
 			LGPS_BLE_CAP_POI | LGPS_BLE_CAP_FLASH_INFO | LGPS_BLE_CAP_REBOOT |
-			LGPS_BLE_CAP_DEBUG_UNLOCK | LGPS_BLE_CAP_GNSS_DEBUG | LGPS_BLE_CAP_GNSS_CFG |
+			LGPS_BLE_CAP_DEBUG_UNLOCK | LGPS_BLE_CAP_DATA_SYNC |
+			LGPS_BLE_CAP_CONFIG_TLV | LGPS_BLE_CAP_GNSS_DEBUG | LGPS_BLE_CAP_GNSS_CFG |
 			LGPS_BLE_CAP_GNSS_RESTART | LGPS_BLE_CAP_BARO_BASELINE |
 			(IS_ENABLED(CONFIG_LGPS_CALIB)
 				 ? (LGPS_BLE_CAP_MAG_CAL | LGPS_BLE_CAP_ACCEL_CAL)
@@ -1315,6 +1414,445 @@ static uint8_t cmd_button_event(const struct lgps_ble_cmd *cmd)
 	return LGPS_BLE_OK;
 }
 
+static void write_le16(uint8_t *dst, uint16_t v)
+{
+	dst[0] = (uint8_t)(v & 0xFFU);
+	dst[1] = (uint8_t)((v >> 8) & 0xFFU);
+}
+
+static void write_le32(uint8_t *dst, uint32_t v)
+{
+	dst[0] = (uint8_t)(v & 0xFFU);
+	dst[1] = (uint8_t)((v >> 8) & 0xFFU);
+	dst[2] = (uint8_t)((v >> 16) & 0xFFU);
+	dst[3] = (uint8_t)((v >> 24) & 0xFFU);
+}
+
+static uint16_t read_le16(const uint8_t *src)
+{
+	return (uint16_t)((uint16_t)src[0] | ((uint16_t)src[1] << 8));
+}
+
+static uint8_t cmd_set_config(const struct lgps_ble_cmd *cmd)
+{
+	int ret;
+
+	if ((cmd->payload_len == 0U) || (cmd->payload == NULL)) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	ret = lgps_app_config_update_tlv(cmd->payload, cmd->payload_len);
+	if (ret == -ERANGE) {
+		return LGPS_BLE_OUT_OF_RANGE;
+	}
+	if (ret < 0) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	{
+		struct lgps_app_config cfg;
+
+		lgps_app_config_get(&cfg);
+		(void)lgps_time_set_local_offset_s((int32_t)cfg.tz_offset_min * 60);
+		if (cfg.record_mode <= (uint8_t)LGPS_PWR_HIGH_PRECISION) {
+			(void)lgps_power_set_mode((enum lgps_power_state)cfg.record_mode);
+		}
+	}
+
+	return LGPS_BLE_OK;
+}
+
+static uint8_t cmd_get_config(uint8_t *payload, size_t capacity, size_t *out_len)
+{
+	struct lgps_app_config cfg;
+	int encoded;
+
+	lgps_app_config_get(&cfg);
+	encoded = lgps_app_config_encode_all_tlv(&cfg, &payload[1], capacity - 1U);
+	if (encoded < 0) {
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+
+	*out_len = 1U + (size_t)encoded;
+	return LGPS_BLE_OK;
+}
+
+/*
+ * SYNC_BEGIN (0x20):
+ *   req: [u32 from_seq_id] (optional; 0 when omitted)
+ *   rsp: [u8 status, u32 transfer_id, u32 total_records, u32 first_seq_id,
+ *         u32 last_seq_id, u16 chunk_records]
+ */
+static uint8_t cmd_sync_begin(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t capacity,
+			      size_t *out_len)
+{
+	uint32_t from_seq = 0U;
+	uint32_t last_seq;
+	uint32_t est_records = 0U;
+
+	if (capacity < 1U + 18U) {
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+
+	if (cmd->payload_len == 4U) {
+		from_seq = read_le32(cmd->payload);
+	} else if (cmd->payload_len != 0U) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	last_seq = lgps_ring_last_seq_id();
+	if ((last_seq > 0U) && (last_seq >= from_seq)) {
+		uint32_t first_avail = (from_seq == 0U) ? 1U : from_seq;
+		uint32_t ring_cap_recs = LGPS_RING_SECTOR_COUNT * LGPS_RING_RECORDS_PER_SECTOR;
+
+		est_records = (last_seq >= first_avail) ? (last_seq - first_avail + 1U) : 0U;
+		if (est_records > ring_cap_recs) {
+			est_records = ring_cap_recs;
+		}
+	}
+
+	sync_active_transfer_id = sync_next_transfer_id++;
+	if (sync_next_transfer_id == 0U) {
+		sync_next_transfer_id = 1U;
+	}
+	sync_session_open = true;
+	(void)lgps_led_play(LGPS_LED_PATTERN_SYNC);
+
+	write_le32(&payload[1], sync_active_transfer_id);
+	write_le32(&payload[5], est_records);
+	write_le32(&payload[9], (from_seq == 0U) ? 1U : from_seq);
+	write_le32(&payload[13], last_seq);
+	write_le16(&payload[17], (uint16_t)LGPS_BLE_SYNC_RECS_PER_CHUNK);
+	*out_len = 19U;
+
+	return LGPS_BLE_OK;
+}
+
+/*
+ * SYNC_READ (0x21):
+ *   req: [u32 transfer_id, u32 cursor_seq_id, u16 max_chunks]
+ *   streams 0x5A Data frames on DATA (0004), stream=LGPS_STREAM_TRAJECTORY (0x00)
+ *   rsp: [u8 status, u32 next_seq_id, u16 chunks_sent, u8 done]
+ */
+static uint8_t cmd_sync_read(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t capacity,
+			     size_t *out_len)
+{
+	static uint8_t sync_rec_buf[LGPS_BLE_SYNC_RECS_PER_CHUNK * LGPS_RECORD_TRAJECTORY_SIZE];
+	static uint8_t sync_data_frame[LGPS_BLE_DATA_MAX_FRAME];
+	uint32_t transfer_id;
+	uint32_t cursor_seq;
+	uint16_t max_chunks;
+	uint16_t chunks_sent = 0U;
+	bool done = false;
+
+	if (capacity < 1U + 7U) {
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+	if (cmd->payload_len != 10U) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	transfer_id = read_le32(&cmd->payload[0]);
+	cursor_seq = read_le32(&cmd->payload[4]);
+	max_chunks = read_le16(&cmd->payload[8]);
+	if ((max_chunks == 0U) || (max_chunks > 32U)) {
+		max_chunks = 8U;
+	}
+
+	if (!sync_session_open || (transfer_id != sync_active_transfer_id)) {
+		return LGPS_BLE_SESSION_EXPIRED;
+	}
+
+	for (uint16_t c = 0U; c < max_chunks; c++) {
+		uint16_t count = 0U;
+		int err = lgps_ring_read_from_seq(cursor_seq, sync_rec_buf,
+						  (uint16_t)LGPS_BLE_SYNC_RECS_PER_CHUNK, &count);
+		uint32_t last_in_chunk = cursor_seq;
+		uint8_t flags = 0U;
+		int frame_len;
+
+		if (err < 0) {
+			return LGPS_BLE_FLASH_ERROR;
+		}
+		if (count == 0U) {
+			done = true;
+			break;
+		}
+
+		last_in_chunk = read_le32(&sync_rec_buf[(size_t)(count - 1U) *
+							LGPS_RECORD_TRAJECTORY_SIZE]);
+		cursor_seq = last_in_chunk + 1U;
+		if (count < LGPS_BLE_SYNC_RECS_PER_CHUNK) {
+			done = true;
+			flags |= (uint8_t)LGPS_BLE_DATA_FLAG_LAST_CHUNK;
+		}
+
+		frame_len = lgps_ble_data_build((uint8_t)LGPS_STREAM_TRAJECTORY, flags,
+						transfer_id,
+						read_le32(&sync_rec_buf[0]), sync_rec_buf,
+						(uint16_t)(count * LGPS_RECORD_TRAJECTORY_SIZE),
+						sync_data_frame, sizeof(sync_data_frame));
+		if (frame_len < 0) {
+			return LGPS_BLE_INTERNAL_ERROR;
+		}
+
+		if (data_subscribed) {
+			notify_guarded(data_attr, sync_data_frame, (uint16_t)frame_len);
+			k_sleep(K_MSEC(4));
+		}
+		chunks_sent++;
+
+		if (done) {
+			break;
+		}
+	}
+
+	write_le32(&payload[1], cursor_seq);
+	write_le16(&payload[5], chunks_sent);
+	payload[7] = done ? 1U : 0U;
+	*out_len = 8U;
+	return LGPS_BLE_OK;
+}
+
+static uint8_t cmd_sync_end(const struct lgps_ble_cmd *cmd)
+{
+	if ((cmd->payload_len != 0U) && (cmd->payload_len != 4U) && (cmd->payload_len != 8U)) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	sync_session_open = false;
+	return LGPS_BLE_OK;
+}
+
+/*
+ * GET_DAY_INDEX (0x23):
+ *   req: optional [u8 start_idx]
+ *   rsp: [u8 status, u32 index_version, u8 total_days, u8 returned_days,
+ *         u8 start_idx, u8 reserved, entries[returned_days * 28B]]
+ */
+static uint8_t cmd_get_day_index(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t capacity,
+				 size_t *out_len)
+{
+	static struct lgps_journal journal_snap;
+	uint8_t start_idx = 0U;
+	uint8_t returned = 0U;
+
+	if (capacity < 9U) {
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+	if (cmd->payload_len == 1U) {
+		start_idx = cmd->payload[0];
+	} else if (cmd->payload_len != 0U) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	lgps_archive_get_journal(&journal_snap);
+
+	write_le32(&payload[1], journal_snap.index_version);
+	payload[5] = (uint8_t)MIN(journal_snap.count, 255U);
+	payload[7] = start_idx;
+	payload[8] = 0U;
+
+	for (uint16_t idx = start_idx;
+	     (idx < journal_snap.count) && (returned < LGPS_BLE_DAY_INDEX_MAX_PAGE); idx++) {
+		size_t off = 9U + ((size_t)returned * LGPS_JOURNAL_ENTRY_SIZE);
+
+		if ((off + LGPS_JOURNAL_ENTRY_SIZE) > capacity) {
+			break;
+		}
+		lgps_journal_entry_encode(&journal_snap.entries[idx], &payload[off]);
+		returned++;
+	}
+
+	payload[6] = returned;
+	*out_len = 9U + ((size_t)returned * LGPS_JOURNAL_ENTRY_SIZE);
+	return LGPS_BLE_OK;
+}
+
+/*
+ * GET_ARCHIVE (0x24):
+ *   req: [u32 day_id, u32 byte_offset, u16 max_chunks]
+ *   streams 0x5A Data frames on DATA (0004), stream=LGPS_STREAM_ARCHIVE_DAY (0x02)
+ *   rsp: [u8 status, u32 total_len, u32 next_offset, u16 chunks_sent, u8 done]
+ */
+static uint8_t cmd_get_archive(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t capacity,
+			       size_t *out_len)
+{
+	static uint8_t chunk_buf[LGPS_PROTO_MAX_DATA_PAYLOAD];
+	static uint8_t data_frame[LGPS_BLE_DATA_MAX_FRAME];
+	uint32_t day_id;
+	uint32_t offset;
+	uint16_t max_chunks;
+	uint32_t total_len = 0U;
+	uint16_t chunks_sent = 0U;
+	bool done = false;
+
+	if (capacity < 12U) {
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+	if (cmd->payload_len != 10U) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	day_id = read_le32(&cmd->payload[0]);
+	offset = read_le32(&cmd->payload[4]);
+	max_chunks = read_le16(&cmd->payload[8]);
+	if ((max_chunks == 0U) || (max_chunks > 32U)) {
+		max_chunks = 8U;
+	}
+
+	for (uint16_t c = 0U; c < max_chunks; c++) {
+		uint16_t got = 0U;
+		uint8_t flags = 0U;
+		int err = lgps_archive_read_chunk(day_id, offset, chunk_buf,
+						  (uint16_t)sizeof(chunk_buf), &got, &total_len);
+		int frame_len;
+
+		if (err == -ENOENT) {
+			return LGPS_BLE_NOT_FOUND;
+		}
+		if (err < 0) {
+			return LGPS_BLE_FLASH_ERROR;
+		}
+		if (got == 0U) {
+			done = true;
+			break;
+		}
+
+		if ((offset + got) >= total_len) {
+			done = true;
+			flags |= (uint8_t)LGPS_BLE_DATA_FLAG_LAST_CHUNK;
+		}
+
+		frame_len = lgps_ble_data_build((uint8_t)LGPS_STREAM_ARCHIVE_DAY, flags, day_id,
+						offset, chunk_buf, got, data_frame,
+						sizeof(data_frame));
+		if (frame_len < 0) {
+			return LGPS_BLE_INTERNAL_ERROR;
+		}
+
+		if (data_subscribed) {
+			notify_guarded(data_attr, data_frame, (uint16_t)frame_len);
+			k_sleep(K_MSEC(4));
+		}
+
+		offset += got;
+		chunks_sent++;
+		if (done) {
+			break;
+		}
+	}
+
+	write_le32(&payload[1], total_len);
+	write_le32(&payload[5], offset);
+	write_le16(&payload[9], chunks_sent);
+	payload[11] = done ? 1U : 0U;
+	*out_len = 12U;
+	return LGPS_BLE_OK;
+}
+
+static uint8_t cmd_selftest(uint8_t *payload, size_t capacity, size_t *out_len)
+{
+	struct lgps_ring_capacity cap = { 0 };
+	float press = 0.0F;
+	uint8_t pass_mask = 0U;
+	uint8_t fail_mask = 0U;
+
+	if (capacity < 12U) {
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+
+	lgps_ring_get_capacity(&cap);
+	if (cap.flash_bytes > 0U) {
+		pass_mask |= 0x01U; /* External NOR SFDP OK (32 MB or 64 MB) */
+	} else {
+		fail_mask |= 0x01U;
+	}
+	if (lgps_imu_who_am_i() != 0U) {
+		pass_mask |= 0x02U; /* LSM6DSV16X OK */
+	} else {
+		fail_mask |= 0x02U;
+	}
+	if (lgps_baro_pressure(&press)) {
+		pass_mask |= 0x04U; /* BMP388 OK */
+	} else {
+		fail_mask |= 0x04U;
+	}
+	if (lgps_gnss_baud() > 0U) {
+		pass_mask |= 0x08U; /* GNSS UART OK */
+	} else {
+		fail_mask |= 0x08U;
+	}
+
+	payload[1] = pass_mask;
+	payload[2] = fail_mask;
+	payload[3] = 0U;
+	write_le32(&payload[4], cap.flash_bytes);
+	write_le32(&payload[8], lgps_diag_uptime_ms());
+	*out_len = 12U;
+	return LGPS_BLE_OK;
+}
+
+static uint8_t cmd_erase_day(const struct lgps_ble_cmd *cmd)
+{
+	uint32_t day_id;
+	int err;
+
+	if (cmd->payload_len != 4U) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+
+	day_id = read_le32(cmd->payload);
+	err = lgps_archive_erase_day(day_id);
+	if (err == -ENOENT) {
+		return LGPS_BLE_NOT_FOUND;
+	}
+	if (err < 0) {
+		return LGPS_BLE_FLASH_ERROR;
+	}
+
+	return LGPS_BLE_OK;
+}
+
+static uint8_t cmd_factory_reset(const struct lgps_ble_cmd *cmd)
+{
+	static const uint8_t confirm[4] = { 'R', 'S', 'T', '!' };
+
+	if (!debug_unlocked) {
+		if ((cmd->payload_len != sizeof(confirm)) ||
+		    (memcmp(cmd->payload, confirm, sizeof(confirm)) != 0)) {
+			return LGPS_BLE_UNAUTHORIZED;
+		}
+	}
+
+	(void)lgps_app_config_factory_reset();
+	(void)lgps_archive_factory_reset();
+	reboot_pending = true;
+	LOG_WRN("factory reset executed over BLE");
+	return LGPS_BLE_OK;
+}
+
+static uint8_t cmd_get_fault_log(uint8_t *payload, size_t capacity, size_t *out_len)
+{
+	const char *reason = lgps_diag_reset_reason();
+	size_t rlen = (reason != NULL) ? strlen(reason) : 0U;
+
+	if (capacity < 6U) {
+		return LGPS_BLE_INTERNAL_ERROR;
+	}
+	if (rlen > (capacity - 6U)) {
+		rlen = capacity - 6U;
+	}
+
+	write_le32(&payload[1], lgps_diag_uptime_ms());
+	payload[5] = (uint8_t)rlen;
+	if (rlen > 0U) {
+		memcpy(&payload[6], reason, rlen);
+	}
+	*out_len = 6U + rlen;
+	return LGPS_BLE_OK;
+}
+
 static uint8_t dispatch(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t capacity,
 			size_t *out_len)
 {
@@ -1331,16 +1869,38 @@ static uint8_t dispatch(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t
 		return cmd_set_time(cmd, payload, capacity, out_len);
 	case LGPS_CMD_POI_MARK:
 		return cmd_poi_mark(payload, capacity, out_len);
+	case LGPS_CMD_SET_CONFIG:
+		return cmd_set_config(cmd);
+	case LGPS_CMD_GET_CONFIG:
+		return cmd_get_config(payload, capacity, out_len);
+	case LGPS_CMD_SYNC_BEGIN:
+		return cmd_sync_begin(cmd, payload, capacity, out_len);
+	case LGPS_CMD_SYNC_READ:
+		return cmd_sync_read(cmd, payload, capacity, out_len);
+	case LGPS_CMD_SYNC_END:
+		return cmd_sync_end(cmd);
+	case LGPS_CMD_GET_DAY_INDEX:
+		return cmd_get_day_index(cmd, payload, capacity, out_len);
+	case LGPS_CMD_GET_ARCHIVE:
+		return cmd_get_archive(cmd, payload, capacity, out_len);
 	case LGPS_CMD_BUTTON_EVENT:
 		return cmd_button_event(cmd);
+	case LGPS_CMD_SELFTEST:
+		return cmd_selftest(payload, capacity, out_len);
 	case LGPS_CMD_MAG_CAL:
 		return cmd_mag_cal(cmd, payload, capacity, out_len);
 	case LGPS_CMD_ACCEL_CAL:
 		return cmd_accel_cal(cmd, payload, capacity, out_len);
 	case LGPS_CMD_BARO_BASELINE:
 		return cmd_baro_baseline(cmd, payload, capacity, out_len);
+	case LGPS_CMD_ERASE_DAY:
+		return cmd_erase_day(cmd);
+	case LGPS_CMD_FACTORY_RESET:
+		return cmd_factory_reset(cmd);
 	case LGPS_CMD_FLASH_INFO:
 		return cmd_flash_info(payload, capacity, out_len);
+	case LGPS_CMD_GET_FAULT_LOG:
+		return cmd_get_fault_log(payload, capacity, out_len);
 	case LGPS_CMD_LOG_SUBSCRIBE:
 		return cmd_log_subscribe(cmd);
 	case LGPS_CMD_GNSS_DEBUG:
@@ -1530,6 +2090,20 @@ static void le_param_updated(struct bt_conn *conn, uint16_t interval, uint16_t l
 		(unsigned int)interval * 1250U, (unsigned int)latency, (unsigned int)timeout * 10U);
 }
 
+#if defined(CONFIG_BT_SMP)
+static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err)
+{
+	ARG_UNUSED(conn);
+
+	if (err == BT_SECURITY_ERR_SUCCESS) {
+		LOG_INF("BLE link security changed -> L%u (encrypted/bonded)", (unsigned int)level);
+	} else {
+		LOG_WRN("BLE link security failed (level L%u, err %u)", (unsigned int)level,
+			(unsigned int)err);
+	}
+}
+#endif
+
 static void connected(struct bt_conn *conn, uint8_t err)
 {
 	if (err != 0) {
@@ -1540,6 +2114,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	}
 
 	LOG_INF("central connected");
+	active_conn = bt_conn_ref(conn);
 	link_up = true;
 	log_conn_params(conn);
 
@@ -1555,11 +2130,6 @@ static void connected(struct bt_conn *conn, uint8_t err)
 		}
 	}
 #endif
-
-	/* The 2M PHY request is left to CONFIG_BT_AUTO_PHY_PERIPHERAL_2M. Asking for
-	 * it here as well made both requests land in the same few milliseconds and
-	 * the controller answered HCI 0x3A (Controller Busy), see the bench log.
-	 */
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
@@ -1568,12 +2138,18 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
 	LOG_INF("central disconnected (0x%02x: %s)", reason, disconnect_reason_name(reason));
 
+	if (active_conn != NULL) {
+		bt_conn_unref(active_conn);
+		active_conn = NULL;
+	}
 	link_up = false;
 	status_subscribed = false;
 	control_subscribed = false;
+	data_subscribed = false;
 	log_subscribed = false;
 	telem_subscribed = false;
 	debug_unlocked = false;
+	sync_session_open = false;
 
 	schedule_advertising(LGPS_BLE_ADV_RESTART_MS);
 }
@@ -1582,6 +2158,9 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected = connected,
 	.disconnected = disconnected,
 	.le_param_updated = le_param_updated,
+#if defined(CONFIG_BT_SMP)
+	.security_changed = security_changed,
+#endif
 };
 
 /* --- public API ------------------------------------------------------------ */
@@ -1594,6 +2173,27 @@ bool lgps_ble_status_subscribed(void)
 bool lgps_ble_connected(void)
 {
 	return link_up;
+}
+
+void lgps_ble_open_pairing_window(void)
+{
+	pairing_window_open = true;
+	refresh_mfg_adv_data();
+	(void)k_work_reschedule(&pairing_close_work, K_MSEC(LGPS_BLE_PAIRING_WINDOW_MS));
+	LOG_INF("BLE pairing window opened for %u s", LGPS_BLE_PAIRING_WINDOW_MS / 1000U);
+
+#if defined(CONFIG_BT_SMP)
+	if (active_conn != NULL) {
+		int err = bt_conn_set_security(active_conn, BT_SECURITY_L2);
+
+		if (err != 0) {
+			LOG_WRN("bt_conn_set_security(L2) returned %d", err);
+		}
+	} else {
+		(void)bt_le_adv_update_data(adv_data, ARRAY_SIZE(adv_data), scan_rsp_data,
+					    ARRAY_SIZE(scan_rsp_data));
+	}
+#endif
 }
 
 void lgps_ble_publish(const struct lgps_telemetry_snapshot *snap)
@@ -1702,9 +2302,6 @@ void lgps_ble_publish_baro(const struct lgps_telemetry_snapshot *snap)
 
 	memset(&baro, 0, sizeof(baro));
 
-	/* Pressure and height belong to the baro module (it owns the baseline), the
-	 * die temperature is already in the snapshot the caller built.
-	 */
 	if (lgps_baro_pressure(&pressure_pa)) {
 		baro.press_pa = (uint32_t)(pressure_pa + 0.5F);
 		baro.flags |= LGPS_BLE_BARO_FLAG_PRESS_VALID;
@@ -1726,7 +2323,6 @@ void lgps_ble_publish_baro(const struct lgps_telemetry_snapshot *snap)
 		baro.rel_alt_mm = lgps_baro_rel_alt_mm();
 	}
 
-	/* Absolute altitude only exists for an MSL reference (QNH from GNSS). */
 	if (lgps_baro_msl_valid()) {
 		baro.flags |= LGPS_BLE_BARO_FLAG_MSL_VALID;
 		baro.alt_msl_mm = lgps_baro_msl_altitude_mm();
@@ -1793,7 +2389,6 @@ void lgps_ble_publish_nmea(const char *line, uint8_t len)
 	}
 }
 
-
 static void build_device_name(void)
 {
 	uint8_t id[8] = { 0 };
@@ -1816,15 +2411,16 @@ int lgps_ble_init(void)
 
 	status_attr = NULL;
 	control_attr = NULL;
+	data_attr = NULL;
 	log_attr = NULL;
+	telem_attr = NULL;
 	debug_unlocked = false;
 	status_frame_valid = false;
+	pairing_window_open = false;
+	sync_session_open = false;
 	atomic_clear(&published_steps);
 	atomic_set(&published_soc_pct, (atomic_val_t)LGPS_BLE_SOC_UNKNOWN);
 
-	/* One token per queued frame, otherwise a second Control write would find
-	 * the only token already consumed and wait for a wakeup that never comes.
-	 */
 	k_sem_init(&queue_sem, 0, LGPS_BLE_CMD_QUEUE_DEPTH);
 
 	err = bt_enable(NULL);
@@ -1835,6 +2431,7 @@ int lgps_ble_init(void)
 
 	k_work_init_delayable(&reboot_work, reboot_work_handler);
 	k_work_init_delayable(&adv_restart_work, adv_restart_handler);
+	k_work_init_delayable(&pairing_close_work, pairing_close_handler);
 
 	err = bt_set_name(device_name);
 	if (err != 0) {
@@ -1845,12 +2442,14 @@ int lgps_ble_init(void)
 					   &status_uuid.uuid);
 	control_attr = bt_gatt_find_by_uuid(lgps_svc.attrs, (uint16_t)lgps_svc.attr_count,
 					    &control_uuid.uuid);
+	data_attr = bt_gatt_find_by_uuid(lgps_svc.attrs, (uint16_t)lgps_svc.attr_count,
+					 &data_uuid.uuid);
 	log_attr = bt_gatt_find_by_uuid(lgps_svc.attrs, (uint16_t)lgps_svc.attr_count,
 					&log_uuid.uuid);
 	telem_attr = bt_gatt_find_by_uuid(lgps_svc.attrs, (uint16_t)lgps_svc.attr_count,
 					  &telem_uuid.uuid);
-	if ((status_attr == NULL) || (control_attr == NULL) || (log_attr == NULL) ||
-	    (telem_attr == NULL)) {
+	if ((status_attr == NULL) || (control_attr == NULL) || (data_attr == NULL) ||
+	    (log_attr == NULL) || (telem_attr == NULL)) {
 		LOG_ERR("GATT attribute lookup failed, notifications disabled");
 		return -ENOENT;
 	}

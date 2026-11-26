@@ -11,6 +11,8 @@
 #include <zephyr/ztest.h>
 
 #include <generated/lifegps_protocol.h>
+#include <lifegps/archive.h>
+#include <lifegps/ble_frame.h>
 #include <lifegps/crc.h>
 #include <lifegps/traj.h>
 
@@ -142,6 +144,35 @@ ZTEST(lifegps_protogen, test_golden_vectors_match_c_codecs)
 	zassert_equal(lgps_crc16_ccitt_false(lgps_vec_day_hs, LGPS_PACKAGE_DAY_HEADER_CRC16_LEN),
 		      read_le16(&lgps_vec_day_hs[LGPS_PACKAGE_DAY_HEADER_OFF_HEADER_CRC16]),
 		      "day_hs header CRC-16 mismatch");
+
+	/* Parse golden 0x5A Data Frame via real lgps_ble_data_parse(). */
+	{
+		struct lgps_ble_data_frame df;
+
+		zassert_equal(lgps_ble_data_parse(lgps_vec_data_chunk, sizeof(lgps_vec_data_chunk),
+						  &df),
+			      0, "parse golden 0x5A data frame");
+		zassert_equal(df.stream, (uint8_t)LGPS_STREAM_TRAJECTORY, "stream id");
+		zassert_equal(df.flags, (uint8_t)LGPS_BLE_DATA_FLAG_LAST_CHUNK, "last chunk flag");
+		zassert_equal(df.transfer_id, 42U, "transfer_id");
+		zassert_equal(df.cursor, 252U, "cursor");
+		zassert_equal(df.payload_len, 224U, "7 records = 224 bytes");
+	}
+
+	/* Decode golden compressed LGD1 day package via real lgps_day_pkg_decode(). */
+	{
+		uint8_t scratch[sizeof(lgps_vec_traj_basic)];
+		uint8_t out[sizeof(lgps_vec_traj_basic)];
+		struct lgps_day_header hdr;
+		size_t out_len = 0U;
+
+		zassert_equal(lgps_day_pkg_decode(lgps_vec_day_hs, sizeof(lgps_vec_day_hs),
+						  scratch, &hdr, out, sizeof(out), &out_len),
+			      0, "decode golden day_hs");
+		zassert_equal(out_len, sizeof(lgps_vec_traj_basic), "decoded length");
+		zassert_mem_equal(out, lgps_vec_traj_basic, sizeof(lgps_vec_traj_basic),
+				  "decoded golden day_hs bytes match");
+	}
 }
 
 ZTEST_SUITE(lifegps_protogen, NULL, NULL, NULL, NULL, NULL);

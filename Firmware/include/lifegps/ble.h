@@ -42,6 +42,9 @@ bool lgps_ble_status_subscribed(void);
 /* True while a BLE central is connected. */
 bool lgps_ble_connected(void);
 
+/* Open a 60 s BLE pairing/bonding window (triggered by KEY1 3 s hold). */
+void lgps_ble_open_pairing_window(void);
+
 /*
  * Encode @p snap as the 82-byte Status frame, cache it for reads and notify the
  * subscribed central. Thread context: any thread (the main loop calls it at the

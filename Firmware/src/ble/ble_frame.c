@@ -142,6 +142,96 @@ int lgps_ble_cmd_build(uint8_t opcode, uint8_t flags, uint16_t seq, const uint8_
 	return (int)frame_len;
 }
 
+static uint32_t get_u32(const uint8_t *in)
+{
+	return (uint32_t)in[0] | ((uint32_t)in[1] << 8) | ((uint32_t)in[2] << 16) |
+	       ((uint32_t)in[3] << 24);
+}
+
+int lgps_ble_data_parse(const uint8_t *frame, size_t len_bytes, struct lgps_ble_data_frame *out)
+{
+	uint16_t payload_len;
+	uint16_t stored_crc;
+	uint16_t computed_crc;
+
+	if ((frame == NULL) || (out == NULL)) {
+		return -EINVAL;
+	}
+
+	if (len_bytes < (size_t)LGPS_FRAME_DATA_HEADER_SIZE + LGPS_FRAME_DATA_TRAILER_SIZE) {
+		return -EINVAL;
+	}
+
+	if ((frame[LGPS_FRAME_DATA_OFF_MAGIC] != (uint8_t)LGPS_FRAME_DATA_MAGIC) ||
+	    (frame[LGPS_FRAME_DATA_OFF_VER] != (uint8_t)LGPS_BLE_WIRE_VER)) {
+		return -EBADMSG;
+	}
+
+	payload_len = get_u16(&frame[LGPS_FRAME_DATA_OFF_PAYLOAD_LEN]);
+	if (payload_len > (uint16_t)LGPS_PROTO_MAX_DATA_PAYLOAD) {
+		return -EBADMSG;
+	}
+
+	if ((size_t)payload_len + LGPS_FRAME_DATA_HEADER_SIZE + LGPS_FRAME_DATA_TRAILER_SIZE !=
+	    len_bytes) {
+		return -EBADMSG;
+	}
+
+	stored_crc = get_u16(&frame[len_bytes - LGPS_FRAME_DATA_TRAILER_SIZE]);
+	computed_crc = lgps_crc16_ccitt_false(frame, len_bytes - LGPS_FRAME_DATA_TRAILER_SIZE);
+	if (stored_crc != computed_crc) {
+		return -EBADMSG;
+	}
+
+	out->stream = frame[LGPS_FRAME_DATA_OFF_STREAM];
+	out->flags = frame[LGPS_FRAME_DATA_OFF_FLAGS];
+	out->transfer_id = get_u32(&frame[LGPS_FRAME_DATA_OFF_TRANSFER_ID]);
+	out->cursor = get_u32(&frame[LGPS_FRAME_DATA_OFF_CURSOR]);
+	out->payload_len = payload_len;
+	out->payload = (payload_len == 0U) ? NULL : &frame[LGPS_FRAME_DATA_HEADER_SIZE];
+	return 0;
+}
+
+int lgps_ble_data_build(uint8_t stream, uint8_t flags, uint32_t transfer_id, uint32_t cursor,
+			const uint8_t *payload, uint16_t payload_len, uint8_t *out,
+			size_t out_size)
+{
+	size_t frame_len;
+	uint16_t crc;
+
+	if (out == NULL) {
+		return -EINVAL;
+	}
+
+	if ((payload_len > (uint16_t)LGPS_PROTO_MAX_DATA_PAYLOAD) ||
+	    ((payload_len != 0U) && (payload == NULL))) {
+		return -EINVAL;
+	}
+
+	frame_len = (size_t)LGPS_FRAME_DATA_HEADER_SIZE + payload_len +
+		    LGPS_FRAME_DATA_TRAILER_SIZE;
+	if (out_size < frame_len) {
+		return -ENOMEM;
+	}
+
+	out[LGPS_FRAME_DATA_OFF_MAGIC] = (uint8_t)LGPS_FRAME_DATA_MAGIC;
+	out[LGPS_FRAME_DATA_OFF_VER] = (uint8_t)LGPS_BLE_WIRE_VER;
+	out[LGPS_FRAME_DATA_OFF_STREAM] = stream;
+	out[LGPS_FRAME_DATA_OFF_FLAGS] = flags;
+	put_u32(&out[LGPS_FRAME_DATA_OFF_TRANSFER_ID], transfer_id);
+	put_u32(&out[LGPS_FRAME_DATA_OFF_CURSOR], cursor);
+	put_u16(&out[LGPS_FRAME_DATA_OFF_PAYLOAD_LEN], payload_len);
+
+	if (payload_len != 0U) {
+		memcpy(&out[LGPS_FRAME_DATA_HEADER_SIZE], payload, payload_len);
+	}
+
+	crc = lgps_crc16_ccitt_false(out, frame_len - LGPS_FRAME_DATA_TRAILER_SIZE);
+	put_u16(&out[frame_len - LGPS_FRAME_DATA_TRAILER_SIZE], crc);
+
+	return (int)frame_len;
+}
+
 /* --- payloads -------------------------------------------------------------- */
 
 int lgps_ble_status_encode(const struct lgps_ble_status *status, uint8_t *out, size_t out_size)

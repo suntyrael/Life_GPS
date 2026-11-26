@@ -45,7 +45,11 @@ target_sources(app PRIVATE
   src/power/power_sm.c
   src/power/power_sm_logic.c
   src/power/wdt.c
+  src/storage/app_config.c
+  src/storage/app_config_store.c
+  src/storage/archive_codec.c
   src/storage/flash_ring.c
+  src/storage/journal_store.c
   src/storage/recorder.c
   src/storage/traj.c
   src/util/crc.c
@@ -69,5 +73,5 @@ endif()
 
 # Keep the generated protocol header in the dependency graph so a protocol change
 # forces a rebuild instead of silently linking stale offsets.
-set_property(SOURCE src/storage/traj.c src/ble/ble_frame.c APPEND PROPERTY
+set_property(SOURCE src/storage/traj.c src/storage/archive_codec.c src/storage/app_config.c src/ble/ble_frame.c APPEND PROPERTY
   OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/include/generated/lifegps_protocol.h)

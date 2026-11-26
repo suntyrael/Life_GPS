@@ -37,7 +37,11 @@
 static char line_buf[LOG_LINE_BYTES];
 static size_t line_len;
 static uint8_t line_level;
-static struct k_spinlock format_lock;
+/* Mutex (never spinlock): log_output_msg_process runs full FP cbprintf for
+ * 150-400 us; masking interrupts with a spinlock causes UARTE20 @ 460800 baud
+ * (21.7 us/byte) to overrun its hardware RX FIFO and drop UBX bytes.
+ */
+static K_MUTEX_DEFINE(format_mutex);
 
 static uint8_t slots[LOG_SLOT_COUNT][LGPS_BLE_LOG_MAX_PACKET];
 static uint8_t slot_len[LOG_SLOT_COUNT];
@@ -48,14 +52,11 @@ static K_SEM_DEFINE(log_avail_sem, 0, LOG_SLOT_COUNT);
 
 /* 0 = off, 1 = ERR .. 4 = DBG. INFO is the default: the boot banner and the
  * subsystem bring-up lines are what a phone user needs first. Atomic because the
- * backend reads it in the producer's context (possibly an ISR) while the
- * command thread writes it.
+ * backend reads it in the producer's context while the command thread writes it.
  */
 static atomic_t subscribed_level = ATOMIC_INIT(3);
 
 /* --- slot ring ------------------------------------------------------------- */
-
-static uint32_t pending_gives;
 
 static void slot_push(const char *source, size_t source_len, const char *text, size_t text_len)
 {
@@ -88,7 +89,7 @@ static void slot_push(const char *source, size_t source_len, const char *text, s
 	slot_head++;
 	k_spin_unlock(&slot_lock, key);
 
-	pending_gives++;
+	k_sem_give(&log_avail_sem);
 }
 
 int lgps_ble_log_wait(k_timeout_t timeout)
@@ -210,30 +211,27 @@ LOG_OUTPUT_DEFINE(lgps_ble_log_output, char_out, output_buffer, sizeof(output_bu
 
 static void backend_process(const struct log_backend *const backend, union log_msg_generic *msg)
 {
-	k_spinlock_key_t key;
-	uint32_t gives;
 	uint8_t level;
 
 	ARG_UNUSED(backend);
+
+	if (k_is_in_isr()) {
+		return;
+	}
 
 	level = log_msg_get_level(&msg->log);
 	if (level > (uint8_t)atomic_get(&subscribed_level)) {
 		return;
 	}
 
-	/* Serialize line_buf / output_buffer across concurrent producers. */
-	key = k_spin_lock(&format_lock);
-	line_level = level;
-	pending_gives = 0U;
-	log_output_msg_process(&lgps_ble_log_output, &msg->log, LOG_OUTPUT_FLAG_LEVEL);
-	gives = pending_gives;
-	pending_gives = 0U;
-	k_spin_unlock(&format_lock, key);
-
-	while (gives > 0U) {
-		k_sem_give(&log_avail_sem);
-		gives--;
+	/* Serialize line_buf / output_buffer across threads without masking IRQs. */
+	if (k_mutex_lock(&format_mutex, K_MSEC(5)) != 0) {
+		return;
 	}
+
+	line_level = level;
+	log_output_msg_process(&lgps_ble_log_output, &msg->log, LOG_OUTPUT_FLAG_LEVEL);
+	k_mutex_unlock(&format_mutex);
 }
 
 static void backend_dropped(const struct log_backend *const backend, uint32_t cnt)

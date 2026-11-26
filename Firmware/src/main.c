@@ -32,6 +32,8 @@
 #include <string.h>
 
 #include <lifegps/activity.h>
+#include <lifegps/app_config.h>
+#include <lifegps/archive.h>
 #include <lifegps/battery.h>
 #include <lifegps/baro.h>
 #include <lifegps/ble.h>
@@ -273,6 +275,9 @@ static int init_subsystems(void)
 		LOG_ERR("external flash ring unavailable (%d)", ret);
 	}
 
+	(void)lgps_app_config_init();
+	(void)lgps_archive_init();
+
 	/* Calibration coefficients sit in their own NOR sector, so this needs the flash
 	 * to be up. A missing or CRC-bad record is not an error: the compiled-in
 	 * defaults stay in effect and GET_CAPS/mag_cal report that.
@@ -292,8 +297,17 @@ static int init_subsystems(void)
 		LOG_INF("no barometric baseline stored (%d); height relative to nothing", ret);
 	}
 
-	lgps_zupt_reset(&zupt, lgps_diag_uptime_ms());
-	lgps_pdr_init(&pdr);
+	{
+		struct lgps_app_config cfg;
+
+		lgps_app_config_get(&cfg);
+		(void)lgps_time_set_local_offset_s((int32_t)cfg.tz_offset_min * 60);
+		lgps_zupt_reset(&zupt, lgps_diag_uptime_ms());
+		lgps_pdr_init(&pdr);
+		if ((cfg.pdr_step_k_mm >= 300U) && (cfg.pdr_step_k_mm <= 550U)) {
+			pdr.k = (float)cfg.pdr_step_k_mm / 1000.0F;
+		}
+	}
 	lgps_attitude_reset(&attitude, NULL);
 	lgps_step_reset(&step_detector, lgps_diag_uptime_ms());
 	lgps_floor_init(&floor_det);
@@ -303,7 +317,7 @@ static int init_subsystems(void)
 	if (lgps_imu_wake_irq_init(on_imu_wake_irq) < 0) {
 		LOG_WRN("IMU INT1 motion wake IRQ unavailable");
 	}
-	lgps_power_register_callbacks(on_poi_button, NULL);
+	lgps_power_register_callbacks(on_poi_button, lgps_ble_open_pairing_window);
 
 	/* The BLE link is the product's only display, so it starts last: every
 	 * stage above has already reported a failure on the console before the

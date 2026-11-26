@@ -93,4 +93,24 @@
    - 新增纯 C 落盘策略 [recorder.c](../../Firmware/src/storage/recorder.c)（高精度 1 s / 移动 10 s / 静止 60 s / 转向 ≥30° / 换层 / KEY1 POI 即刻落盘），在 [main.c](../../Firmware/src/main.c) 自动编码并写入 Flash Ring；[ble_gatt.c](../../Firmware/src/ble/ble_gatt.c) 补齐 `SET_MODE (0x10)` 与 `BUTTON_EVENT (0x33)`。
 5. **单元测试扩展**：新增 `lifegps.power_sm`、`lifegps.floor`、`lifegps.activity`、`lifegps.recorder` 4 套 `twister` 用例（总数 14 → 18）并在 `lifegps.nav` 追加 3 项导航回归测试。
 
+### M2 GitHub Actions 验证结果（`032d04c` + `a339335`）
+- `docs`（Run `45786395147`）：✅ 通过
+- `firmware`（Run `45786990014`）：✅ 通过（`[prod] flash=277040 B / 729088 B, ram=60789 B / 262144 B`；`[debug] flash=281968 B / 729088 B, ram=63368 B / 262144 B`；`twister` 18/18 全过）
 
+---
+
+## 2026-11-26 · Milestone 3 (Part A 固件侧) + 实板串口日志缺陷修复
+
+### 实板调试缺陷定位与修复（`UBX checksum error`）
+- **现象**：用户烧录 `debug` 固件后，串口 1 Hz 遥测打印期间持续触发 `<wrn> lgps_gnss: UBX checksum error, frame dropped (total 16..17)`，且 `rx_dropped=0`（软件环形缓冲未溢出，说明丢失发生在 UARTE20 硬件 RX FIFO）。
+- **根因**：M1 在 [ble_log.c](../../Firmware/src/ble/ble_log.c) 中为保护静态 `line_buf`/`output_buffer`，对整段 `log_output_msg_process()`（含完整浮点 `cbprintf` 格式化，耗时约 150–400 µs）加了 `k_spin_lock(&format_lock)`；在 460800 baud（21.7 µs/字节）高速 GNSS 链路上屏蔽全局中断导致 UARTE20 硬件 FIFO 溢出丢字节。
+- **修复**：将 `format_lock` 改为 `K_MUTEX_DEFINE(format_mutex)`（不屏蔽硬件中断），ISR 上下文直接跳过 BLE 日志转发，并将 `k_sem_give(&log_avail_sem)` 留在 `slot_lock` 临界区外。
+
+### M3-A 固件核心实现（32 MB & 64 MB Flash 通用）
+1. **明文 LGD1 归档编解码与 SFDP 兼容日志索引**：新增 [archive.h](../../Firmware/include/lifegps/archive.h)、[archive_codec.c](../../Firmware/src/storage/archive_codec.c)（零 `malloc` 32B 字节平面差分 + Heatshrink W=8/L=4 LZSS + LGD1 封装/验签，与 Golden Vectors 逐字节一致）和 [journal_store.c](../../Firmware/src/storage/journal_store.c)（外部 NOR 扇区 20..21 乒乓索引，动态绑定 `lgps_ring_get_capacity().traj_bytes`，同时兼容 32 MB 与 64 MB 闪存）。
+2. **配置 TLV 与 NOR 持久化**：新增 [app_config.h](../../Firmware/include/lifegps/app_config.h)、[app_config.c](../../Firmware/src/storage/app_config.c)、[app_config_store.c](../../Firmware/src/storage/app_config_store.c)，支持协议全部 11 个配置键（`0x01..0x0B`）原子校验回滚，持久化至外部 NOR 扇区 18（`0x12000`）。
+3. **BLE SMP 配对加密 + `DATA (0004)` / `CONFIG (0007)` 完整命令闭环**：
+   - [prj.conf](../../Firmware/prj.conf) 启用 `CONFIG_BT_SMP=y`、`CONFIG_BT_BONDABLE=y`、`CONFIG_BT_MAX_PAIRED=2`（`CONFIG_BT_SETTINGS=n` 待 M5 分区表落地后开启持久化），`CONFIG_BT_BUF_ACL_TX_COUNT` 扩至 10；
+   - [ble_frame.h](../../Firmware/include/lifegps/ble_frame.h) / [ble_frame.c](../../Firmware/src/ble/ble_frame.c) 实现 `0x5A` Data 帧编解码；
+   - [ble_gatt.c](../../Firmware/src/ble/ble_gatt.c) 补齐 `DATA (0004)`、`CONFIG (0007)` 特征、10 B 扫描响应厂商广播（`LGPS_ADV_*`）、KEY1 3 s 触发 60 s 配对窗口 `lgps_ble_open_pairing_window()`，以及全部 11 条产品命令：`SET_CONFIG (0x13)`、`GET_CONFIG (0x14)`、`SYNC_BEGIN (0x20)`、`SYNC_READ (0x21)`、`SYNC_END (0x22)`、`GET_DAY_INDEX (0x23)`、`GET_ARCHIVE (0x24)`、`SELFTEST (0x40)`、`ERASE_DAY (0x50)`、`FACTORY_RESET (0x51)`、`GET_FAULT_LOG (0x70)`。
+4. **单元测试扩展**：新增 `lifegps.archive`、`lifegps.config` 两套 `twister` 用例（验证 32 MB / 64 MB 边界与全量 TLV 回滚），并扩展 `lifegps.protogen` 直接以 C 真实解码器校验 `data_chunk_trajectory.bin` 与 `day_package_hs.bin`。
