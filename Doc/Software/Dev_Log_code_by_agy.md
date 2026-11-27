@@ -162,6 +162,25 @@
    - `app` Run `45826060094` ✅：`:core:protocol` / `:core:model` / `:core:data` 纯 JVM 单测 + `devDebug` / `prodDebug` 编译/单测/Lint + `prodRelease` R8 混淆加固全通过，产出 `app-dev-debug`、`app-prod-debug`、`app-prod-release-unsigned`。
    - `docs` Run `45826060099` ✅：35 篇 Markdown 链接检查全通过。
 
+### P0 最终闭环补齐（长期自用必备项全部收口）
+
+1. **固件 P0-1（自动跨日/夜间 `LGD1` 归档调度）**：
+   - 在 [archive_codec.c](../../Firmware/src/storage/archive_codec.c) 实现纯 C 历法函数 `lgps_day_id_from_epoch()`（新增单测于 [lifegps.archive/src/main.c](../../Firmware/tests/lifegps.archive/src/main.c)）。
+   - 在 [journal_store.c](../../Firmware/src/storage/journal_store.c) 建立独立 `storage_workq`（3 KB 栈、零堆分配静态缓冲）并在 [main.c](../../Firmware/src/main.c) 周期调用 `lgps_archive_maybe_compact()`，在跨日或夜间静止/充电且电量安全时将暂存环 32B 记录压缩为 `LGD1`（Byte-Delta + Heatshrink W=8/L=4，自动回落 RAW）落盘外置 NOR，满容自动淘汰最旧日包回绕（32M/64M 均不卡死）。
+2. **固件 P0-2（GNSS 断电 `uart20` 高阻防倒灌）**：
+   - 在 [prj.conf](../../Firmware/prj.conf) 启用 `CONFIG_PM_DEVICE=y` / `CONFIG_PM_DEVICE_RUNTIME=y`，并在 [gnss.c](../../Firmware/src/gnss/gnss.c) 的 `gnss_power_down()` 中于拉低 `GPS_EN` 前执行 `pm_device_action_run(gnss_uart, PM_DEVICE_ACTION_SUSPEND)` 将 `uart20` 切入 `uart20_sleep` 高阻态，上电前再 `RESUME`。
+3. **固件 P0-3（`prod` 强制 BLE 加密 + 已绑定陌生设备拒连）**：
+   - 在 [Kconfig.lifegps](../../Firmware/boards/lifegps/lifegps/Kconfig.lifegps) 新增 `CONFIG_LGPS_BLE_REQUIRE_ENCRYPT`（`prod` 默认 `y`，`conf/debug.conf` 为 `n`）；[ble_gatt.c](../../Firmware/src/ble/ble_gatt.c) 业务 GATT 特征与 CCC 在 `prod` 下使用 `BT_GATT_PERM_*_ENCRYPT`，且已有绑定手机后拒绝未绑定陌生设备接入（需长按 `KEY1` 3 秒开启 60 秒配对窗）。
+4. **固件 P0-4（完整 `FACTORY_RESET` 清理）**：
+   - 新增 `lgps_ring_erase_all()`（[flash_ring.c](../../Firmware/src/storage/flash_ring.c)）与 `lgps_baro_store_erase()`（[baro_store.c](../../Firmware/src/nav/baro_store.c)），`cmd_factory_reset()` 统一清除配置、归档、暂存环（0..15）、标定（16）、气压基准（17）与 BLE 绑定表（`bt_unpair`）后重启。
+5. **固件 P0-5（低功耗加固 + 在线 Weinberg K 持久化）**：
+   - `CONFIG_PM_DEVICE_RUNTIME=y` 结合板级 DTS `has-dpd` 自动令外置 NOR 空闲进入 `0xB9` DPD 休眠，关机前 [power_sm.c](../../Firmware/src/power/power_sm.c) 显式挂起 NOR 并支持 `System OFF` 唤醒后 `KEY1` 3 秒按住防误开机确认（`RESET_LOW_POWER_WAKE` 门控，不影响 J-Link/POR/OTA 启动）；[main.c](../../Firmware/src/main.c) 改为 `main_wake_sem` 1000 ms 事件睡眠；在线标定得到的 Weinberg `K` 变化 ≥ 5 mm 时自动写入扇区 18（`app_config_store`）持久化。
+6. **Android P0-6 & P0-7（自动重连、后台同步 FGS、自动校时、出厂重置）**：
+   - 新增 [SyncForegroundService.kt](../../App/app/src/main/java/com/lifegps/app/ble/SyncForegroundService.kt)（`connectedDevice` 前台服务）并接入 [ProductTrackRepository.kt](../../App/app/src/main/java/com/lifegps/app/data/ProductTrackRepository.kt) `triggerSync()`；
+   - [BleDebugRepository.kt](../../App/app/src/main/java/com/lifegps/app/ble/BleDebugRepository.kt) 持久化记住已连设备（`SharedPreferences`），授蓝牙权限后自动重连 + 断线指数退避重连（`2s..30s`），并在每次握手完成后自动发送 `SET_TIME` 校时；
+   - [ProdAppHost.kt](../../App/app/src/main/java/com/lifegps/app/prod/ProdAppHost.kt) 设置页新增带二次确认弹窗的「恢复设备出厂设置」入口。
+
+
 
 
 

@@ -3,9 +3,14 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/hwinfo.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#if defined(CONFIG_PM_DEVICE)
+#include <zephyr/pm/device.h>
+#endif
 #include <zephyr/sys/poweroff.h>
 
 #include <errno.h>
@@ -24,8 +29,11 @@ LOG_MODULE_REGISTER(lgps_power, LOG_LEVEL_INF);
  * Nine slow blinks (three colours x on/off) plus a small margin.
  */
 #define SHUTDOWN_SEQUENCE_MS (3U * 3U * 2U * 500U + 500U)
+/* Hold duration required on KEY1_POI after waking from System OFF (prevents pocket bumps). */
+#define WAKE_CONFIRM_HOLD_MS 3000U
 
 static const struct gpio_dt_spec key_poi_wake = GPIO_DT_SPEC_GET(DT_NODELABEL(key_poi), gpios);
+static const struct device *const ext_nor = DEVICE_DT_GET(DT_NODELABEL(w25q512));
 
 static K_MUTEX_DEFINE(power_lock);
 static struct lgps_power_sm_logic sm_logic;
@@ -51,11 +59,17 @@ static void schedule_shutdown_locked(void)
 
 static void enter_system_off(void)
 {
-	LOG_INF("shutdown confirmed: powering down GNSS/IMU and entering System OFF");
+	LOG_INF("shutdown confirmed: powering down GNSS/IMU/NOR and entering System OFF");
 
 	lgps_gnss_force_off();
 	(void)lgps_imu_power_down();
 	(void)lgps_led_off_all();
+
+#if defined(CONFIG_PM_DEVICE)
+	if (device_is_ready(ext_nor)) {
+		(void)pm_device_action_run(ext_nor, PM_DEVICE_ACTION_SUSPEND);
+	}
+#endif
 
 	/* Configure KEY1_POI (P1.06, active-low with internal pull-up) as System OFF wake. */
 	if (gpio_is_ready_dt(&key_poi_wake)) {
@@ -66,6 +80,41 @@ static void enter_system_off(void)
 	k_msleep(50);
 
 	sys_poweroff();
+}
+
+void lgps_power_boot_confirm(void)
+{
+	uint32_t cause = 0U;
+
+	if (!IS_ENABLED(CONFIG_LGPS_BOOT_HOLD_8S)) {
+		return;
+	}
+
+	if (hwinfo_get_reset_cause(&cause) != 0) {
+		return;
+	}
+
+	/* Only gate wakes from System OFF; POR, J-Link debug, and OTA/software reboots boot immediately. */
+	if ((cause & RESET_LOW_POWER_WAKE) == 0U) {
+		return;
+	}
+
+	if (!gpio_is_ready_dt(&key_poi_wake)) {
+		return;
+	}
+	(void)gpio_pin_configure_dt(&key_poi_wake, GPIO_INPUT);
+
+	for (uint32_t held_ms = 0U; held_ms < WAKE_CONFIRM_HOLD_MS; held_ms += 50U) {
+		if (gpio_pin_get_dt(&key_poi_wake) <= 0) {
+			LOG_INF("System OFF wake aborted (KEY1 released at %u ms)", held_ms);
+			(void)gpio_pin_interrupt_configure_dt(&key_poi_wake, GPIO_INT_LEVEL_LOW);
+			k_msleep(20);
+			sys_poweroff();
+		}
+		k_msleep(50);
+	}
+
+	LOG_INF("System OFF wake confirmed (KEY1 held %u ms)", WAKE_CONFIRM_HOLD_MS);
 }
 
 static void shutdown_work_handler(struct k_work *work)

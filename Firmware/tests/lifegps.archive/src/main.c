@@ -141,4 +141,15 @@ ZTEST(lifegps_archive, test_journal_bounds_32mb_and_64mb_sfdp)
 	zassert_is_null(lgps_journal_find(&j32, 20261126U), "removed day gone");
 }
 
+ZTEST(lifegps_archive, test_day_id_from_epoch)
+{
+	/* 2020-01-01 00:00:00Z -> 20200101 */
+	zassert_equal(lgps_day_id_from_epoch(0U, 0), 20200101U, "epoch origin");
+	/* 2024-02-29 (leap day): 4*365 + 1(2020 leap) + 31(Jan) + 28 = 1520 days since 2020-01-01 */
+	zassert_equal(lgps_day_id_from_epoch(1520U * 86400U, 0), 20240229U, "2024 leap day");
+	/* Timezone +08:00 rolls 2024-02-29 17:00Z into 2024-03-01 01:00+08:00 */
+	zassert_equal(lgps_day_id_from_epoch(1520U * 86400U + 17U * 3600U, 8 * 3600), 20240301U,
+		      "tz +08 rollover");
+}
+
 ZTEST_SUITE(lifegps_archive, NULL, NULL, NULL, NULL, NULL);

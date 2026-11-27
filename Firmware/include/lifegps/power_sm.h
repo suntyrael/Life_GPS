@@ -15,6 +15,9 @@
 typedef void (*lgps_power_poi_cb_t)(void);
 typedef void (*lgps_power_pairing_cb_t)(void);
 
+/* Confirm wake from System OFF (requires holding KEY1 if CONFIG_LGPS_BOOT_HOLD_8S=y). */
+void lgps_power_boot_confirm(void);
+
 /* Play the power-on confirmation and hook the key callback into the LED engine. */
 int lgps_power_sm_init(void);
 

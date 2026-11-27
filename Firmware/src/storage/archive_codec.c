@@ -574,3 +574,39 @@ void lgps_journal_entry_decode(const uint8_t in[LGPS_JOURNAL_ENTRY_SIZE],
 	out->codec_id = get_u16(&in[24]);
 	out->flags = get_u16(&in[26]);
 }
+
+uint32_t lgps_day_id_from_epoch(uint32_t epoch_2020_s, int32_t tz_offset_s)
+{
+	/* Life_GPS epoch 2020-01-01 00:00:00Z = Unix 1577836800 = 18262 days since 1970-01-01. */
+	int64_t local_s = (int64_t)epoch_2020_s + (int64_t)tz_offset_s;
+	int64_t days_2020;
+	int64_t z;
+	int64_t era;
+	uint32_t doe;
+	uint32_t yoe;
+	int64_t y;
+	uint32_t doy;
+	uint32_t mp;
+	uint32_t d;
+	uint32_t m;
+
+	if (local_s < 0) {
+		local_s = 0;
+	}
+	days_2020 = local_s / 86400;
+	/* Howard Hinnant civil-from-days algorithm (exact Gregorian leap years). */
+	z = days_2020 + 18262 + 719468;
+	era = (z >= 0 ? z : z - 146096) / 146097;
+	doe = (uint32_t)(z - era * 146097);
+	yoe = (doe - doe / 1460U + doe / 36524U - doe / 146096U) / 365U;
+	y = (int64_t)yoe + era * 400;
+	doy = doe - (365U * yoe + yoe / 4U - yoe / 100U);
+	mp = (5U * doy + 2U) / 153U;
+	d = doy - (153U * mp + 2U) / 5U + 1U;
+	m = (mp < 10U) ? (mp + 3U) : (mp - 9U);
+	if (m <= 2U) {
+		y += 1;
+	}
+
+	return (uint32_t)((uint32_t)y * 10000U + m * 100U + d);
+}

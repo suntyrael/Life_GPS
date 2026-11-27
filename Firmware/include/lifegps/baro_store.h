@@ -56,4 +56,7 @@ int lgps_baro_store_load(uint32_t *pa_q4, bool *automatic, enum lgps_baro_refere
 int lgps_baro_store_save(uint32_t pa_q4, bool automatic, enum lgps_baro_reference kind,
 			 int32_t ref_alt_mm, uint32_t unix_s);
 
+/* Erase the barometric baseline sector (used by FACTORY_RESET 0x51). */
+int lgps_baro_store_erase(void);
+
 #endif /* LIFEGPS_BARO_STORE_H_ */

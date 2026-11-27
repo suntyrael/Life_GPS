@@ -122,8 +122,15 @@ config LGPS_BLE_LOG
 	bool "Forward Zephyr log lines to the BLE Log characteristic"
 	default n
 
-# System OFF wake confirmation (README section 4.1): enabled in M2 once SENSE
-# wake from System OFF is wired up. Off in debug builds for fast bench resets.
+# System OFF wake confirmation (README section 4.1): enabled in prod builds once
+# SENSE wake from System OFF is wired up. Off in debug builds for fast bench resets.
 config LGPS_BOOT_HOLD_8S
-	bool "Require 8 s key hold to confirm wake from System OFF"
+	bool "Require key hold to confirm wake from System OFF"
 	default n
+
+# Enforce BLE link encryption (Just Works SC Level 2) on all business GATT
+# characteristics and reject unbonded peers once paired (unless the 60 s KEY1
+# pairing window is open). Disabled in conf/debug.conf for bench bring-up.
+config LGPS_BLE_REQUIRE_ENCRYPT
+	bool "Require BLE pairing/encryption on business GATT characteristics"
+	default y

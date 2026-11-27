@@ -924,6 +924,46 @@ private fun ProdSettingsTab(
                 MetricRow("快闪红灯", "低电量警告（≤10%）或存储告急", Red)
             }
         }
+
+        item {
+            var confirmFactoryReset by remember { mutableStateOf(false) }
+            SectionHeader("危险操作")
+            CardBlock {
+                Text(
+                    "恢复出厂设置将擦除设备端外置 Flash 中的暂存轨迹、历史归档、传感器标定、气压基准、运行配置及 BLE 绑定表并自动重启（不影响已同步到本机的轨迹）。",
+                    color = TextDim,
+                    fontSize = 12.sp,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = { confirmFactoryReset = true },
+                    enabled = device.connected,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("恢复设备出厂设置", color = Red)
+                }
+            }
+            if (confirmFactoryReset) {
+                AlertDialog(
+                    onDismissRequest = { confirmFactoryReset = false },
+                    title = { Text("确认恢复设备出厂设置？") },
+                    text = {
+                        Text("此操作不可逆，将清空设备端全部未同步轨迹、校准参数与配对信息并立即重启设备。")
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                confirmFactoryReset = false
+                                trackRepo.factoryResetDevice()
+                            },
+                        ) { Text("确认清除并重启", color = Red) }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { confirmFactoryReset = false }) { Text("取消") }
+                    },
+                )
+            }
+        }
     }
 }
 

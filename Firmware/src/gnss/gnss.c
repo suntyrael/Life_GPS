@@ -7,6 +7,9 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#if defined(CONFIG_PM_DEVICE)
+#include <zephyr/pm/device.h>
+#endif
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/ring_buffer.h>
 #include <zephyr/sys/util.h>
@@ -1956,6 +1959,13 @@ static void gnss_power_down(void)
 	 */
 	uart_irq_rx_disable(gnss_uart);
 
+#if defined(CONFIG_PM_DEVICE)
+	/* Park UARTE20 TX/RX into uart20_sleep (high-Z) before dropping GPS_EN so
+	 * 1.9 V UART idle-high cannot back-power the unpowered MAX-M10S via R_series.
+	 */
+	(void)pm_device_action_run(gnss_uart, PM_DEVICE_ACTION_SUSPEND);
+#endif
+
 	rail_off_ms = lgps_diag_uptime_ms();
 
 	(void)lgps_gnss_rail_set(false);
@@ -1964,6 +1974,10 @@ static void gnss_power_down(void)
 static void gnss_power_up(void)
 {
 	int ret;
+
+#if defined(CONFIG_PM_DEVICE)
+	(void)pm_device_action_run(gnss_uart, PM_DEVICE_ACTION_RESUME);
+#endif
 
 	/*
 	 * The receiver always comes back at the rate its own flash holds, while the

@@ -140,7 +140,19 @@ int lgps_archive_erase_day(uint32_t day_id);
 /* Erase journal index sectors and reset next_write_offset to LGPS_ARCHIVE_DATA_OFFSET. */
 int lgps_archive_factory_reset(void);
 
+/* Convert Life_GPS 2020-epoch UTC seconds + tz_offset_s to local YYYYMMDD day_id. */
+uint32_t lgps_day_id_from_epoch(uint32_t epoch_2020_s, int32_t tz_offset_s);
+
 /* Storage usage in permille (0..1000) across SFDP traj_bytes (32 MB or 64 MB). */
 uint16_t lgps_archive_used_permille(void);
+
+/*
+ * Non-blocking scheduler hook called periodically from main loop.
+ * Compacts unarchived staging-ring records belonging to a completed day (or the
+ * current day during the configured nightly idle window) into LGD1 on a
+ * dedicated storage workqueue so main/IMU/BLE are never blocked by NOR erases.
+ */
+void lgps_archive_maybe_compact(uint32_t now_utc_s, int32_t tz_offset_s, uint8_t archive_hour_utc,
+				bool idle_or_charging, uint8_t soc_pct);
 
 #endif /* LIFEGPS_ARCHIVE_H_ */

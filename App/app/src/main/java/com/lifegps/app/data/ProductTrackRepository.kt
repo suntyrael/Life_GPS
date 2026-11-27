@@ -93,37 +93,43 @@ class ProductTrackRepository(
     fun triggerSync() {
         if (syncProgress.value.running) return
         scope.launch {
-            val tzMin = _deviceConfig.value.tzOffsetMin
-            val watermark = indexDb.getLastSyncedSeqId()
-            val result = syncEngine.syncAll(fromSeqId = watermark, tzOffsetMinutes = tzMin)
-            if (result.newWatermarkSeqId > watermark) {
-                indexDb.setLastSyncedSeqId(result.newWatermarkSeqId)
-            }
-            for (dayId in result.touchedDayIds) {
-                dayStore.summarizeDay(dayId)?.let { indexDb.upsertDaySummary(it) }
-                val recs = dayStore.loadDayRecords(dayId)
-                for (r in recs) {
-                    if (r.isPoi) {
-                        indexDb.upsertPoi(
-                            PoiRecord(
-                                id = 0L,
-                                dayId = dayId,
-                                seqId = r.seqId,
-                                timestampMs = r.unixEpochMs,
-                                latitude = r.latitudeDeg,
-                                longitude = r.longitudeDeg,
-                                altitudeM = r.altitudeM,
-                                floorLevel = r.floorLevel,
-                                title = "POI #${r.seqId}",
-                            ),
-                        )
+            com.lifegps.app.ble.SyncForegroundService.start(appContext, "正在连接并同步 Life_GPS 轨迹…")
+            try {
+                val tzMin = _deviceConfig.value.tzOffsetMin
+                val watermark = indexDb.getLastSyncedSeqId()
+                val result = syncEngine.syncAll(fromSeqId = watermark, tzOffsetMinutes = tzMin)
+                if (result.newWatermarkSeqId > watermark) {
+                    indexDb.setLastSyncedSeqId(result.newWatermarkSeqId)
+                }
+                for (dayId in result.touchedDayIds) {
+                    dayStore.summarizeDay(dayId)?.let { indexDb.upsertDaySummary(it) }
+                    val recs = dayStore.loadDayRecords(dayId)
+                    for (r in recs) {
+                        if (r.isPoi) {
+                            indexDb.upsertPoi(
+                                PoiRecord(
+                                    id = 0L,
+                                    dayId = dayId,
+                                    seqId = r.seqId,
+                                    timestampMs = r.unixEpochMs,
+                                    latitude = r.latitudeDeg,
+                                    longitude = r.longitudeDeg,
+                                    altitudeM = r.altitudeM,
+                                    floorLevel = r.floorLevel,
+                                    title = "POI #${r.seqId}",
+                                ),
+                            )
+                        }
                     }
                 }
+                _days.value = indexDb.listDaySummaries()
+                _pois.value = indexDb.listPois()
+                _remoteDays.value = syncEngine.fetchRemoteDayIndex()
+                _statusMessage.value = result.error
+                    ?: "同步完成：${result.liveRecordsSynced} 条记录，${result.archivedDaysDownloaded} 个日包"
+            } finally {
+                com.lifegps.app.ble.SyncForegroundService.stop(appContext)
             }
-            _days.value = indexDb.listDaySummaries()
-            _pois.value = indexDb.listPois()
-            _remoteDays.value = syncEngine.fetchRemoteDayIndex()
-            _statusMessage.value = result.error ?: "同步完成：${result.liveRecordsSynced} 条记录，${result.archivedDaysDownloaded} 个日包"
         }
     }
 
@@ -183,6 +189,24 @@ class ProductTrackRepository(
                 _statusMessage.value = "已清除设备端日包 $dayId"
             } else {
                 _statusMessage.value = "清除设备日包失败 (status=${reply?.status ?: "timeout"})"
+            }
+        }
+    }
+
+    fun factoryResetDevice() {
+        scope.launch {
+            val confirm = byteArrayOf('R'.code.toByte(), 'S'.code.toByte(), 'T'.code.toByte(), '!'.code.toByte())
+            val reply = bleRepo.sendProductCommand(
+                GeneratedProtocol.CommandOpcode.FACTORY_RESET,
+                confirm,
+                timeoutMs = 8_000L,
+            )
+            if (reply != null && reply.status == GeneratedProtocol.StatusCode.OK) {
+                _remoteDays.value = emptyList()
+                bleRepo.clearRememberedDevice()
+                _statusMessage.value = "设备已执行恢复出厂设置并重启，请在系统蓝牙中忽略旧配对后重新连接"
+            } else {
+                _statusMessage.value = "恢复出厂设置失败 (status=${reply?.status ?: "timeout"})"
             }
         }
     }

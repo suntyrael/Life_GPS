@@ -44,6 +44,7 @@
 #include <lifegps/archive.h>
 #include <lifegps/ble.h>
 #include <lifegps/baro.h>
+#include <lifegps/baro_store.h>
 #include <lifegps/battery.h>
 #include <lifegps/ble_frame.h>
 #include <lifegps/ble_uuid.h>
@@ -128,28 +129,36 @@ static void data_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 static void log_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 static void telem_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 
+#if defined(CONFIG_LGPS_BLE_REQUIRE_ENCRYPT)
+#define LGPS_GATT_PERM_R BT_GATT_PERM_READ_ENCRYPT
+#define LGPS_GATT_PERM_W BT_GATT_PERM_WRITE_ENCRYPT
+#else
+#define LGPS_GATT_PERM_R BT_GATT_PERM_READ
+#define LGPS_GATT_PERM_W BT_GATT_PERM_WRITE
+#endif
+
 BT_GATT_SERVICE_DEFINE(lgps_svc,
 	BT_GATT_PRIMARY_SERVICE(&lgps_svc_uuid.uuid),
 	BT_GATT_CHARACTERISTIC(&status_uuid.uuid,
-			       BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY, BT_GATT_PERM_READ,
+			       BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY, LGPS_GATT_PERM_R,
 			       status_read, NULL, NULL),
-	BT_GATT_CCC(status_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+	BT_GATT_CCC(status_ccc_changed, LGPS_GATT_PERM_R | LGPS_GATT_PERM_W),
 	BT_GATT_CHARACTERISTIC(&control_uuid.uuid,
 			       BT_GATT_CHRC_WRITE | BT_GATT_CHRC_WRITE_WITHOUT_RESP |
 				       BT_GATT_CHRC_NOTIFY,
-			       BT_GATT_PERM_WRITE, NULL, control_write, NULL),
-	BT_GATT_CCC(control_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+			       LGPS_GATT_PERM_W, NULL, control_write, NULL),
+	BT_GATT_CCC(control_ccc_changed, LGPS_GATT_PERM_R | LGPS_GATT_PERM_W),
 	BT_GATT_CHARACTERISTIC(&data_uuid.uuid, BT_GATT_CHRC_NOTIFY, BT_GATT_PERM_NONE, NULL, NULL,
 			       NULL),
-	BT_GATT_CCC(data_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+	BT_GATT_CCC(data_ccc_changed, LGPS_GATT_PERM_R | LGPS_GATT_PERM_W),
 	BT_GATT_CHARACTERISTIC(&log_uuid.uuid, BT_GATT_CHRC_NOTIFY, BT_GATT_PERM_NONE, NULL, NULL,
 			       NULL),
-	BT_GATT_CCC(log_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+	BT_GATT_CCC(log_ccc_changed, LGPS_GATT_PERM_R | LGPS_GATT_PERM_W),
 	BT_GATT_CHARACTERISTIC(&telem_uuid.uuid, BT_GATT_CHRC_NOTIFY, BT_GATT_PERM_NONE, NULL, NULL,
 			       NULL),
-	BT_GATT_CCC(telem_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+	BT_GATT_CCC(telem_ccc_changed, LGPS_GATT_PERM_R | LGPS_GATT_PERM_W),
 	BT_GATT_CHARACTERISTIC(&config_uuid.uuid, BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
-			       BT_GATT_PERM_READ | BT_GATT_PERM_WRITE, config_read, config_write,
+			       LGPS_GATT_PERM_R | LGPS_GATT_PERM_W, config_read, config_write,
 			       NULL),
 );
 
@@ -1831,8 +1840,17 @@ static uint8_t cmd_factory_reset(const struct lgps_ble_cmd *cmd)
 
 	(void)lgps_app_config_factory_reset();
 	(void)lgps_archive_factory_reset();
+	(void)lgps_ring_erase_all();
+	(void)lgps_baro_store_erase();
+	if (IS_ENABLED(CONFIG_LGPS_CALIB)) {
+		(void)lgps_calib_mag_clear();
+		(void)lgps_calib_accel_clear();
+	}
+#if defined(CONFIG_BT_SMP)
+	(void)bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
+#endif
 	reboot_pending = true;
-	LOG_WRN("factory reset executed over BLE");
+	LOG_WRN("factory reset executed over BLE (config/archive/ring/calib/baro/bonds cleared)");
 	return LGPS_BLE_OK;
 }
 
@@ -2108,6 +2126,24 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
 }
 #endif
 
+#if defined(CONFIG_LGPS_BLE_REQUIRE_ENCRYPT) && defined(CONFIG_BT_SMP)
+struct bond_check_ctx {
+	const bt_addr_le_t *peer;
+	uint8_t total_bonds;
+	bool peer_is_bonded;
+};
+
+static void check_bond_cb(const struct bt_bond_info *info, void *user_data)
+{
+	struct bond_check_ctx *ctx = (struct bond_check_ctx *)user_data;
+
+	ctx->total_bonds++;
+	if ((ctx->peer != NULL) && (bt_addr_le_cmp(&info->addr, ctx->peer) == 0)) {
+		ctx->peer_is_bonded = true;
+	}
+}
+#endif
+
 static void connected(struct bt_conn *conn, uint8_t err)
 {
 	if (err != 0) {
@@ -2116,6 +2152,23 @@ static void connected(struct bt_conn *conn, uint8_t err)
 
 		return;
 	}
+
+#if defined(CONFIG_LGPS_BLE_REQUIRE_ENCRYPT) && defined(CONFIG_BT_SMP)
+	{
+		struct bond_check_ctx bctx = {
+			.peer = bt_conn_get_dst(conn),
+			.total_bonds = 0U,
+			.peer_is_bonded = false,
+		};
+
+		bt_foreach_bond(BT_ID_DEFAULT, check_bond_cb, &bctx);
+		if ((bctx.total_bonds > 0U) && !bctx.peer_is_bonded && !pairing_window_open) {
+			LOG_WRN("rejecting unbonded peer (hold KEY1 3 s to open pairing window)");
+			(void)bt_conn_disconnect(conn, BT_HCI_ERR_AUTH_FAIL);
+			return;
+		}
+	}
+#endif
 
 	LOG_INF("central connected");
 	active_conn = bt_conn_ref(conn);

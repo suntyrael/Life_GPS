@@ -243,8 +243,18 @@ int lgps_archive_write_day(uint32_t day_id, uint32_t record_count, uint32_t traj
 	write_off = journal_state.next_write_offset;
 	if ((write_off < LGPS_ARCHIVE_DATA_OFFSET) ||
 	    ((write_off + aligned_len) > journal_state.flash_limit_bytes)) {
-		k_mutex_unlock(&archive_lock);
-		return -ENOSPC;
+		if (journal_state.count > 0U) {
+			uint32_t oldest_day = journal_state.entries[0].day_id;
+
+			(void)lgps_journal_remove(&journal_state, oldest_day);
+			LOG_WRN("archive full, evicted oldest day %u and wrapped", oldest_day);
+		}
+		write_off = LGPS_ARCHIVE_DATA_OFFSET;
+		journal_state.next_write_offset = write_off;
+		if ((write_off + aligned_len) > journal_state.flash_limit_bytes) {
+			k_mutex_unlock(&archive_lock);
+			return -ENOSPC;
+		}
 	}
 
 	ret = flash_erase(nor, (off_t)write_off, aligned_len);
@@ -395,4 +405,213 @@ uint16_t lgps_archive_used_permille(void)
 	}
 	k_mutex_unlock(&archive_lock);
 	return permille;
+}
+
+/* --- Background ring-to-LGD1 daily compactor (dedicated storage_workq) ---- */
+
+#define COMPACT_STACK_SIZE 3072
+#define COMPACT_THREAD_PRIO K_PRIO_PREEMPT(12)
+#define COMPACT_MAX_RECS 512U
+#define COMPACT_RAW_CAP (COMPACT_MAX_RECS * LGPS_RECORD_TRAJECTORY_SIZE)
+#define COMPACT_PKG_CAP                                                                            \
+	(LGPS_PACKAGE_DAY_HEADER_SIZE + COMPACT_RAW_CAP + 512U + LGPS_PACKAGE_DAY_FOOTER_SIZE)
+/* Minimum valid epoch: 2022-01-01 in Life_GPS 2020 epoch (2 * 365 * 86400). */
+#define COMPACT_MIN_VALID_EPOCH_S 63072000U
+#define COMPACT_COOLDOWN_MS (30U * 60U * 1000U)
+
+K_THREAD_STACK_DEFINE(storage_workq_stack, COMPACT_STACK_SIZE);
+static struct k_work_q storage_workq;
+static bool storage_workq_started;
+static struct k_work compact_work;
+static atomic_t compact_busy = ATOMIC_INIT(0);
+
+static uint8_t compact_raw_buf[COMPACT_RAW_CAP];
+static uint8_t compact_scratch_buf[COMPACT_RAW_CAP];
+static uint8_t compact_pkg_buf[COMPACT_PKG_CAP];
+
+static uint32_t compact_req_now_utc_s;
+static int32_t compact_req_tz_offset_s;
+static bool compact_req_allow_today;
+static uint32_t last_compact_uptime_ms;
+
+static uint32_t rec_u32_le(const uint8_t *p)
+{
+	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+	       ((uint32_t)p[3] << 24);
+}
+
+static void compact_work_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+
+	uint32_t today_day_id =
+		lgps_day_id_from_epoch(compact_req_now_utc_s, compact_req_tz_offset_s);
+	uint32_t target_day_id = 0U;
+	uint32_t prev_day_id = 0U;
+	uint32_t first_seq_id = 0U;
+	uint16_t rec_count = 0U;
+	uint16_t kept = 0U;
+	uint32_t cursor = 1U;
+	uint8_t scan_batch[16U * LGPS_RECORD_TRAJECTORY_SIZE];
+	struct lgps_journal jsnap;
+
+	lgps_archive_get_journal(&jsnap);
+	if (jsnap.count > 0U) {
+		prev_day_id = jsnap.entries[jsnap.count - 1U].day_id;
+	}
+
+	/* Pass 1: find oldest unarchived day_id present in the staging ring. */
+	for (;;) {
+		uint16_t got = 0U;
+
+		if ((lgps_ring_read_from_seq(cursor, scan_batch, 16U, &got) != 0) || (got == 0U)) {
+			break;
+		}
+		for (uint16_t i = 0U; i < got; i++) {
+			const uint8_t *r = &scan_batch[(size_t)i * LGPS_RECORD_TRAJECTORY_SIZE];
+			uint32_t seq = rec_u32_le(&r[LGPS_RECORD_TRAJECTORY_OFF_SEQ_ID]);
+			uint32_t ts = rec_u32_le(&r[LGPS_RECORD_TRAJECTORY_OFF_TIMESTAMP_S]);
+			uint32_t d;
+
+			if (seq >= cursor) {
+				cursor = seq + 1U;
+			}
+			if (ts < COMPACT_MIN_VALID_EPOCH_S) {
+				continue;
+			}
+			d = lgps_day_id_from_epoch(ts, compact_req_tz_offset_s);
+			if ((d > today_day_id) ||
+			    ((d == today_day_id) && !compact_req_allow_today)) {
+				continue;
+			}
+			if (lgps_journal_find(&jsnap, d) != NULL) {
+				continue;
+			}
+			if ((target_day_id == 0U) || (d < target_day_id)) {
+				target_day_id = d;
+			}
+		}
+		if (got < 16U) {
+			break;
+		}
+	}
+
+	if (target_day_id == 0U) {
+		(void)atomic_set(&compact_busy, 0);
+		return;
+	}
+
+	/* Pass 2: collect up to COMPACT_MAX_RECS records for target_day_id. */
+	cursor = 1U;
+	while (kept < COMPACT_MAX_RECS) {
+		uint16_t got = 0U;
+
+		if ((lgps_ring_read_from_seq(cursor, scan_batch, 16U, &got) != 0) || (got == 0U)) {
+			break;
+		}
+		for (uint16_t i = 0U; (i < got) && (kept < COMPACT_MAX_RECS); i++) {
+			const uint8_t *r = &scan_batch[(size_t)i * LGPS_RECORD_TRAJECTORY_SIZE];
+			uint32_t seq = rec_u32_le(&r[LGPS_RECORD_TRAJECTORY_OFF_SEQ_ID]);
+			uint32_t ts = rec_u32_le(&r[LGPS_RECORD_TRAJECTORY_OFF_TIMESTAMP_S]);
+
+			if (seq >= cursor) {
+				cursor = seq + 1U;
+			}
+			if (ts < COMPACT_MIN_VALID_EPOCH_S) {
+				continue;
+			}
+			if (lgps_day_id_from_epoch(ts, compact_req_tz_offset_s) != target_day_id) {
+				continue;
+			}
+			if (kept == 0U) {
+				first_seq_id = seq;
+			}
+			memcpy(&compact_raw_buf[(size_t)kept * LGPS_RECORD_TRAJECTORY_SIZE], r,
+			       LGPS_RECORD_TRAJECTORY_SIZE);
+			kept++;
+		}
+		if (got < 16U) {
+			break;
+		}
+	}
+
+	rec_count = kept;
+	if (rec_count > 0U) {
+		size_t raw_len = (size_t)rec_count * LGPS_RECORD_TRAJECTORY_SIZE;
+		size_t pkg_len = 0U;
+		uint16_t codec_id = LGPS_PACKAGE_DAY_CODEC_BYTE_DELTA_HEATSHRINK;
+		uint32_t crc32 = lgps_crc32_iso_hdlc(compact_raw_buf, raw_len);
+		int ret;
+
+		ret = lgps_day_pkg_encode(target_day_id, prev_day_id, codec_id, compact_raw_buf,
+					  raw_len, compact_scratch_buf, compact_pkg_buf,
+					  sizeof(compact_pkg_buf), &pkg_len);
+		if ((ret < 0) || (pkg_len >= (raw_len + LGPS_PACKAGE_DAY_HEADER_SIZE +
+					      LGPS_PACKAGE_DAY_FOOTER_SIZE))) {
+			codec_id = LGPS_PACKAGE_DAY_CODEC_RAW;
+			ret = lgps_day_pkg_encode(target_day_id, prev_day_id, codec_id,
+						  compact_raw_buf, raw_len, NULL, compact_pkg_buf,
+						  sizeof(compact_pkg_buf), &pkg_len);
+		}
+		if (ret == 0) {
+			ret = lgps_archive_write_day(target_day_id, rec_count, crc32, first_seq_id,
+						     codec_id, compact_pkg_buf, pkg_len);
+			if (ret == 0) {
+				LOG_INF("archived day %u (%u recs, %u -> %u B, codec=%u)",
+					target_day_id, rec_count, (unsigned int)raw_len,
+					(unsigned int)pkg_len, codec_id);
+			} else {
+				LOG_WRN("archive write day %u failed (%d)", target_day_id, ret);
+			}
+		} else {
+			LOG_WRN("archive encode day %u failed (%d)", target_day_id, ret);
+		}
+	}
+
+	(void)atomic_set(&compact_busy, 0);
+}
+
+void lgps_archive_maybe_compact(uint32_t now_utc_s, int32_t tz_offset_s, uint8_t archive_hour_utc,
+				bool idle_or_charging, uint8_t soc_pct)
+{
+	uint32_t now_ms = k_uptime_get_32();
+	uint8_t utc_hour;
+	bool allow_today;
+
+	if (now_utc_s < COMPACT_MIN_VALID_EPOCH_S) {
+		return;
+	}
+
+	/* Require safe battery (>=30% or unknown/charging) before NOR erases. */
+	if (!idle_or_charging && (soc_pct <= 100U) && (soc_pct < 30U)) {
+		return;
+	}
+
+	if ((last_compact_uptime_ms != 0U) &&
+	    ((uint32_t)(now_ms - last_compact_uptime_ms) < COMPACT_COOLDOWN_MS)) {
+		return;
+	}
+
+	if (!storage_workq_started) {
+		k_work_queue_init(&storage_workq);
+		k_work_queue_start(&storage_workq, storage_workq_stack,
+				   K_THREAD_STACK_SIZEOF(storage_workq_stack), COMPACT_THREAD_PRIO,
+				   NULL);
+		k_work_init(&compact_work, compact_work_handler);
+		storage_workq_started = true;
+	}
+
+	if (!atomic_cas(&compact_busy, 0, 1)) {
+		return;
+	}
+
+	utc_hour = (uint8_t)((now_utc_s / 3600U) % 24U);
+	allow_today = idle_or_charging && (utc_hour == archive_hour_utc);
+
+	compact_req_now_utc_s = now_utc_s;
+	compact_req_tz_offset_s = tz_offset_s;
+	compact_req_allow_today = allow_today;
+	last_compact_uptime_ms = now_ms;
+
+	(void)k_work_submit_to_queue(&storage_workq, &compact_work);
 }

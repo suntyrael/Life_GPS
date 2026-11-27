@@ -60,7 +60,7 @@ LOG_MODULE_REGISTER(lgps_main, LOG_LEVEL_INF);
 
 /* Poll faster than the 30 Hz ODR and let the data-ready bit do the pacing. */
 #define MAIN_LOOP_PERIOD_MS 10U
-#define DEEP_SLEEP_LOOP_PERIOD_MS 200U
+#define DEEP_SLEEP_LOOP_PERIOD_MS 1000U
 /* The five-line text frame on DEBUG_UART keeps its 1 Hz cadence: it is the
  * scope-free instrument for bring-up and changing it would invalidate every
  * earlier capture.
@@ -97,7 +97,9 @@ static struct lgps_recorder recorder;
 static bool mag_anomaly_active;
 static atomic_t imu_wake_pending = ATOMIC_INIT(0);
 static atomic_t poi_button_pending = ATOMIC_INIT(0);
+static K_SEM_DEFINE(main_wake_sem, 0, 1);
 static enum lgps_power_state applied_power_state = LGPS_PWR_ACTIVE;
+static uint16_t persisted_pdr_k_mm;
 
 /* Weinberg K online calibration accumulators (outdoor GNSS leg). */
 static bool cal_leg_active;
@@ -109,11 +111,13 @@ static float cal_sum_pow025;
 static void on_imu_wake_irq(void)
 {
 	(void)atomic_set(&imu_wake_pending, 1);
+	k_sem_give(&main_wake_sem);
 }
 
 static void on_poi_button(void)
 {
 	(void)atomic_set(&poi_button_pending, 1);
+	k_sem_give(&main_wake_sem);
 }
 
 /* Last magnetometer sample in the body frame, refreshed whenever the sensor hub
@@ -200,6 +204,8 @@ static int init_subsystems(void)
 	if (ret < 0) {
 		return ret;
 	}
+
+	lgps_power_boot_confirm();
 
 	ret = lgps_board_io_unused_pins_off();
 	if (ret < 0) {
@@ -691,8 +697,25 @@ static void update_outdoor_calibration(const struct lgps_gnss_fix *fix)
 		float dist_m = sqrtf((dlat_m * dlat_m) + (dlon_m * dlon_m));
 
 		if (lgps_pdr_calibrate_k(&pdr, dist_m, cal_sum_pow025, cal_leg_steps)) {
+			uint16_t k_mm = (uint16_t)(pdr.k * 1000.0F + 0.5F);
+
 			LOG_INF("Weinberg K calibrated -> %.3f (dist=%.1f m, steps=%u)",
 				(double)pdr.k, (double)dist_m, cal_leg_steps);
+			if ((k_mm >= 300U) && (k_mm <= 550U) &&
+			    ((persisted_pdr_k_mm == 0U) ||
+			     (k_mm > (persisted_pdr_k_mm + 5U)) ||
+			     ((k_mm + 5U) < persisted_pdr_k_mm))) {
+				uint8_t tlv[4] = {
+					LGPS_CFG_TAG_PDR_STEP_K,
+					2U,
+					(uint8_t)(k_mm & 0xFFU),
+					(uint8_t)((k_mm >> 8) & 0xFFU),
+				};
+
+				if (lgps_app_config_update_tlv(tlv, sizeof(tlv)) == 0) {
+					persisted_pdr_k_mm = k_mm;
+				}
+			}
 			cal_start_lat_e7 = fix->lat_e7;
 			cal_start_lon_e7 = fix->lon_e7;
 			cal_leg_steps = 0U;
@@ -1006,6 +1029,19 @@ int main(void)
 				}
 
 				maybe_record_trajectory(now_ms, snap, pwr_state, force_poi);
+
+				if (telemetry_due) {
+					struct lgps_app_config cfg;
+
+					lgps_app_config_get(&cfg);
+					lgps_archive_maybe_compact(
+						lgps_time_now_utc_s(now_ms),
+						(int32_t)cfg.tz_offset_min * 60,
+						cfg.archive_hour_utc,
+						snap->charging || (pwr_state == LGPS_PWR_DEEP_SLEEP) ||
+							lgps_zupt_locked(&zupt),
+						soc_pct);
+				}
 			}
 		}
 
@@ -1013,8 +1049,10 @@ int main(void)
 
 		lgps_wdt_feed();
 
-		k_msleep((pwr_state == LGPS_PWR_DEEP_SLEEP) ? DEEP_SLEEP_LOOP_PERIOD_MS
-							    : MAIN_LOOP_PERIOD_MS);
+		(void)k_sem_take(&main_wake_sem,
+				 K_MSEC((pwr_state == LGPS_PWR_DEEP_SLEEP)
+						? DEEP_SLEEP_LOOP_PERIOD_MS
+						: MAIN_LOOP_PERIOD_MS));
 	}
 
 	return 0;

@@ -487,3 +487,31 @@ void lgps_ring_get_stats(struct lgps_ring_stats *out)
 	*out = stats;
 	k_mutex_unlock(&ring_lock);
 }
+
+int lgps_ring_erase_all(void)
+{
+	int ret = 0;
+
+	if (!device_is_ready(nor)) {
+		return -ENODEV;
+	}
+
+	k_mutex_lock(&ring_lock, K_FOREVER);
+	for (uint8_t s = 0U; s < LGPS_RING_SECTOR_COUNT; s++) {
+		int err = flash_erase(nor, sector_offset(s), LGPS_RING_SECTOR_SIZE);
+
+		if ((err < 0) && (ret == 0)) {
+			ret = err;
+		}
+	}
+	memset(&stats, 0, sizeof(stats));
+	active_sector = 0U;
+	if (ret == 0) {
+		start_sector(0U, 1U, 1U);
+		ring_ready = true;
+	}
+	k_mutex_unlock(&ring_lock);
+
+	LOG_INF("staging ring erased (0..%u, ret=%d)", LGPS_RING_SECTOR_COUNT - 1U, ret);
+	return ret;
+}

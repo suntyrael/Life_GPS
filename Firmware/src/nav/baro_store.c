@@ -273,3 +273,24 @@ out:
 
 	return ret;
 }
+
+int lgps_baro_store_erase(void)
+{
+	int ret;
+
+	if (!device_is_ready(nor)) {
+		return -ENODEV;
+	}
+
+	k_mutex_lock(&store_lock, K_FOREVER);
+	ret = flash_erase(nor, sector_offset(), LGPS_BARO_SECTOR_SIZE);
+	k_mutex_unlock(&store_lock);
+
+	if (ret < 0) {
+		LOG_ERR("baro baseline sector erase failed (%d)", ret);
+	} else {
+		LOG_INF("baro baseline sector erased");
+	}
+
+	return ret;
+}

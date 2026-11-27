@@ -89,4 +89,7 @@ uint32_t lgps_ring_last_seq_id(void);
 int lgps_ring_read_from_seq(uint32_t start_seq, uint8_t *out_buf, uint16_t max_records,
 			    uint16_t *out_count);
 
+/* Erase all 16 staging ring sectors (0..15) and reset cursors (FACTORY_RESET 0x51). */
+int lgps_ring_erase_all(void);
+
 #endif /* LIFEGPS_FLASH_RING_H_ */

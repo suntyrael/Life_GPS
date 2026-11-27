@@ -239,7 +239,30 @@ class BleDebugRepository(
 
     private var nextPoiId = 1
 
+    private var reconnectJob: Job? = null
+
+    @Volatile
+    private var autoReconnectEnabled = true
+
+    @Volatile
+    private var reconnectAttempt = 0
+
+    private val prefs by lazy {
+        appContext.getSharedPreferences("lifegps_prefs", Context.MODE_PRIVATE)
+    }
+
     init {
+        runCatching {
+            val savedAddr = prefs.getString("last_ble_addr", null)
+            val savedName = prefs.getString("last_ble_name", null)
+            if (!savedAddr.isNullOrBlank()) {
+                _lastDeviceAddress.value = savedAddr
+                if (!savedName.isNullOrBlank()) {
+                    _device.update { it.copy(name = savedName) }
+                }
+            }
+        }
+
         transport.onStatus = { bytes -> handleStatusBytes(bytes) }
         transport.onLog = { bytes -> handleLogPacket(bytes) }
         transport.onFrame = { bytes -> handleResponseFrame(bytes) }
@@ -279,15 +302,53 @@ class BleDebugRepository(
         permissionsGranted = granted
         if (granted) {
             addLog(LogLevel.INFO, LogSource.BLE, "PERM", "蓝牙权限已授予")
+            if (autoReconnectEnabled && !_lastDeviceAddress.value.isNullOrBlank() &&
+                transport.state.value == LinkState.DISCONNECTED
+            ) {
+                scheduleAutoReconnect(immediate = true)
+            }
         } else {
+            reconnectJob?.cancel()
             addLog(LogLevel.WARN, LogSource.BLE, "PERM", "蓝牙权限未授予：扫描与连接不可用")
         }
     }
 
     /** Releases the GATT client; called when the composition goes away. */
     fun close() {
+        reconnectJob?.cancel()
         transport.close()
         scope.cancel()
+    }
+
+    fun clearRememberedDevice() {
+        autoReconnectEnabled = false
+        reconnectJob?.cancel()
+        _lastDeviceAddress.value = null
+        runCatching {
+            prefs.edit().remove("last_ble_addr").remove("last_ble_name").apply()
+        }
+    }
+
+    private fun scheduleAutoReconnect(immediate: Boolean = false) {
+        val address = _lastDeviceAddress.value ?: return
+        if (!autoReconnectEnabled || !permissionsGranted) return
+        reconnectJob?.cancel()
+        val backoffMs = if (immediate) {
+            500L
+        } else {
+            val steps = longArrayOf(2_000L, 4_000L, 8_000L, 15_000L, 30_000L)
+            steps[reconnectAttempt.coerceIn(0, steps.lastIndex)]
+        }
+        reconnectAttempt = (reconnectAttempt + 1).coerceAtMost(10)
+        reconnectJob = scope.launch {
+            delay(backoffMs)
+            if (autoReconnectEnabled && permissionsGranted &&
+                (transport.state.value == LinkState.DISCONNECTED || transport.state.value is LinkState.ERROR)
+            ) {
+                addLog(LogLevel.INFO, LogSource.BLE, "LINK", "自动重连已记住设备 $address（延迟 ${backoffMs / 1000}s）")
+                transport.connect(address)
+            }
+        }
     }
 
     // --- link lifecycle -------------------------------------------------------
@@ -302,6 +363,9 @@ class BleDebugRepository(
                 // keep showing a progress bar that will never move again.
                 dropCalibSession("链路已断开，校准会话结束")
                 addLog(LogLevel.WARN, LogSource.BLE, "LINK", "链路已断开")
+                if (autoReconnectEnabled) {
+                    scheduleAutoReconnect()
+                }
             }
 
             LinkState.CONNECTING -> {
@@ -314,6 +378,8 @@ class BleDebugRepository(
             }
 
             LinkState.READY -> {
+                reconnectJob?.cancel()
+                reconnectAttempt = 0
                 _device.update { it.copy(connected = true) }
                 incompatibleReported = false
                 addLog(LogLevel.INFO, LogSource.BLE, "LINK", "Status/Log/Control 通知已订阅，链路就绪")
@@ -326,6 +392,9 @@ class BleDebugRepository(
             is LinkState.ERROR -> {
                 resetTelemetry(keepName = true)
                 addLog(LogLevel.ERROR, LogSource.BLE, "LINK", link.message)
+                if (autoReconnectEnabled) {
+                    scheduleAutoReconnect()
+                }
             }
         }
     }
@@ -336,7 +405,27 @@ class BleDebugRepository(
             runAutoCommand(Opcode.GET_CAPS)
             runAutoCommand(Opcode.GET_STATUS)
             runAutoCommand(Opcode.FLASH_INFO)
+            // Auto-sync UTC time on every connection so indoor devices without GNSS keep accurate time.
+            val timePayload = buildSetTimePayload()
+            val timeRes = execute(Opcode.SET_TIME, timePayload)
+            addLog(
+                if (timeRes?.status == StatusCode.OK.code) LogLevel.INFO else LogLevel.WARN,
+                LogSource.BLE,
+                "TIME",
+                "自动校时 SET_TIME -> ${describeResult(Opcode.SET_TIME, timeRes)}",
+            )
         }
+    }
+
+    private fun buildSetTimePayload(): ByteArray {
+        val unixSec = Instant.now().epochSecond
+        val lgpsEpoch = (unixSec - com.lifegps.core.protocol.TrajectoryRecord.LIFE_GPS_EPOCH_UNIX_S).coerceAtLeast(0L)
+        return byteArrayOf(
+            (lgpsEpoch and 0xFFL).toByte(),
+            ((lgpsEpoch ushr 8) and 0xFFL).toByte(),
+            ((lgpsEpoch ushr 16) and 0xFFL).toByte(),
+            ((lgpsEpoch ushr 24) and 0xFFL).toByte(),
+        )
     }
 
     private suspend fun runAutoCommand(opcode: Opcode) {
@@ -1252,7 +1341,16 @@ class BleDebugRepository(
             return
         }
         val label = device.name.ifBlank { device.address }
+        autoReconnectEnabled = true
+        reconnectAttempt = 0
+        reconnectJob?.cancel()
         _lastDeviceAddress.value = device.address
+        runCatching {
+            prefs.edit()
+                .putString("last_ble_addr", device.address)
+                .putString("last_ble_name", label)
+                .apply()
+        }
         _device.update { it.copy(name = label, connected = false) }
         addLog(
             LogLevel.INFO,
@@ -1264,6 +1362,8 @@ class BleDebugRepository(
     }
 
     override fun disconnect() {
+        autoReconnectEnabled = false
+        reconnectJob?.cancel()
         addLog(LogLevel.INFO, LogSource.BLE, "BLE", "请求断开连接")
         transport.disconnect()
     }
