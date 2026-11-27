@@ -29,6 +29,7 @@ class SyncForegroundService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_UPDATE -> {
+                ensureChannel()
                 val text = intent.getStringExtra(EXTRA_TEXT) ?: "正在同步轨迹…"
                 val progress = intent.getIntExtra(EXTRA_PROGRESS, -1)
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager

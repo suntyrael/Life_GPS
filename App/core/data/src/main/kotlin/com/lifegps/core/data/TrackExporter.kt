@@ -2,10 +2,16 @@
 package com.lifegps.core.data
 
 import com.lifegps.core.protocol.TrajectoryRecord
+import java.io.StringWriter
 import java.io.Writer
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+
+data class PoiExportMeta(
+    val title: String,
+    val note: String = "",
+)
 
 enum class ExportFormat(val extension: String, val mimeType: String, val label: String) {
     GPX("gpx", "application/gpx+xml", "GPX 1.1"),
@@ -28,17 +34,47 @@ object TrackExporter {
         trackName: String,
         records: List<TrajectoryRecord>,
         writer: Writer,
+        poiMetaBySeq: Map<Long, PoiExportMeta> = emptyMap(),
     ) {
         when (format) {
-            ExportFormat.GPX -> exportGpx(trackName, records, writer)
-            ExportFormat.KML -> exportKml(trackName, records, writer)
-            ExportFormat.GEOJSON -> exportGeoJson(trackName, records, writer)
+            ExportFormat.GPX -> exportGpx(trackName, records, writer, poiMetaBySeq)
+            ExportFormat.KML -> exportKml(trackName, records, writer, poiMetaBySeq)
+            ExportFormat.GEOJSON -> exportGeoJson(trackName, records, writer, poiMetaBySeq)
             ExportFormat.CSV -> exportCsv(records, writer)
         }
         writer.flush()
     }
 
-    private fun exportGpx(trackName: String, records: List<TrajectoryRecord>, w: Writer) {
+    fun toGpx(
+        trackName: String,
+        records: List<TrajectoryRecord>,
+        poiMetaBySeq: Map<Long, PoiExportMeta> = emptyMap(),
+    ): String = StringWriter().also { export(ExportFormat.GPX, trackName, records, it, poiMetaBySeq) }.toString()
+
+    fun toKml(
+        trackName: String,
+        records: List<TrajectoryRecord>,
+        poiMetaBySeq: Map<Long, PoiExportMeta> = emptyMap(),
+    ): String = StringWriter().also { export(ExportFormat.KML, trackName, records, it, poiMetaBySeq) }.toString()
+
+    fun toGeoJson(
+        trackName: String,
+        records: List<TrajectoryRecord>,
+        poiMetaBySeq: Map<Long, PoiExportMeta> = emptyMap(),
+    ): String = StringWriter().also { export(ExportFormat.GEOJSON, trackName, records, it, poiMetaBySeq) }.toString()
+
+    private fun resolvePoiTitle(r: TrajectoryRecord, poiMetaBySeq: Map<Long, PoiExportMeta>): String =
+        poiMetaBySeq[r.seqId]?.title?.trim()?.takeIf { it.isNotBlank() } ?: "POI #${r.seqId}"
+
+    private fun resolvePoiNote(r: TrajectoryRecord, poiMetaBySeq: Map<Long, PoiExportMeta>): String =
+        poiMetaBySeq[r.seqId]?.note?.trim().orEmpty()
+
+    private fun exportGpx(
+        trackName: String,
+        records: List<TrajectoryRecord>,
+        w: Writer,
+        poiMetaBySeq: Map<Long, PoiExportMeta>,
+    ) {
         val safeName = xmlEscape(trackName)
         w.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
         w.append("<gpx version=\"1.1\" creator=\"Life_GPS\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n")
@@ -46,16 +82,19 @@ object TrackExporter {
         for (r in records) {
             if (!r.isPoi) continue
             val ts = isoUtc.format(Instant.ofEpochMilli(r.unixEpochMs))
+            val title = xmlEscape(resolvePoiTitle(r, poiMetaBySeq))
+            val note = resolvePoiNote(r, poiMetaBySeq)
+            val desc = xmlEscape(if (note.isNotEmpty()) "$note (floor=${r.floorLevel})" else "floor=${r.floorLevel}")
             w.append(
                 String.format(
                     Locale.US,
-                    "  <wpt lat=\"%.7f\" lon=\"%.7f\"><ele>%d</ele><time>%s</time><name>POI #%d</name><desc>floor=%d</desc></wpt>\n",
+                    "  <wpt lat=\"%.7f\" lon=\"%.7f\"><ele>%d</ele><time>%s</time><name>%s</name><desc>%s</desc></wpt>\n",
                     r.latitudeDeg,
                     r.longitudeDeg,
                     r.altitudeM,
                     ts,
-                    r.seqId,
-                    r.floorLevel,
+                    title,
+                    desc,
                 ),
             )
         }
@@ -79,7 +118,12 @@ object TrackExporter {
         w.append("    </trkseg>\n  </trk>\n</gpx>\n")
     }
 
-    private fun exportKml(trackName: String, records: List<TrajectoryRecord>, w: Writer) {
+    private fun exportKml(
+        trackName: String,
+        records: List<TrajectoryRecord>,
+        w: Writer,
+        poiMetaBySeq: Map<Long, PoiExportMeta>,
+    ) {
         val safeName = xmlEscape(trackName)
         w.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
         w.append("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n<Document>\n")
@@ -101,8 +145,13 @@ object TrackExporter {
         w.append("      </coordinates>\n    </LineString>\n  </Placemark>\n")
         for (r in records) {
             if (!r.isPoi) continue
+            val title = xmlEscape(resolvePoiTitle(r, poiMetaBySeq))
+            val note = resolvePoiNote(r, poiMetaBySeq)
             w.append("  <Placemark>\n")
-            w.append("    <name>POI #${r.seqId}</name>\n")
+            w.append("    <name>$title</name>\n")
+            if (note.isNotEmpty()) {
+                w.append("    <description>${xmlEscape(note)}</description>\n")
+            }
             w.append(
                 String.format(
                     Locale.US,
@@ -117,7 +166,12 @@ object TrackExporter {
         w.append("</Document>\n</kml>\n")
     }
 
-    private fun exportGeoJson(trackName: String, records: List<TrajectoryRecord>, w: Writer) {
+    private fun exportGeoJson(
+        trackName: String,
+        records: List<TrajectoryRecord>,
+        w: Writer,
+        poiMetaBySeq: Map<Long, PoiExportMeta>,
+    ) {
         val valid = records.filter { it.isFixValid }
         val pois = records.filter { it.isPoi }
         w.append("{\"type\":\"FeatureCollection\",\"features\":[")
@@ -134,11 +188,15 @@ object TrackExporter {
         for (r in pois) {
             if (needComma) w.append(',')
             val ts = isoUtc.format(Instant.ofEpochMilli(r.unixEpochMs))
+            val title = jsonEscape(resolvePoiTitle(r, poiMetaBySeq))
+            val note = jsonEscape(resolvePoiNote(r, poiMetaBySeq))
             w.append(
                 String.format(
                     Locale.US,
-                    "{\"type\":\"Feature\",\"properties\":{\"kind\":\"poi\",\"seqId\":%d,\"time\":\"%s\",\"floor\":%d},\"geometry\":{\"type\":\"Point\",\"coordinates\":[%.7f,%.7f,%d]}}",
+                    "{\"type\":\"Feature\",\"properties\":{\"kind\":\"poi\",\"seqId\":%d,\"name\":\"%s\",\"note\":\"%s\",\"time\":\"%s\",\"floor\":%d},\"geometry\":{\"type\":\"Point\",\"coordinates\":[%.7f,%.7f,%d]}}",
                     r.seqId,
+                    title,
+                    note,
                     ts,
                     r.floorLevel,
                     r.longitudeDeg,
@@ -185,6 +243,22 @@ object TrackExporter {
             .replace("\"", "&quot;")
             .replace("'", "&apos;")
 
-    private fun jsonEscape(s: String): String =
-        s.replace("\\", "\\\\").replace("\"", "\\\"")
+    private fun jsonEscape(s: String): String {
+        val sb = StringBuilder(s.length)
+        for (ch in s) {
+            when (ch) {
+                '\\' -> sb.append("\\\\")
+                '"' -> sb.append("\\\"")
+                '\n' -> sb.append("\\n")
+                '\r' -> sb.append("\\r")
+                '\t' -> sb.append("\\t")
+                else -> if (ch.code < 0x20) {
+                    sb.append(String.format(Locale.US, "\\u%04x", ch.code))
+                } else {
+                    sb.append(ch)
+                }
+            }
+        }
+        return sb.toString()
+    }
 }

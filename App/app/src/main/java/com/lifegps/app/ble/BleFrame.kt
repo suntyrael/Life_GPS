@@ -51,13 +51,24 @@ object StatusOffset {
     const val HEAD_ACC_CDD = 110
     const val HDOP_1E2 = 112
     const val VDOP_1E2 = 114
+    const val ARCHIVE_INDEX_VER = GeneratedProtocol.StatusSizes.OFF_ARCHIVE_INDEX_VER
+    const val LAST_SEQ_ID = GeneratedProtocol.StatusSizes.OFF_LAST_SEQ_ID
+    const val WORK_MODE = GeneratedProtocol.StatusSizes.OFF_WORK_MODE
+    const val ARCHIVE_DAYS_COUNT = GeneratedProtocol.StatusSizes.OFF_ARCHIVE_DAYS_COUNT
+    const val STORAGE_USED_PERMILLE = GeneratedProtocol.StatusSizes.OFF_STORAGE_USED_PERMILLE
 
     /** Old firmware bodies stop here; the fields above are always present. */
-    const val BASE_SIZE = 82
+    const val BASE_SIZE = GeneratedProtocol.StatusSizes.BASE
 
     /** 0.3.0 firmware: the motion/temperature block ends here. */
-    const val MOTION_SIZE = 100
-    const val SIZE = 116
+    const val MOTION_SIZE = GeneratedProtocol.StatusSizes.MOTION
+
+    /** 0.4.0 firmware: the height/accuracy/DOP block ends here. */
+    const val ACCURACY_SIZE = GeneratedProtocol.StatusSizes.ACCURACY
+
+    /** 1.0.0 firmware: the sync/storage metadata extension ends here. */
+    const val SYNC_SIZE = GeneratedProtocol.StatusSizes.SYNC
+    const val SIZE = SYNC_SIZE
 }
 
 /** Offset table of the GET_CAPS response body (`BLE_Wire_v1.md` §6.1). */
@@ -259,6 +270,12 @@ data class StatusFrame(
     val vdop1e2: Int,
     val extendedFields: Boolean,
     val accuracyFields: Boolean,
+    val archiveIndexVer: Long = 0L,
+    val lastSeqId: Long = 0L,
+    val workMode: Int = -1,
+    val archiveDaysCount: Int = 0,
+    val storageUsedPermille: Int = 0,
+    val syncFields: Boolean = false,
 ) {
     val gnssFixValid: Boolean get() = flags and StatusFlags.GNSS_FIX_VALID != 0
     val charging: Boolean get() = flags and StatusFlags.CHARGING != 0
@@ -280,6 +297,9 @@ data class StatusFrame(
 
     /** True when the firmware sent the appended height/accuracy/DOP block (0.4.0). */
     val hasAccuracyFields: Boolean get() = accuracyFields
+
+    /** True when the firmware sent the appended 128-byte sync/storage metadata block (1.0.0). */
+    val hasSyncFields: Boolean get() = syncFields
 }
 
 /** Decoded GET_CAPS response body (status byte already stripped). */
@@ -656,11 +676,12 @@ object BleFrame {
         )
     }
 
-    /** Parses the Status body; base-only (old firmware) bodies keep zero extension fields. */
+    /** Parses the Status body; shorter (older firmware) bodies keep default extension fields. */
     fun parseStatus(bytes: ByteArray): StatusFrame? {
         if (bytes.size < StatusOffset.BASE_SIZE) return null
         val extended = bytes.size >= StatusOffset.MOTION_SIZE
-        val accuracy = bytes.size >= StatusOffset.SIZE
+        val accuracy = bytes.size >= StatusOffset.ACCURACY_SIZE
+        val sync = bytes.size >= StatusOffset.SYNC_SIZE
         return StatusFrame(
             ver = u8(bytes, StatusOffset.VER),
             flags = u8(bytes, StatusOffset.FLAGS),
@@ -701,6 +722,12 @@ object BleFrame {
             vdop1e2 = if (accuracy) u16(bytes, StatusOffset.VDOP_1E2) else 0,
             extendedFields = extended,
             accuracyFields = accuracy,
+            archiveIndexVer = if (sync) u32(bytes, StatusOffset.ARCHIVE_INDEX_VER) else 0L,
+            lastSeqId = if (sync) u32(bytes, StatusOffset.LAST_SEQ_ID) else 0L,
+            workMode = if (sync) u8(bytes, StatusOffset.WORK_MODE) else -1,
+            archiveDaysCount = if (sync) u8(bytes, StatusOffset.ARCHIVE_DAYS_COUNT) else 0,
+            storageUsedPermille = if (sync) u16(bytes, StatusOffset.STORAGE_USED_PERMILLE) else 0,
+            syncFields = sync,
         )
     }
 

@@ -30,6 +30,11 @@ data class DeviceSummary(
     val charging: Boolean,
     val mode: String,
     val uptimeSeconds: Long,
+    val archiveIndexVer: Long = 0L,
+    val lastSeqId: Long = 0L,
+    val workMode: Int = -1,
+    val archiveDaysCount: Int = 0,
+    val storageUsedPermille: Int = 0,
 )
 
 data class GnssStatus(

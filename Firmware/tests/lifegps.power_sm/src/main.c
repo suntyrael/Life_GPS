@@ -84,3 +84,63 @@ ZTEST(power_sm_tests, test_low_battery_degrade_and_shutdown)
 	zassert_equal(sm.state, LGPS_PWR_SYSTEM_OFF);
 	zassert_true(sm.system_off_requested);
 }
+
+ZTEST(power_sm_tests, test_auto_off_in_deep_sleep)
+{
+	struct lgps_power_sm_logic sm;
+	struct lgps_power_inputs in = {
+		.now_ms = 0U,
+		.steps_total = 0U,
+		.zupt_locked = true,
+		.ble_connected = false,
+		.charging = false,
+		.soc_pct = 80U,
+	};
+
+	/* Disabled by default (auto_off_min == 0): stays in DEEP_SLEEP indefinitely. */
+	lgps_power_logic_init(&sm, 0U);
+	zassert_equal(sm.auto_off_min, 0U);
+	zassert_false(lgps_power_logic_step(&sm, &in));
+	in.now_ms = 30000U;
+	zassert_true(lgps_power_logic_step(&sm, &in));
+	zassert_equal(sm.state, LGPS_PWR_DEEP_SLEEP);
+	zassert_equal(sm.deep_sleep_since_ms, 30000U);
+
+	in.now_ms = 30000U + 3600000U; /* +60 min */
+	zassert_false(lgps_power_logic_step(&sm, &in));
+	zassert_equal(sm.state, LGPS_PWR_DEEP_SLEEP);
+
+	/* Enable 5-minute auto-off: suppressed while charging or BLE connected. */
+	lgps_power_logic_init(&sm, 0U);
+	lgps_power_logic_set_auto_off_min(&sm, 5U);
+	in.now_ms = 0U;
+	in.charging = false;
+	in.ble_connected = false;
+	zassert_false(lgps_power_logic_step(&sm, &in));
+	in.now_ms = 30000U;
+	zassert_true(lgps_power_logic_step(&sm, &in));
+	zassert_equal(sm.state, LGPS_PWR_DEEP_SLEEP);
+
+	/* Just before 5-minute threshold -> stays in DEEP_SLEEP. */
+	in.now_ms = 30000U + (5U * 60000U) - 1U;
+	zassert_false(lgps_power_logic_step(&sm, &in));
+	zassert_equal(sm.state, LGPS_PWR_DEEP_SLEEP);
+
+	/* Past threshold while charging -> suppressed. */
+	in.now_ms = 30000U + (5U * 60000U);
+	in.charging = true;
+	zassert_false(lgps_power_logic_step(&sm, &in));
+	zassert_equal(sm.state, LGPS_PWR_DEEP_SLEEP);
+
+	/* Past threshold while BLE connected -> suppressed. */
+	in.charging = false;
+	in.ble_connected = true;
+	zassert_false(lgps_power_logic_step(&sm, &in));
+	zassert_equal(sm.state, LGPS_PWR_DEEP_SLEEP);
+
+	/* Idle (not charging and BLE disconnected) past threshold -> SYSTEM_OFF. */
+	in.ble_connected = false;
+	zassert_true(lgps_power_logic_step(&sm, &in));
+	zassert_equal(sm.state, LGPS_PWR_SYSTEM_OFF);
+	zassert_true(sm.system_off_requested);
+}

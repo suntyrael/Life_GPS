@@ -36,7 +36,8 @@ fun rememberBlePermissions(): BlePermissionState {
         context.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
     }
     val required = remember(context) { requiredBlePermissions() }
-    var granted by remember(required) { mutableStateOf(hasAllPermissions(context, required)) }
+    val toRequest = remember(context) { permissionsToRequest() }
+    var granted by remember(required) { mutableStateOf(hasRequiredPermissions(context)) }
 
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
@@ -50,8 +51,20 @@ fun rememberBlePermissions(): BlePermissionState {
     return BlePermissionState(
         granted = leSupported && granted,
         unsupported = !leSupported,
-        launch = { launcher.launch(required) },
+        launch = { launcher.launch(toRequest) },
     )
+}
+
+fun hasRequiredPermissions(context: Context): Boolean =
+    hasAllPermissions(context, requiredBlePermissions())
+
+fun permissionsToRequest(): Array<String> {
+    val ble = requiredBlePermissions()
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        ble + Manifest.permission.POST_NOTIFICATIONS
+    } else {
+        ble
+    }
 }
 
 private fun requiredBlePermissions(): Array<String> =

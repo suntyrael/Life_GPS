@@ -252,6 +252,11 @@ ZTEST(lifegps_ble, test_status_offsets_match_wire_doc)
 		.head_acc_cdd = 560U,
 		.hdop_1e2 = 50U,
 		.vdop_1e2 = 70U,
+		.archive_index_ver = 0x12345678U,
+		.last_seq_id = 0x9ABCDEF0U,
+		.work_mode = 2U,
+		.archive_days_count = 42U,
+		.storage_used_permille = 753U, /* 0x02F1 */
 	};
 	uint8_t out[LGPS_BLE_STATUS_SIZE];
 	int len;
@@ -260,7 +265,8 @@ ZTEST(lifegps_ble, test_status_offsets_match_wire_doc)
 	zassert_equal(len, LGPS_BLE_STATUS_SIZE, "status frame size");
 	zassert_equal(LGPS_BLE_STATUS_BASE_SIZE, 82, "the v1 fields stay at 0..81");
 	zassert_equal(LGPS_BLE_STATUS_MOTION_SIZE, 100, "appended motion/temperature block");
-	zassert_equal(LGPS_BLE_STATUS_SIZE, 116, "appended height/accuracy/DOP block");
+	zassert_equal(LGPS_BLE_STATUS_ACCURACY_SIZE, 116, "appended height/accuracy/DOP block");
+	zassert_equal(LGPS_BLE_STATUS_SIZE, 128, "appended sync/storage extension block");
 
 	/* Offsets are the ones printed in Doc/Software/BLE_Wire_v1.md section 4. */
 	zassert_equal(out[0], 0x01U, "off 0 ver");
@@ -335,7 +341,21 @@ ZTEST(lifegps_ble, test_status_offsets_match_wire_doc)
 	zassert_equal(out[114], 0x46U, "off 114 vdop_1e2 low");
 	zassert_equal(out[115], 0x00U, "off 114 vdop_1e2 high");
 
-	/* A 240-byte ATT payload cannot be written into an 81-byte buffer. */
+	/* Appended sync/storage block, offsets 116..127. */
+	zassert_equal(out[116], 0x78U, "off 116 archive_index_ver byte 0");
+	zassert_equal(out[117], 0x56U, "off 116 archive_index_ver byte 1");
+	zassert_equal(out[118], 0x34U, "off 116 archive_index_ver byte 2");
+	zassert_equal(out[119], 0x12U, "off 116 archive_index_ver byte 3");
+	zassert_equal(out[120], 0xF0U, "off 120 last_seq_id byte 0");
+	zassert_equal(out[121], 0xDEU, "off 120 last_seq_id byte 1");
+	zassert_equal(out[122], 0xBCU, "off 120 last_seq_id byte 2");
+	zassert_equal(out[123], 0x9AU, "off 120 last_seq_id byte 3");
+	zassert_equal(out[124], 0x02U, "off 124 work_mode");
+	zassert_equal(out[125], 42U, "off 125 archive_days_count");
+	zassert_equal(out[126], 0xF1U, "off 126 storage_used_permille low");
+	zassert_equal(out[127], 0x02U, "off 126 storage_used_permille high");
+
+	/* A full Status frame cannot be written into a buffer one byte short. */
 	zassert_equal(lgps_ble_status_encode(&status, out, LGPS_BLE_STATUS_SIZE - 1U), -ENOMEM,
 		      "short output buffer");
 }

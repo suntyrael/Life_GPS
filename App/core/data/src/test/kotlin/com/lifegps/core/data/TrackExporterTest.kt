@@ -45,4 +45,28 @@ class TrackExporterTest {
         assertTrue(simplified.last() == recs.last())
         assertTrue(simplified.any { it.isPoi })
     }
+
+    @Test
+    fun exportsUserEditedPoiTitlesAndNotesEscaped() {
+        val recs = sampleRecords()
+        val poiRec = recs.first { it.isPoi }
+        val meta = mapOf(
+            poiRec.seqId to PoiExportMeta(
+                title = "Coffee & Tea <1>",
+                note = "Ask for \"oat\" milk\n2nd floor",
+            ),
+        )
+
+        val gpx = TrackExporter.toGpx("2026-07-05", recs, meta)
+        assertTrue(gpx.contains("<name>Coffee &amp; Tea &lt;1&gt;</name>"))
+        assertTrue(gpx.contains("<desc>Ask for &quot;oat&quot; milk\n2nd floor (floor=${poiRec.floorLevel})</desc>"))
+
+        val kml = TrackExporter.toKml("2026-07-05", recs, meta)
+        assertTrue(kml.contains("<name>Coffee &amp; Tea &lt;1&gt;</name>"))
+        assertTrue(kml.contains("<description>Ask for &quot;oat&quot; milk\n2nd floor</description>"))
+
+        val geoJson = TrackExporter.toGeoJson("2026-07-05", recs, meta)
+        assertTrue(geoJson.contains("\"name\":\"Coffee & Tea <1>\""))
+        assertTrue(geoJson.contains("\"note\":\"Ask for \\\"oat\\\" milk\\n2nd floor\""))
+    }
 }

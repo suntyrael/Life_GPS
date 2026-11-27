@@ -60,6 +60,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 import com.lifegps.core.data.SyncCommandReply
 import com.lifegps.core.model.BondState
+import com.lifegps.core.model.DeviceOperatingMode
 import com.lifegps.core.protocol.DataFrame
 import com.lifegps.core.protocol.TrajectoryRecord
 
@@ -447,6 +448,11 @@ class BleDebugRepository(
                 charging = false,
                 mode = "—",
                 uptimeSeconds = 0,
+                archiveIndexVer = 0L,
+                lastSeqId = 0L,
+                workMode = -1,
+                archiveDaysCount = 0,
+                storageUsedPermille = 0,
             )
         }
         _gnss.value = initialGnss()
@@ -492,6 +498,12 @@ class BleDebugRepository(
         val caps = capsInfo
 
         val batteryMv = frame.batMv
+        val modeLabel = if (frame.hasSyncFields && frame.workMode >= 0) {
+            DeviceOperatingMode.entries.firstOrNull { it.wireCode == frame.workMode }?.label
+                ?: "模式(${frame.workMode})"
+        } else {
+            "—"
+        }
         _device.update {
             it.copy(
                 connected = true,
@@ -500,9 +512,13 @@ class BleDebugRepository(
                 batteryMv = batteryMv,
                 batteryPct = BatterySoc.fromStatus(frame.socPct, batteryMv, frame.charging),
                 charging = frame.charging,
-                // v1 has no "work mode" field in the Status frame.
-                mode = "—",
+                mode = modeLabel,
                 uptimeSeconds = frame.uptimeMs / 1000L,
+                archiveIndexVer = frame.archiveIndexVer,
+                lastSeqId = frame.lastSeqId,
+                workMode = frame.workMode,
+                archiveDaysCount = frame.archiveDaysCount,
+                storageUsedPermille = frame.storageUsedPermille,
             )
         }
 

@@ -23,7 +23,9 @@
 
 #define LGPS_KEY_DEBOUNCE_MS 100U
 #define LGPS_KEY_SHORT_PRESS_MS 800U
+#define LGPS_KEY_MODE_HOLD_MS 2000U
 #define LGPS_KEY_PAIRING_PRESS_MS 3000U
+#define LGPS_KEY_DUAL_OFF_MS 3000U
 #define LGPS_KEY_LONG_PRESS_MS 8000U
 
 enum lgps_key_id {
@@ -38,6 +40,8 @@ enum lgps_key_event_type {
 	LGPS_KEY_EVENT_SHORT_PRESS,
 	LGPS_KEY_EVENT_LONG_PRESS,
 	LGPS_KEY_EVENT_PAIRING_PRESS,
+	LGPS_KEY_EVENT_MODE_HOLD,
+	LGPS_KEY_EVENT_DUAL_POWER_OFF,
 };
 
 typedef void (*lgps_key_callback_t)(enum lgps_key_id key, enum lgps_key_event_type event,

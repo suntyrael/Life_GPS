@@ -22,7 +22,7 @@
 | 特征 | UUID | 属性 | 说明 |
 | :--- | :--- | :--- | :--- |
 | Service | `4C475053-0001-4C47-5053-000000000001` | — | 主服务 |
-| Status | `4C475053-0002-4C47-5053-000000000001` | Read + Notify + CCC | 116 字节固定状态快照（前 82/100 字节向后兼容）；有 central 订阅时 10 Hz 推送，无订阅时 1 Hz 仅维持缓存 |
+| Status | `4C475053-0002-4C47-5053-000000000001` | Read + Notify + CCC | 116/128 字节固定状态快照（82→100→116→128 B 只追加向后兼容）；有 central 订阅时 10 Hz 推送，无订阅时 1 Hz 仅维持缓存 |
 | Control | `4C475053-0003-4C47-5053-000000000001` | Write + WriteWithoutResponse + Notify + CCC | 命令帧请求，响应走 Notify |
 | Log | `4C475053-0006-4C47-5053-000000000001` | Notify + CCC | 固件日志转发（UTF-8） |
 | Telemetry | `4C475053-0005-4C47-5053-000000000001` | Notify + CCC | 按传感器分组的二进制包：IMU（含姿态四元数）30 Hz、PDR 每步 |
@@ -57,12 +57,22 @@ off  size  field
 | `0x00` | OK | 成功 |
 | `0x01` | INVALID_ARGUMENT | 载荷长度/取值非法 |
 | `0x02` | UNKNOWN_OPCODE | 固件不认识这个 opcode |
-| `0x03` | NOT_SUPPORTED | opcode 存在于协议但 v1 未实现 |
-| `0x04` | BUSY | 上一条命令还没处理完 |
+| `0x03` | NOT_SUPPORTED | opcode 存在于协议但当前固件未实现 |
+| `0x04` | BUSY | 上一条命令还没处理完 / 模组未上电或 Data 通道未订阅 |
 | `0x05` | INTERNAL_ERROR | 内部失败（流程/CRC/存储错误） |
 | `0x06` | UNAUTHORIZED | 需要先 `DEBUG_UNLOCK` |
+| `0x07` | OUT_OF_RANGE | 同步游标/偏移越界（追加扩展） |
+| `0x08` | NOT_FOUND | 请求的 `day_id` 等目标不存在（追加扩展） |
+| `0x09` | FLASH_ERROR | 外部 Flash 读写/擦除失败（追加扩展） |
+| `0x0A` | LOW_BATTERY | 电量过低拒绝高耗电模式/操作（追加扩展） |
+| `0x0B` | CRC_MISMATCH | 数据块/归档包 CRC 校验失败（追加扩展） |
+| `0x0C` | SESSION_EXPIRED | 同步会话过期或未打开（追加扩展） |
 
 ## 4. Status 帧（116 字节，小端，固定偏移）
+
+> 帧长只追加演进（与 [`protocol/lifegps_protocol.yaml`](../../protocol/lifegps_protocol.yaml) `status_extension` 一致）：
+> `82 B (base)` → `100 B (+motion/temp)` → `116 B (+height/accuracy/DOP)` → **`128 B (+sync 扩展，偏移 116..127)`**。
+> 主机必须按实际收到的帧长（或 `GET_CAPS.status_size`）决定解析上限：收到 116 B 时 `116..127` 按缺失处理，收到 128 B 时解析同步扩展字段。
 
 | off | type | 字段 | 说明 |
 | :--- | :--- | :--- | :--- |
@@ -106,6 +116,11 @@ off  size  field
 | 110 | u16 | `head_acc_cdd` | **0.4.0 追加**：航向精度，0.01°（NAV-PVT `headAcc` 1e-5° ÷1000） |
 | 112 | u16 | `hdop_1e2` | **0.4.0 追加**：hDOP ×100（UBX-NAV-DOP `hDOP`，载荷偏移 12） |
 | 114 | u16 | `vdop_1e2` | **0.4.0 追加**：vDOP ×100（UBX-NAV-DOP `vDOP`，载荷偏移 10） |
+| 116 | u32 | `archive_index_ver` | **128 B 同步扩展**：归档目录（`JNL1`）单调递增版本号，用于判断是否需要拉取 `GET_DAY_INDEX` |
+| 120 | u32 | `last_seq_id` | **128 B 同步扩展**：暂存环最新轨迹记录 `seq_id`（用于增量同步规划） |
+| 124 | u8 | `work_mode` | **128 B 同步扩展**：当前工作模式（0=DEEP_SLEEP / 1=ACTIVE / 2=HIGH_PRECISION） |
+| 125 | u8 | `archive_days_count` | **128 B 同步扩展**：已归档天数摘要（`u8` 饱和/低位视图；超过 255 天时的完整 12-bit 总天数以 `GET_DAY_INDEX` 为准） |
+| 126 | u16 | `storage_used_permille` | **128 B 同步扩展**：外部 NOR 轨迹/归档空间已用千分比（`0..1000`，以 SFDP `traj_bytes` 为分母） |
 
 `soc_pct` 是固件按实测 OCV/充电端电压表做的**电压法**估算（0.2C 单节数据），
 不是库仑积分；没有电流计，负载、温度、老化都会带来误差。`0xFF` 只在 ADC 读取失败或
@@ -115,6 +130,11 @@ off  size  field
 的 `0xFFFFFFFF` 未知标识）。主机**不得**把 0 当成真实的“精度 0 m / DOP 0”。
 NAV-DOP 与 NAV-PVT 描述同一个导航历元，所以两条消息谁先到都不会混历元；
 无定位时 GNSS 线程把 `hdop_1e2`/`vdop_1e2` 一起清 0，和 `pdop_1e2` 一条规则。
+
+**116..127 同步扩展约定**（对应 `protocol/lifegps_protocol.yaml` `status_extension.sync_size = 128`）：
+App 读取 Status 帧时按实际长度判断——若长度 `< 128`（例如 116 B 固件）则跳过 `116..127` 并直接通过
+`GET_DAY_INDEX` / `SYNC_BEGIN` 查询同步元数据；若长度 `>= 128` 则优先用 `archive_index_ver` 与
+`last_seq_id` 快速决定增量同步计划。
 
 **坐标系约定（这是 2026-11-19 修掉的一个真实缺陷）**：
 `acc_lsb`/`gyro_lsb` 是**传感器坐标系**的原始计数，供诊断用；
@@ -259,8 +279,10 @@ yaw（并顺带学习磁力计偏置），否则用磁力计按该偏置维持 y
 | opcode | 名称 | 请求 payload | 响应 payload（status 之后） |
 | :--- | :--- | :--- | :--- |
 | `0x01` | GET_CAPS | — | 见 6.1 |
-| `0x02` | GET_STATUS | — | 116 字节 Status 帧（旧固件 82/100 字节） |
+| `0x02` | GET_STATUS | — | 116 / 128 字节 Status 帧（旧固件 82/100 字节） |
+| `0x11` | SET_TIME | 8 B：`[u32 epoch_2020_s, u16 subsec_ms, i16 tz_offset_min]`（见 6.10） | 5 B：`[i32 drift_s, u8 time_source]` |
 | `0x12` | POI_MARK | — | `u8 written`（1 = 已写入轨迹环） |
+| `0x23` | GET_DAY_INDEX | 可选空 / `u8 start_idx` / `u16 start_idx`（见 6.11） | 8 B 分页头（含 12-bit 高半字节）+ `N × 28 B` 日归档条目 |
 | `0x30` | LOG_SUBSCRIBE | `u8 level`（0=off 1=ERR 2=WRN 3=INF 4=DBG） | — |
 | `0x41` | MAG_CAL | `u8 action`（6.3） | 见 6.3 |
 | `0x42` | BARO_BASELINE | `u8 action` + `u32 baseline_pa_q4`（6.5） | 见 6.5（action 0 取当前 / 1 手动 / 2 GNSS 海拔；BMP388 无气压时返 `0x03`） |
@@ -272,10 +294,7 @@ yaw（并顺带学习磁力计偏置），否则用磁力计按该偏置维持 y
 | `0x60` | FLASH_INFO | — | 见 6.2 |
 | `0x7F` | DEBUG_UNLOCK | 4 字节 ASCII `LGPS` | — |
 
-其余协议 opcode（SET_MODE / SET_TIME / SET_CONFIG / GET_CONFIG / SYNC_* / GET_DAY_INDEX /
-GET_ARCHIVE / GNSS_SNAPSHOT / IMU_SNAPSHOT / BUTTON_EVENT / SELFTEST / ERASE_DAY /
-FACTORY_RESET / FLASH_READ / FLASH_ERASE / GET_FAULT_LOG / POWER_TEST_MARK）一律返回
-`0x03 NOT_SUPPORTED`；完全不认识的 opcode 返回 `0x02`。App 必须把这两种情况显示给用户，不得伪造成功。
+注：完整同步、配置与运维命令（`SET_MODE 0x10`、`SET_CONFIG 0x13`、`GET_CONFIG 0x14`、`SYNC_BEGIN/READ/END 0x20..0x22`、`GET_ARCHIVE 0x24`、`BUTTON_EVENT 0x33`、`SELFTEST 0x40`、`ERASE_DAY 0x50`、`FACTORY_RESET 0x51`、`GET_FAULT_LOG 0x70`）已随同步/配置能力位（`GET_CAPS.caps` bit6/bit12）逐步落地；未实现的保留 opcode 返回 `0x03 NOT_SUPPORTED`，完全不认识的 opcode 返回 `0x02`。App 必须按 `GET_CAPS.caps` 判定能力并将错误码显示给用户，不得伪造成功。
 
 三个校准 opcode（`0x41` / `0x42` / `0x43`）的载荷与固件持久化已实现（6.3~6.5）；能力一律从
 GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜测**。
@@ -290,9 +309,9 @@ GET_CAPS 的 `caps` 位读（6.1 的 bit7~bit9），**不按协议版本号猜�
 | 7 | u8 | `reserved` |
 | 8 | u16 | `att_mtu`（固件配置的 L2CAP TX MTU，247） |
 | 10 | u16 | `max_cmd_payload`（235） |
-| 12 | u32 | `caps`：bit0 Status notify，bit1 Log notify，bit2 POI，bit3 FLASH_INFO，bit4 REBOOT，bit5 DEBUG_UNLOCK，bit6 Data 同步（v1 = 0），bit7 MAG_CAL，bit8 ACCEL_CAL，bit9 BARO_BASELINE（三位置位条件见 6.3~6.5），bit10 GNSS_DEBUG，bit11 GNSS_CFG，bit12 CONFIG_TLV，bit13 GNSS_RESTART，bit14 OTA_SMP |
+| 12 | u32 | `caps`：bit0 Status notify，bit1 Log notify，bit2 POI，bit3 FLASH_INFO，bit4 REBOOT，bit5 DEBUG_UNLOCK，bit6 Data 同步（DATA_SYNC），bit7 MAG_CAL，bit8 ACCEL_CAL，bit9 BARO_BASELINE（三位置位条件见 6.3~6.5），bit10 GNSS_DEBUG，bit11 GNSS_CFG，bit12 CONFIG_TLV，bit13 GNSS_RESTART，bit14 OTA_SMP |
 | 16 | u32 | `telemetry_mask`（0.4.0 = `0x336`：bit1 GNSS、bit2 IMU、bit4 BARO、bit5 PDR、bit8 NMEA、bit9 SAT，语义见 §5.1） |
-| 20 | u16 | `status_size` = 116（0.4.0 起；0.3.0 为 100，v1 为 82） |
+| 20 | u16 | `status_size` = 116 或 128（随同步扩展升至 128；0.4.0 为 116，0.3.0 为 100，v1 为 82） |
 | 22 | u16 | `reserved` |
 
 ### 6.2 FLASH_INFO 响应（24 字节）
@@ -570,6 +589,56 @@ GNSS 子系统反复重启、速率被接受但撑不住。它们的共同点就
   所以固件不等 ACK，用复位后的 NAV-PVT 回读作为证据。
 - 复位后固件把状态切回 `COLD_START`，TTFF 从 0 重新计时；`status` 里能看到这次是哪种启动
   对应的 TTFF。`0x04 BUSY` 表示接收机未上电（断电退避中），此时无 BBR 可清。
+
+### 6.10 SET_TIME（`0x11`）请求 / 响应
+
+用于无 GNSS 定位时由手机 App 向固件授时并同步本地时区偏移（固件实现见 `Firmware/src/ble/ble_gatt.c` `cmd_set_time()`）。
+
+请求体固定 **8 字节**（小端）：
+
+| off | type | 字段 | 说明 |
+| :--- | :--- | :--- | :--- |
+| 0 | u32 | `epoch_2020_s` | Life_GPS 2020 Epoch UTC 秒数（自 `2020-01-01T00:00:00Z` 起计；必须 `> 0`，为 0 返 `0x01 INVALID_ARGUMENT`） |
+| 4 | u16 | `subsec_ms` | 亚秒毫秒偏移（`0..999`；超过 `999` 返 `0x01`） |
+| 6 | i16 | `tz_offset_min` | 本地时区相对 UTC 的分钟偏移（如 UTC+8 为 `+480`，允许范围 `-720..+840`）；填 `0x7FFF`（`32767`）表示保持设备当前时区不变 |
+
+响应体（`status` 之后 5 字节，含 `status` 共 6 字节，小端）：
+
+| off（`status` 后） | `payload` 索引 | type | 字段 | 说明 |
+| :--- | :--- | :--- | :--- | :--- |
+| 0 | `1..4` | i32 | `drift_s` | 写入前设备时钟与外部授时的有符号秒差（若设备此前未授时则为 `INT32_MAX = 0x7FFFFFFF`） |
+| 4 | `5` | u8 | `time_source` | 生效后的当前时钟源枚举（`lgps_time_source()`） |
+
+### 6.11 GET_DAY_INDEX（`0x23`）向后兼容 >255 天分页
+
+用于分页拉取外部 NOR `JNL1` 多扇区归档目录（容量最高 **2048 天 / ~5.6 年**，协议 12-bit 索引上限 **4095 天**，固件实现见 `Firmware/src/ble/ble_gatt.c` `cmd_get_day_index()`）。
+
+**请求载荷（小端，可选长度 `0 / 1 / 2` 字节）**：
+
+| 长度 | 格式 | 说明 |
+| :--- | :--- | :--- |
+| 0 B | 空 | 默认 `start_idx = 0` |
+| 1 B | `u8 start_idx` | 兼容旧主机（`0..255`） |
+| 2 B | `u16 start_idx` | **>255 天分页请求**（小端，`0..4095`）；其他长度一律返 `0x01 INVALID_ARGUMENT` |
+
+**响应载荷（含 `payload[0] = status`，固定 9 字节头 + `returned_days × 28 B`，单页最多 8 条 = 233 B ≤ 235 B）**：
+
+| `payload` 索引 | type | 字段 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `0` | u8 | `status` | `0x00 OK` |
+| `1..4` | u32 | `index_version` | `JNL1` 目录单调版本号（与 Status 128 B 扩展 `archive_index_ver` 一致） |
+| `5` | u8 | `total_days_lo` | `total_days & 0xFF`（总归档天数低 8 位） |
+| `6` | u8 | `returned_days` | 本页返回的条目数（`0..8`） |
+| `7` | u8 | `start_idx_lo` | `start_idx & 0xFF`（本页起始索引低 8 位） |
+| `8` | u8 | `high_nibbles` | **12-bit 高半字节扩展**（原保留字节）：低 4 位 `bits[3:0] = (total_days >> 8) & 0x0F`，高 4 位 `bits[7:4] = (start_idx >> 8) & 0x0F` |
+| `9 .. 9+28N-1` | entry×N | `entries[]` | 每条 28 字节小端：`u32 day_id`（`YYYYMMDD`）、`u32 flash_offset`、`u32 package_len`、`u32 record_count`、`u32 traj_crc32`、`u32 first_seq_id`、`u16 codec_id`、`u16 flags` |
+
+**12-bit 还原与向后兼容性**：
+- 新主机还原公式：
+  - `total_days = payload[5] | ((payload[8] & 0x0F) << 8)`（范围 `0..4095`）
+  - `start_idx  = payload[7] | (((payload[8] >> 4) & 0x0F) << 8)`（范围 `0..4095`）
+- 当 `total_days < 256` 且 `start_idx < 256` 时 `payload[8]` 恒为 `0x00`，只读 `payload[5]`/`payload[7]` 且期望 `payload[8] == 0` 的旧版客户端完全兼容。
+- 翻页条件：循环以 `next_start = start_idx + returned_days` 发送 2 B `u16` 请求，直至 `returned_days == 0` 或 `next_start >= total_days`。
 
 ## 7. 版本策略
 

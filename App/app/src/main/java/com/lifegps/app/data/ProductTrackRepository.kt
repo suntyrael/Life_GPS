@@ -3,10 +3,12 @@ package com.lifegps.app.data
 
 import android.content.Context
 import com.lifegps.app.ble.BleDebugRepository
+import com.lifegps.app.ble.SyncForegroundService
 import com.lifegps.core.data.ConfigTlvCodec
 import com.lifegps.core.data.DeviceConfig
 import com.lifegps.core.data.ExportFormat
 import com.lifegps.core.data.LocalDayStore
+import com.lifegps.core.data.PoiExportMeta
 import com.lifegps.core.data.RemoteDayIndexEntry
 import com.lifegps.core.data.SyncChannel
 import com.lifegps.core.data.SyncCommandReply
@@ -20,7 +22,16 @@ import com.lifegps.core.model.SyncProgress
 import com.lifegps.core.protocol.DataFrame
 import com.lifegps.core.protocol.GeneratedProtocol
 import com.lifegps.core.protocol.TrajectoryRecord
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -30,6 +41,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Product-tier offline-first repository uniting [LocalDayStore] (`.lgd`/`.lgs`),
@@ -93,7 +106,25 @@ class ProductTrackRepository(
     fun triggerSync() {
         if (syncProgress.value.running) return
         scope.launch {
-            com.lifegps.app.ble.SyncForegroundService.start(appContext, "正在连接并同步 Life_GPS 轨迹…")
+            SyncForegroundService.start(appContext, "正在连接并同步 Life_GPS 轨迹…")
+            val progressJob = launch {
+                var lastText: String? = null
+                var lastPct = Int.MIN_VALUE
+                syncEngine.progress.collect { p ->
+                    if (!p.running) return@collect
+                    val pct = if (p.totalBytes > 0L) {
+                        ((p.receivedBytes * 100L) / p.totalBytes).toInt().coerceIn(0, 100)
+                    } else {
+                        -1
+                    }
+                    val text = p.stage.ifBlank { "正在同步 Life_GPS 轨迹…" }
+                    if (text != lastText || pct != lastPct) {
+                        lastText = text
+                        lastPct = pct
+                        SyncForegroundService.update(appContext, text, pct)
+                    }
+                }
+            }
             try {
                 val tzMin = _deviceConfig.value.tzOffsetMin
                 val watermark = indexDb.getLastSyncedSeqId()
@@ -139,7 +170,8 @@ class ProductTrackRepository(
                 _statusMessage.value = result.error
                     ?: "同步完成：${result.liveRecordsSynced} 条记录，${result.archivedDaysDownloaded} 个日包"
             } finally {
-                com.lifegps.app.ble.SyncForegroundService.stop(appContext)
+                progressJob.cancel()
+                SyncForegroundService.stop(appContext)
             }
         }
     }
@@ -250,12 +282,186 @@ class ProductTrackRepository(
     suspend fun exportDayToCache(dayId: Int, format: ExportFormat): File? = withContext(Dispatchers.IO) {
         val records = dayStore.loadDayRecords(dayId)
         if (records.isEmpty()) return@withContext null
+        val poiMetaBySeq = indexDb.listPois(dayId).associate { poi ->
+            poi.seqId to PoiExportMeta(title = poi.title, note = poi.note)
+        }
         val exportDir = File(appContext.cacheDir, "exports").apply { mkdirs() }
         val file = File(exportDir, "lifegps_${dayId}.${format.extension}")
         file.bufferedWriter(Charsets.UTF_8).use { writer ->
-            TrackExporter.export(format, "Life_GPS $dayId", records, writer)
+            TrackExporter.export(format, "Life_GPS $dayId", records, writer, poiMetaBySeq)
         }
         file
+    }
+
+    /**
+     * Exports all local `.lgd`/`.lgs` day files (under `days/<filename>`) and POI annotations
+     * (`pois.json`) into a standard ZIP archive. Returns the count of distinct days backed up.
+     */
+    suspend fun exportBackupZip(outputStream: OutputStream): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val rawFiles = dayStore.listRawDayFiles()
+            val allPois = indexDb.listAllPois()
+            val distinctDayIds = LinkedHashSet<Int>()
+
+            ZipOutputStream(BufferedOutputStream(outputStream)).use { zos ->
+                for (file in rawFiles) {
+                    file.name.substringBefore('.').toIntOrNull()?.let { distinctDayIds.add(it) }
+                    zos.putNextEntry(ZipEntry("days/${file.name}"))
+                    file.inputStream().use { input -> input.copyTo(zos) }
+                    zos.closeEntry()
+                }
+
+                val poisArray = JSONArray()
+                for (poi in allPois) {
+                    poisArray.put(
+                        JSONObject().apply {
+                            put("dayId", poi.dayId)
+                            put("seqId", poi.seqId)
+                            put("timestampMs", poi.timestampMs)
+                            put("latitude", poi.latitude)
+                            put("longitude", poi.longitude)
+                            put("altitudeM", poi.altitudeM)
+                            put("floorLevel", poi.floorLevel)
+                            put("title", poi.title)
+                            put("note", poi.note)
+                        },
+                    )
+                }
+                zos.putNextEntry(ZipEntry(BACKUP_POIS_ENTRY))
+                zos.write(poisArray.toString().toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+            }
+
+            Result.success(distinctDayIds.size)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            Result.failure(t)
+        }
+    }
+
+    /**
+     * Restores local `.lgd`/`.lgs` day files and `pois.json` annotations from a ZIP backup,
+     * rejecting path traversal / oversized entries, and refreshes the local SQLite index.
+     * Returns the count of distinct days imported.
+     */
+    suspend fun importBackupZip(inputStream: InputStream): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val importedDayIds = LinkedHashSet<Int>()
+            var poisJsonBytes: ByteArray? = null
+            var entryCount = 0
+
+            ZipInputStream(BufferedInputStream(inputStream)).use { zis ->
+                while (true) {
+                    val entry = zis.nextEntry ?: break
+                    entryCount++
+                    if (entryCount > MAX_ZIP_ENTRIES) {
+                        throw IllegalArgumentException("备份包条目数超过上限 ($MAX_ZIP_ENTRIES)")
+                    }
+                    val name = entry.name
+                    val unsafePath = entry.isDirectory ||
+                        name.startsWith("/") ||
+                        name.startsWith("\\") ||
+                        name.contains("..") ||
+                        name.contains("\\")
+                    if (!unsafePath) {
+                        when {
+                            name == BACKUP_POIS_ENTRY -> {
+                                poisJsonBytes = readBoundedBytes(zis, MAX_ZIP_ENTRY_BYTES)
+                            }
+                            else -> {
+                                val match = BACKUP_DAY_ENTRY_REGEX.matchEntire(name)
+                                if (match != null) {
+                                    val fileName = match.groupValues[1]
+                                    val bytes = readBoundedBytes(zis, MAX_ZIP_ENTRY_BYTES)
+                                    if (dayStore.importRawFile(fileName, bytes)) {
+                                        fileName.substringBefore('.').toIntOrNull()?.let { importedDayIds.add(it) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    zis.closeEntry()
+                }
+            }
+
+            if (entryCount == 0) {
+                throw IllegalArgumentException("无效或空的备份 ZIP 文件")
+            }
+
+            for (dayId in importedDayIds) {
+                dayStore.summarizeDay(dayId)?.let { indexDb.upsertDaySummary(it) }
+                for (r in dayStore.loadDayRecords(dayId)) {
+                    if (r.isPoi) {
+                        indexDb.upsertPoi(
+                            PoiRecord(
+                                id = 0L,
+                                dayId = dayId,
+                                seqId = r.seqId,
+                                timestampMs = r.unixEpochMs,
+                                latitude = r.latitudeDeg,
+                                longitude = r.longitudeDeg,
+                                altitudeM = r.altitudeM,
+                                floorLevel = r.floorLevel,
+                                title = "POI #${r.seqId}",
+                            ),
+                        )
+                    }
+                }
+            }
+
+            poisJsonBytes?.let { raw ->
+                val arr = JSONArray(String(raw, Charsets.UTF_8))
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val dayId = obj.optInt("dayId", 0)
+                    val seqId = obj.optLong("seqId", -1L)
+                    if (dayId <= 0 || seqId < 0L) continue
+                    val lat = obj.optDouble("latitude", 0.0).let { if (it.isFinite()) it else 0.0 }
+                    val lon = obj.optDouble("longitude", 0.0).let { if (it.isFinite()) it else 0.0 }
+                    val title = obj.optString("title", "").ifBlank { "POI #$seqId" }
+                    val note = obj.optString("note", "")
+                    indexDb.restorePoi(
+                        PoiRecord(
+                            id = 0L,
+                            dayId = dayId,
+                            seqId = seqId,
+                            timestampMs = obj.optLong("timestampMs", 0L),
+                            latitude = lat,
+                            longitude = lon,
+                            altitudeM = obj.optInt("altitudeM", 0),
+                            floorLevel = obj.optInt("floorLevel", 0),
+                            title = title,
+                            note = note,
+                        ),
+                    )
+                }
+            }
+
+            _days.value = indexDb.listDaySummaries()
+            _pois.value = indexDb.listPois()
+            Result.success(importedDayIds.size)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            Result.failure(t)
+        }
+    }
+
+    private fun readBoundedBytes(input: InputStream, maxBytes: Int): ByteArray {
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        var total = 0
+        while (true) {
+            val read = input.read(buf)
+            if (read == -1) break
+            total += read
+            if (total > maxBytes) {
+                throw IllegalArgumentException("备份条目超过大小上限 ($maxBytes B)")
+            }
+            out.write(buf, 0, read)
+        }
+        return out.toByteArray()
     }
 
     fun clearStatusMessage() {
@@ -265,5 +471,12 @@ class ProductTrackRepository(
     fun close() {
         scope.cancel()
         indexDb.close()
+    }
+
+    private companion object {
+        const val BACKUP_POIS_ENTRY = "pois.json"
+        const val MAX_ZIP_ENTRY_BYTES = 32 * 1024 * 1024
+        const val MAX_ZIP_ENTRIES = 4096
+        val BACKUP_DAY_ENTRY_REGEX = Regex("^days/(\\d{8}\\.(lgd|lgs))$")
     }
 }

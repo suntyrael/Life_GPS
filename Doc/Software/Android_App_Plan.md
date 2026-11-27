@@ -49,8 +49,8 @@
 | **Life_GPS 2020 Epoch + 亚秒毫秒 + seq_id** | 需要统一时间工具与设备时钟漂移校正；`seq_id` 用于断点续传与去重 |
 | **32B 记录含 CRC8，日包含 CRC32** | 每块/每天校验后才提交；损坏可重传，不污染本地库 |
 | **夜间 delta + heatshrink 压缩归档，暂存区会被擦除** | **同步必须走“归档日包 + 当日暂存”双通道**；不能只按 seq 线性拉取历史 |
-| **Flash AES-128-CTR 静态加密，ECDH + PIN 导出** | 设备侧解密后经 BLE 下发；App 侧仍需 Keystore + 本地加密，导出需生物识别 |
-| **Zephyr RTOS / nRF Connect SDK** | OTA 选 **MCUboot + SMP（mcumgr）**；**内部 slot0 896KB + 外部 Flash 1MB slot1**；外部其余 **63MB 只存轨迹/归档**；App 镜像预算 **860KB** |
+| **个人自用安全基线（Q2=A）：BLE LESC 绑定 + 明文 `LGD1` + App 本地 ZIP 备份/恢复** | 设备与 App 间依靠 BLE LESC 链路加密绑定；日包以明文 `LGD1` 存储便于排障与跨手机 ZIP 备份/恢复；CRACEN Flash 静态加密与 QR Claim 列为可选企业/加固扩展 |
+| **Zephyr RTOS / nRF Connect SDK** | OTA 选 **MCUboot + SMP（mcumgr）**；最终布局以 [`Firmware/docs/PARTITIONS.md`](../../Firmware/docs/PARTITIONS.md) 为准（内部 RRAM 双槽 `slot0/slot1` 各 712KB，外部 NOR 全量用于轨迹/归档） |
 | **DEBUG_UART 115200（7P 排针）** | Android 通过 USB-C OTG + USB-TTL（推荐 CP2102N）做早期 bring-up；产品期以 BLE Log 为主 |
 | **仅 Android，国内为主** | 不依赖 GMS；**允许地图瓦片联网并做磁盘/LRU 缓存**，可选离线区域；轨迹数据仍只存本地，不上传 |
 | **单人软硬件开发** | App 与固件不能真正并行；调试工具优先、产品 UI 后置；CI 必须按路径分流，避免互相拖慢 |
@@ -63,9 +63,9 @@
 | # | 决策点 | 推荐方案 | 备选 | 理由 / 备注 |
 | :--- | :--- | :--- | :--- | :--- |
 | D1 | BLE 栈 | **Nordic Android-BLE-Library** + 协程/Flow 封装 | Kable、RxAndroidBle、原生 API | 串行化 GATT 队列、MTU/PHY/重连成熟；与 nRF 生态一致 |
-| D2 | OTA | **MCUboot + SMP over BLE（mcumgr-ble）**；内部 slot0 896KB + 外部 Flash 1MB slot1 | Nordic Secure DFU（仅 nRF5 SDK） | 外部 64MB = 63MB 轨迹 + 1MB OTA；需 M1 POC 验证跨器件 swap/DPD；镜像预算 860KB |
-| D3 | 地图 | **MapLibre + OSM/OpenFreeMap/PMTiles**，高德作为可选适配器 | 高德/腾讯/百度 SDK | 免 key、可离线、WGS-84 原生；国内商用再评估高德合规与配额 |
-| D4 | 坐标 | 内部一律 **WGS-84**；仅渲染层转 GCJ-02 | 全库 GCJ-02 | 避免污染原始数据；导出 GPX 必须 WGS-84 |
+| D2 | OTA | **MCUboot + SMP over BLE（mcumgr-ble）**；内部 RRAM 双槽（详见 `Firmware/docs/PARTITIONS.md`） | 外部 Flash slot1 | 兼容 32 MB/64 MB NOR 且无 DPD 变砖风险 |
+| D3 | 地图（Q3=A 瓦片-坐标成对） | **MapLibre Native + 双瓦片源切换**：WGS-84 源（Carto / OSM）配 WGS-84 轨迹；GCJ-02 源（AutoNavi / 高德）配 GCJ-02 渲染轨迹 | 商业原生地图 SDK | 免 key、零 GMS、支持磁盘缓存；底图与轨迹坐标系严格成对，**杜绝 300–600 m 偏移** |
+| D4 | 坐标 | 内部存储与导出（GPX/KML/GeoJSON）一律 **WGS-84**；渲染层仅在切换至 GCJ-02 底图（高德）时做只读投影转换 | 全库 GCJ-02 | 避免污染原始数据；严格与当前瓦片源坐标系配对，杜绝跨系错位 |
 | D5 | 本地存储 | **日包文件为真相源 + Room 元数据/索引**，不全量入 SQLite | 全量 Room 点表 | 200 万点全量入库体积/插入/查询都吃力；日包保留原始精度 |
 | D6 | 同步模型 | **App 主动拉取（pull）+ 游标/断点**，v1 单块请求，v1.1 滑动窗口 | 设备推送流 | 实现简单、天然背压、掉线可续；吞吐足够日同步 |
 | D7 | 调试通道 | 自研 Control/Data/Log/Telemetry + SMP Shell/FS | 只用 NUS 文本 | 二进制高效；SMP 复用现成工具 |
@@ -309,7 +309,7 @@ stateDiagram-v2
 magic "LGD1"        u32
 header_ver          u16
 codec               u16   (0=raw, 1=byte-delta + heatshrink)
-day_id              u32   (自 2020-01-01 的天数)
+day_id              u32   (YYYYMMDD 十进制整数，例如 20261126，与 protocol/lifegps_protocol.yaml、固件及 LocalDayStore.kt 一致)
 record_count        u32
 reserved0           u32   (必须为 0)
 traj_raw_len        u32
@@ -327,28 +327,26 @@ reserved            u32   (必须为 0)
 ```
 
 - **Delta 编码**：首条记录原样 32B；后续每条与上一条**逐字节模 256 差分**，再 heatshrink。App 需实现逆差分；Golden Vectors 必须覆盖跨 0xFF/0x00 回绕。
-- heatshrink 参数（window 8/10、lookahead）必须写死并与固件一致；App 侧移植解码器（约 300 行），单测覆盖真实日包。
-- 日包文件在 App 侧再加一层 **AES-256-GCM** 封装（`LGDE` magic + nonce + tag），密钥在 Keystore。
-- **开放问题**：`altitude` 是 MSL 还是 HAE？必须由固件明确，否则地图海拔剖面会系统性偏差。
+- heatshrink 参数固定为 `window_sz2 = 8`、`lookahead_sz2 = 4`（与 `protocol/lifegps_protocol.yaml` 和固件 `archive_codec.c` 一致）；单日首次归档 ≤256 条使用 `codec=1`（Byte-Delta + Heatshrink），超 256 条或当日追加合并使用 `codec=0`（无截断流式 `RAW`），App 解码器同时支持 `codec=0/1`。
+- **存储口径（Q2=A）**：面向个人自用场景，设备外部 NOR 与 App 本地存储均直接使用**明文 `LGD1`**（依赖设备侧 BLE LESC 绑定保护传输链路、手机系统沙盒保护本地文件），便于排障与无密钥丢失风险的跨手机 ZIP 备份恢复；应用层 `LGDE` AES-GCM 封装列为可选未来加固项。
+- **高程口径（已确认）**：32 B 轨迹记录中的 `altitude` 统一为 **MSL 平均海平面海拔**（`ALT_SRC=0` 时为 GNSS `hMSL`，`ALT_SRC=1` 时为 BMP388 气压融合 MSL 海拔，非椭球高 HAE；椭球高仅在 116/128 B 实时 Status 帧 `height_mm` 独立暴露）。
 
 ### 5.7 时间、坐标与单位
 
-- 时间：`Instant = 2020-01-01T00:00:00Z + timestamp 秒 + subsecond_ms`；显示用手机时区。
+- 时间：`Instant = 2020-01-01T00:00:00Z + timestamp 秒 + subsecond_ms`；`SET_TIME (0x11)` 线格式为 8 B `[u32 epoch_2020_s, u16 subsec_ms, i16 tz_offset_min]`（见 [BLE_Wire_v1.md](BLE_Wire_v1.md) §6.10）。
 - 设备 RTC 会漂移：每次同步记录 `(device_time, phone_time)`，App 以**分段线性偏移**校正显示；**永不改写原始时间戳**。UI 提供“原始/校正”切换。
-- 坐标：存储 `int32 度×1e7`，内部一律 WGS-84；仅在高德/腾讯底图上渲染时转 GCJ-02，导出永不转换。
+- 坐标与底图严格成对（**Q3=A**）：轨迹存储与导出（GPX/KML/GeoJSON/CSV）内部一律 **WGS-84**（`int32 度×1e7`）；地图渲染层按所选瓦片源自动成对切换——**Carto / OSM（WGS-84 瓦片）叠加 WGS-84 轨迹**，**AutoNavi / 高德（GCJ-02 瓦片）同步将轨迹渲染坐标转换为 GCJ-02**，从机制上杜绝底图与轨迹跨系叠加造成的 **300–600 m 偏移**。
 - 速度 `cm/s`、航向 `0.1°`、HDOP `0.1`、楼层 `int8`（0=地面，负=地下）。
 - 电量：设备上报 `%` 与 `mV`；App 不做二次积分，仅展示与趋势。
 
-### 5.8 配对、认证与密钥
+### 5.8 配对、安全基线与换机迁移（Q2=A 个人自用口径）
 
-Android 的 LE Secure Connections **OOB 配对没有公开 API**，设备又无屏幕，因此采用：
+本项目当前优先面向**个人自用**，在可靠性、零密钥锁死风险与基础隐私保护之间采用务实基线（**Q2=A**）：
 
-1. **出厂 QR 标签**：`LGPS:1:<device_id>:<X25519_pub_b64>:<claim_code>`。
-2. 首次连接：Just Works 绑定（链路加密）→ App 用 QR 中的设备公钥做挑战响应 → 设备记录 App 公钥（claim）。
-3. 后续连接：绑定 + `AUTH_BEGIN/AUTH_OK` 挑战响应；失败则要求按键 3s 进入重配对窗口。
-4. 恢复出厂清除绑定与 App 公钥；换手机需重新 claim（可设计“导出恢复码”）。
-5. **威胁模型要写清**：Just Works 绑定无法完全防配对期 MITM；QR 公钥 + claim 窗口把风险限制在“首次配对时设备已被替换/标签被拍照”。高安全场景后续可加 LED 闪烁指纹确认。
-6. App 侧密钥：Android Keystore（优先 StrongBox）；数据库口令随机生成并由 Keystore 包裹；禁止备份密钥；导出需 BiometricPrompt。
+1. **链路安全（BLE LESC Bonding）**：长按设备 `KEY1` 3 s 开启 60 s 配对窗口，手机与固件通过标准 **BLE LE Secure Connections (LESC)** 完成绑定与链路加密；绑定信息持久化在 nRF54L15 内部 RRAM `storage_partition`（Zephyr ZMS）。
+2. **数据格式（明文 `LGD1`）**：板载 NOR 与手机 App 均保存标准明文 `LGD1` 日包（带 Header CRC-16 + 轨迹 CRC-32 完整性校验），避免个人用户因忘记口令、重装系统或换机导致历史轨迹永久不可读。
+3. **跨手机迁移与恢复**：通过 App 内置 **本地 ZIP 备份 / 恢复**（打包 `days/*.lgd`、索引元数据与 POI 备注）完成换机迁移；新手机长按 `KEY1` 3 s 与设备重新完成 BLE 绑定即可继续增量同步，无需出厂 QR 标签或恢复码。
+4. **未来可选企业/加固扩展（非当前阻塞项）**：若后续面向高敏感或商业分发场景，再作为可选项追加出厂 QR 公钥 Claim（`X25519` 挑战响应）、板载 CRACEN AES-128-CTR Flash 静态加密及 App Keystore/SQLCipher 本地密文封装。
 
 ### 5.9 OTA（Zephyr + MCUboot：内部 slot0 + 外部 Flash slot1）
 
@@ -459,15 +457,16 @@ Room（SQLCipher）只存**元数据与索引**：
 - 每日生成 Douglas-Peucker 简化折线（容差按 zoom 分级，例如 5m/15m/50m），存入 `days.simplifiedPolyline`。
 - 视口查询用 bbox 索引；全国/全球视图只画简化线；zoom ≥14 且选中单日时解码原始点。
 - 轨迹按 `status_flags` 分段渲染：GNSS 实线、PDR 虚线/琥珀色、POI 图钉、磁异常段红色警示、静止段淡化。
-- 瓦片：MapLibre 在线瓦片 + 磁盘/LRU 缓存 + 可选离线区域；弱网/无网优先用已缓存区域；**只有地图瓦片请求联网**，轨迹不上传。
+- **瓦片源与坐标系成对（Q3=A）**：MapLibre Native 提供两套成对底图预设——**WGS-84 瓦片源（Carto / OSM）**直接叠加 WGS-84 轨迹，**GCJ-02 瓦片源（AutoNavi / 高德）**同步将轨迹渲染坐标转为 GCJ-02，确保底图与轨迹永不出现 300–600 m 偏移；在线瓦片通过内置 SQLite/磁盘缓存与可选离线区域支持弱网浏览，**只有地图瓦片请求联网**，轨迹不上传。
 
 ### 6.3 加密与备份
 
-- 日包：AES-256-GCM，每文件随机 nonce；密钥在 Keystore（StrongBox 优先）。
-- Room：SQLCipher，口令 32B 随机数由 Keystore 包裹；`android:allowBackup=false`，排除密钥与数据库。
-- 导出：默认明文 GPX/KML/GeoJSON（用户明确操作 + 生物识别）；可生成“脱敏导出”（裁剪起终点、家庭半径模糊）。
-- 加密备份：zip（日包 + Room 导出 JSON + 设备元数据），口令由用户设置或恢复码派生；支持跨手机恢复。
-- 应用锁：BiometricPrompt；最近任务缩略图可选 `FLAG_SECURE`。
+- **个人自用默认口径（Q2=A）**：
+  - **传输层**：BLE LESC 绑定加密（长按 `KEY1` 3 s 开启 60 s 配对窗口）。
+  - **日包与本地库**：设备外部 NOR 与 App 本地目录均采用标准**明文 `LGD1`**（依赖 Android 应用私有沙盒与 `android:allowBackup=false` 保护），避免因设备更换或密钥遗失造成历史轨迹永久锁定。
+  - **本地 ZIP 备份 / 恢复**：App 提供一键导出与导入本地 ZIP 归档包（含全部 `days/*.lgd`、日索引/POI 元数据），支持跨手机无损迁移与电脑端归档。
+  - **导出**：明文 GPX / KML / GeoJSON / CSV（统一 WGS-84，不混入 GCJ-02 偏移）。
+- **可选未来加固扩展（企业/高敏感场景）**：Keystore 包裹的 `LGDE` AES-256-GCM 日包封装、SQLCipher 数据库加密、BiometricPrompt 应用锁与 `FLAG_SECURE` 截屏防护。
 
 ### 6.4 导出格式
 
@@ -842,8 +841,8 @@ gantt
 
 | # | 决策 | 结论 | 状态 |
 | :--- | :--- | :--- | :--- |
-| 1 | 地图底图 | **MapLibre + OSM/OpenFreeMap/PMTiles**；高德作为可选适配器（渲染层转 GCJ-02） | ✅ 已确认 |
-| 2 | OTA | **MCUboot + SMP（mcumgr）**；内部 slot0 896KB + 外部 Flash 1MB slot1；其余 63MB 轨迹；镜像预算 860KB | ✅ 已确认 |
+| 1 | 地图底图（Q3=A） | **MapLibre Native 成对瓦片源**：WGS-84（Carto / OSM）配 WGS-84 轨迹；GCJ-02（AutoNavi / 高德）配 GCJ-02 渲染轨迹，杜绝 300–600 m 偏移 | ✅ 已确认 |
+| 2 | OTA | **MCUboot + SMP（mcumgr）**；内部 RRAM 双槽（`slot0/slot1` 各 712KB，外部 NOR 全量存轨迹/归档，详见 `Firmware/docs/PARTITIONS.md`） | ✅ 已确认 |
 | 3 | 最低 Android | **minSdk 26（Android 8.0）**，target/compile 36 | ✅ 已确认 |
 | 4 | 分发 | 先内部 APK，后国内应用商店 + 可选 Google Play | ✅ 已确认 |
 | 5 | 仓库/构建 | **单仓 Monorepo + GitHub Actions 全量编译**（固件/App/协议/文档/Release） | ✅ 已确认 |

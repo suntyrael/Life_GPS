@@ -26,9 +26,12 @@
 LOG_MODULE_REGISTER(lgps_power, LOG_LEVEL_INF);
 
 /*
- * Nine slow blinks (three colours x on/off) plus a small margin.
+ * Compact shutdown sequence (3 colours x 550 ms = 1.65 s) plus margin, and
+ * fast critical low-battery sequence (5 x 200 ms = 1.0 s) plus margin.
  */
-#define SHUTDOWN_SEQUENCE_MS (3U * 3U * 2U * 500U + 500U)
+#define SHUTDOWN_SEQUENCE_MS 2000U
+#define CRITICAL_SHUTDOWN_MS 1150U
+#define LOW_WARN_INTERVAL_MS 30000U
 /*
  * Hold duration required on KEY1_POI or KEY2_MODE after waking from System OFF
  * to reject accidental pocket bumps (Q1=A: 2.5 s wake-confirm hold).
@@ -44,6 +47,10 @@ static struct lgps_power_sm_logic sm_logic;
 static bool shutdown_pending;
 static uint8_t last_soc_pct = LGPS_BATT_SOC_UNKNOWN;
 static bool last_charging;
+static bool last_gnss_fix;
+static bool last_pdr_active;
+static uint32_t last_low_warn_ms;
+static bool low_warn_sent;
 static struct k_work_delayable shutdown_work;
 static lgps_power_poi_cb_t poi_callback;
 static lgps_power_pairing_cb_t pairing_callback;
@@ -92,8 +99,11 @@ static void configure_wake_keys_for_poweroff(void)
 	}
 }
 
-static void schedule_shutdown_locked(void)
+static void schedule_shutdown_locked(bool critical)
 {
+	enum lgps_led_pattern pattern;
+	uint32_t delay_ms;
+
 	if (shutdown_pending) {
 		return;
 	}
@@ -101,8 +111,15 @@ static void schedule_shutdown_locked(void)
 	shutdown_pending = true;
 	lgps_power_logic_request_shutdown(&sm_logic);
 	(void)lgps_led_off_all();
-	(void)lgps_led_play(LGPS_LED_PATTERN_SHUTDOWN_CONFIRM);
-	(void)k_work_schedule(&shutdown_work, K_MSEC(SHUTDOWN_SEQUENCE_MS));
+	if (critical) {
+		pattern = LGPS_LED_PATTERN_CRITICAL_OFF;
+		delay_ms = CRITICAL_SHUTDOWN_MS;
+	} else {
+		pattern = LGPS_LED_PATTERN_SHUTDOWN_CONFIRM;
+		delay_ms = SHUTDOWN_SEQUENCE_MS;
+	}
+	(void)lgps_led_play(pattern);
+	(void)k_work_schedule(&shutdown_work, K_MSEC(delay_ms));
 }
 
 static void enter_system_off(void)
@@ -203,35 +220,68 @@ static void shutdown_work_handler(struct k_work *work)
 
 static void on_key(enum lgps_key_id key, enum lgps_key_event_type event, uint32_t held_ms)
 {
-	bool call_poi = false;
-	bool call_pairing = false;
+	lgps_power_poi_cb_t poi_cb = NULL;
+	lgps_power_pairing_cb_t pairing_cb = NULL;
 
 	k_mutex_lock(&power_lock, K_FOREVER);
 
+	if (shutdown_pending) {
+		k_mutex_unlock(&power_lock);
+		return;
+	}
+
 	switch (event) {
+	case LGPS_KEY_EVENT_DUAL_POWER_OFF:
+		LOG_INF("dual-key held %u ms -> power off sequence", held_ms);
+		schedule_shutdown_locked(false);
+		break;
+
 	case LGPS_KEY_EVENT_LONG_PRESS:
 		LOG_INF("%s held %u ms -> power off sequence",
 			key == LGPS_KEY_POI ? "KEY1_POI" : "KEY2_MODE", held_ms);
-		schedule_shutdown_locked();
+		schedule_shutdown_locked(false);
 		break;
 
 	case LGPS_KEY_EVENT_PAIRING_PRESS:
 		if (key == LGPS_KEY_POI) {
 			LOG_INF("BLE pairing hold detected (KEY1_POI, %u ms)", held_ms);
 			(void)lgps_led_play(LGPS_LED_PATTERN_SYNC);
-			call_pairing = true;
+			pairing_cb = pairing_callback;
 		}
 		break;
 
 	case LGPS_KEY_EVENT_PRESS:
-		if (key == LGPS_KEY_POI) {
-			LOG_INF("POI mark (KEY1_POI pressed)");
-			(void)lgps_led_play(LGPS_LED_PATTERN_FIX);
-			call_poi = true;
-		}
+		LOG_DBG("%s pressed", key == LGPS_KEY_POI ? "KEY1_POI" : "KEY2_MODE");
 		break;
 
 	case LGPS_KEY_EVENT_SHORT_PRESS:
+		if (key == LGPS_KEY_POI) {
+			LOG_INF("POI mark (KEY1_POI short press, held %u ms)", held_ms);
+			(void)lgps_led_play(LGPS_LED_PATTERN_FIX);
+			poi_cb = poi_callback;
+		} else if (key == LGPS_KEY_MODE) {
+			enum lgps_led_pattern batt_pattern;
+
+			if (last_soc_pct < 15U) {
+				batt_pattern = LGPS_LED_PATTERN_LOW_BATTERY;
+			} else if (last_soc_pct < 50U) {
+				batt_pattern = LGPS_LED_PATTERN_BATT_MID;
+			} else {
+				batt_pattern = LGPS_LED_PATTERN_BATT_HIGH;
+			}
+
+			LOG_INF("status query (KEY2_MODE, soc=%u%%, fix=%d, pdr=%d)",
+				last_soc_pct, last_gnss_fix ? 1 : 0, last_pdr_active ? 1 : 0);
+			(void)lgps_led_play(batt_pattern);
+			if (last_gnss_fix) {
+				(void)lgps_led_play(LGPS_LED_PATTERN_FIX);
+			} else if (last_pdr_active) {
+				(void)lgps_led_play(LGPS_LED_PATTERN_PDR);
+			}
+		}
+		break;
+
+	case LGPS_KEY_EVENT_MODE_HOLD:
 		if (key == LGPS_KEY_MODE) {
 			bool changed = lgps_power_logic_toggle_precision(
 				&sm_logic, lgps_diag_uptime_ms(), last_soc_pct, last_charging);
@@ -241,9 +291,8 @@ static void on_key(enum lgps_key_id key, enum lgps_key_event_type event, uint32_
 
 				LOG_INF("high precision mode %s (KEY2_MODE, held %u ms)",
 					hp ? "enabled" : "disabled", held_ms);
-				if (hp) {
-					(void)lgps_led_play(LGPS_LED_PATTERN_PRECISION);
-				}
+				(void)lgps_led_play(hp ? LGPS_LED_PATTERN_PRECISION
+						       : LGPS_LED_PATTERN_MODE_NORMAL);
 			} else {
 				LOG_WRN("HIGH_PRECISION refused (low battery %u%%)", last_soc_pct);
 				(void)lgps_led_play(LGPS_LED_PATTERN_LOW_BATTERY);
@@ -258,11 +307,11 @@ static void on_key(enum lgps_key_id key, enum lgps_key_event_type event, uint32_
 
 	k_mutex_unlock(&power_lock);
 
-	if (call_poi && (poi_callback != NULL)) {
-		poi_callback();
+	if (poi_cb != NULL) {
+		poi_cb();
 	}
-	if (call_pairing && (pairing_callback != NULL)) {
-		pairing_callback();
+	if (pairing_cb != NULL) {
+		pairing_cb();
 	}
 }
 
@@ -313,8 +362,14 @@ enum lgps_power_state lgps_power_tick(uint32_t now_ms, uint32_t steps_total, boo
 	cur = sm_logic.state;
 
 	if (sm_logic.system_off_requested && !shutdown_pending) {
-		LOG_WRN("critical battery (%u%%), entering System OFF", soc_pct);
-		schedule_shutdown_locked();
+		bool critical = !charging && (soc_pct <= LGPS_PWR_CRIT_BATT_OFF_SOC);
+
+		if (critical) {
+			LOG_WRN("critical battery (%u%%), entering System OFF", soc_pct);
+		} else {
+			LOG_INF("DEEP_SLEEP auto-off timeout reached, entering System OFF");
+		}
+		schedule_shutdown_locked(critical);
 	}
 	k_mutex_unlock(&power_lock);
 
@@ -346,16 +401,67 @@ int lgps_power_set_mode(enum lgps_power_state target)
 	ret = lgps_power_logic_set_mode(&sm_logic, target, lgps_diag_uptime_ms(), last_soc_pct,
 					last_charging);
 	if ((ret == 0) && (target == LGPS_PWR_SYSTEM_OFF)) {
-		schedule_shutdown_locked();
+		schedule_shutdown_locked(false);
 	}
 	k_mutex_unlock(&power_lock);
 
 	return ret;
 }
 
+void lgps_power_set_auto_off_min(uint16_t minutes)
+{
+	k_mutex_lock(&power_lock, K_FOREVER);
+	lgps_power_logic_set_auto_off_min(&sm_logic, minutes);
+	k_mutex_unlock(&power_lock);
+
+	LOG_INF("DEEP_SLEEP auto-off set to %u min", (unsigned int)minutes);
+}
+
+void lgps_power_update_status(bool gnss_fix_valid, bool pdr_active, uint16_t storage_permille)
+{
+	uint32_t now_ms = lgps_diag_uptime_ms();
+	enum lgps_power_state st;
+	bool prev_fix;
+	bool prev_pdr;
+	bool low_batt;
+	bool storage_full;
+
+	k_mutex_lock(&power_lock, K_FOREVER);
+
+	prev_fix = last_gnss_fix;
+	prev_pdr = last_pdr_active;
+	last_gnss_fix = gnss_fix_valid;
+	last_pdr_active = pdr_active;
+	st = sm_logic.state;
+
+	if (!shutdown_pending && ((st == LGPS_PWR_ACTIVE) || (st == LGPS_PWR_HIGH_PRECISION))) {
+		if (!prev_fix && gnss_fix_valid) {
+			(void)lgps_led_play(LGPS_LED_PATTERN_FIX);
+		}
+
+		if (!prev_pdr && pdr_active && !gnss_fix_valid && (st == LGPS_PWR_ACTIVE)) {
+			(void)lgps_led_play(LGPS_LED_PATTERN_PDR);
+		}
+
+		low_batt = !last_charging && (last_soc_pct <= 100U) && (last_soc_pct < 10U);
+		storage_full = (storage_permille >= 950U);
+
+		if ((low_batt || storage_full) &&
+		    (!low_warn_sent ||
+		     ((uint32_t)(now_ms - last_low_warn_ms) >= LOW_WARN_INTERVAL_MS))) {
+			low_warn_sent = true;
+			last_low_warn_ms = now_ms;
+			(void)lgps_led_play(LGPS_LED_PATTERN_LOW_BATTERY);
+		}
+	}
+
+	k_mutex_unlock(&power_lock);
+}
+
 int lgps_power_inject_key(enum lgps_key_id key, enum lgps_key_event_type event)
 {
-	if (key >= LGPS_KEY_COUNT) {
+	if (((unsigned int)key >= (unsigned int)LGPS_KEY_COUNT) ||
+	    ((unsigned int)event > (unsigned int)LGPS_KEY_EVENT_DUAL_POWER_OFF)) {
 		return -EINVAL;
 	}
 

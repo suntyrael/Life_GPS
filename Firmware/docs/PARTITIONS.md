@@ -32,20 +32,21 @@ nRF54L15 内置 **1524 KB RRAM**，而 Life_GPS 生产固件体积约 260–320 
 
 ## 3. 外部 SPI NOR 分区（32 MB W25Q256 / 64 MB W25Q512 动态兼容）
 
-外部 SPI NOR 挂在 `spi00`（8 MHz，CS `P2.05`，4 KB 扇区），所有模块均通过 `flash_get_page_info_by_offs` / `flash_get_size` 读取 SFDP 实际容量，**绝不硬编码 64 MB 地址**。
+外部 SPI NOR 挂在 `spi00`（8 MHz，CS `P2.05`，4 KB 扇区），所有模块均通过 `flash_get_page_info_by_offs` / `flash_get_size` 读取 SFDP 实际容量，**绝不硬编码 64 MB 地址**。自 M5 起 MCUboot `slot1_partition`（712 KB）位于内部 RRAM，外部 NOR 为 OTA 预留字节数为 **`0`**（`LGPS_EXT_FLASH_OTA_SLOT1_BYTES = 0`），整颗 32 MB / 64 MB 外部 NOR 容量全部服务于轨迹暂存、持久化参数与日归档。
 
 | 扇区号 | 字节偏移 | 大小 | 所属模块 | 策略与说明 |
 | :--- | :--- | :--- | :--- | :--- |
-| `0..15` | `0x00000..0x0FFFF` | 64 KB | `flash_ring.c` | 实时 32 B 轨迹环形缓冲区（每扇区 127 条 + 16 B 扇区头） |
-| `16` | `0x10000` | 4 KB | `calib_store.c` | 传感器标定记录（80 B append-only，51 槽/扇区，带 CRC-16） |
-| `17` | `0x11000` | 4 KB | `baro_store.c` | 气压基准记录（20 B append-only，204 槽/扇区，带 CRC-16） |
-| `18` | `0x12000` | 4 KB | `app_config_store.c` | 设备运行配置（Config TLV 全部 11 项，append-only + CRC-16） |
-| `19` | `0x13000` | 4 KB | 保留 | 故障日志 / 未来扩展保留扇区 |
-| `20..21` | `0x14000..0x15FFF` | 8 KB | `journal_store.c` | 按天归档目录双扇区 Ping-Pong 索引（`LIDX` 魔数 + 代际计数 + CRC-32） |
-| `22..END` | `0x16000..SFDP_SIZE` | ~31.9 MB（32M）或 ~63.9 MB（64M） | `journal_store.c` | `LGD1` 日归档包日志区（32 B Byte-Delta + Heatshrink W=8/L=4 压缩，带 CRC-32 与按需覆盖最旧日包） |
+| `0..15` | `0x00000..0x0FFFF` | 64 KB | `flash_ring.c` | 实时 32 B 轨迹环形暂存区（每扇区 127 条 + 16 B `TRAC` 扇区头，共 2032 条；>=75% 水位即 1524 条触发后台压缩刷盘） |
+| `16` | `0x10000..0x10FFF` | 4 KB | `calib_store.c` | 传感器标定记录（80 B append-only，51 槽/扇区，带 CRC-16） |
+| `17` | `0x11000..0x11FFF` | 4 KB | `baro_store.c` | 气压基准记录（20 B append-only，204 槽/扇区，带 CRC-16） |
+| `18..19` | `0x12000..0x13FFF` | 8 KB | `app_config_store.c` | 设备配置 TLV 存储区（`CFG1` 魔数，48 B append-only + CRC-16，覆盖全部 11 项 Config TLV；当前主写扇区 18，扇区 19 为配置扩展预留） |
+| `20..35` | `0x14000..0x23FFF` | 64 KB | `journal_store.c` | 按天归档目录 Bank A（`JNL1` 魔数 + 代际号 + CRC-16/CCITT-FALSE，每条目 28 B，最多 **2048 天 / ~5.6 年**） |
+| `36..51` | `0x24000..0x33FFF` | 64 KB | `journal_store.c` | 按天归档目录 Bank B（`JNL1` + CRC-16，与 Bank A 组成多扇区 Ping-Pong 原子切换，写完校验通过才切主） |
+| `52..END` | `0x34000..(SFDP_bytes - 1)` | 全量可用（~31.8 MB @ 32 MB 或 ~63.8 MB @ 64 MB；外部 OTA `slot1` 预留 = `0`） | `journal_store.c` | 明文 `LGD1` 日归档包区（4 KB 对齐；单日首归档 ≤256 条采用 32 B Byte-Delta + Heatshrink W=8/L=4 压缩，超 256 条或追加合并采用无截断流式 `RAW`；含回读整包 CRC-32 校验与满盘最旧日包轮转回收） |
 
 ### 关键保护不变量
 
-- `calib_store`（16）、`baro_store`（17）、`app_config_store`（18）、`journal_index`（20..21）均通过 `BUILD_ASSERT` 保证互不重叠且不侵入轨迹环（0..15）。
-- `FACTORY_RESET`（`0x51`）会统一擦除配置、标定、气压基准、轨迹环与日归档索引，使设备回到出厂默认状态。
+- `calib_store`（16）、`baro_store`（17）、`app_config_store`（18..19）、`journal_index` Bank A/B（20..35 / 36..51）与 `LGD1` 数据区起点（`0x34000`）均通过编译期常量与 `BUILD_ASSERT` 保证互不重叠且不侵入轨迹环（0..15）。
+- 外部 NOR 的 `ota_slot1_bytes` 固定为 `0`，`traj_bytes == flash_bytes`（由 SFDP 动态探测）；MCUboot `slot1_partition` 独占内部 RRAM `0x0C2000..0x173FFF`。
+- `FACTORY_RESET`（`0x51`）会统一擦除配置、标定、气压基准、轨迹环与双 Bank `JNL1` 日归档索引，使设备回到出厂默认状态。
 - 详细架构背景参见 [Dev_Log_code_by_agy.md](../../Doc/Software/Dev_Log_code_by_agy.md)。

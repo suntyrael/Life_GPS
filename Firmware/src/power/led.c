@@ -44,20 +44,21 @@ struct lgps_led_sequence {
 	.step_count = sizeof((const struct lgps_led_step[]){ __VA_ARGS__ }) / \
 		      sizeof(struct lgps_led_step) }
 
-/* README section 9.1: slow blink is 1 Hz, i.e. 500 ms on / 500 ms off. */
-#define SLOW_BLINK_ON_MS 500U
-#define SLOW_BLINK_OFF_MS 500U
+/* Q1=A compact boot/shutdown confirmation: 300 ms on / 250 ms off (~1.65 s total). */
+#define CONFIRM_BLINK_ON_MS 300U
+#define CONFIRM_BLINK_OFF_MS 250U
 #define FAST_BLINK_ON_MS 50U
+#define BATT_QUERY_PULSE_MS 150U
 
 static const struct lgps_led_sequence sequences[LGPS_LED_PATTERN_COUNT] = {
 	[LGPS_LED_PATTERN_BOOT_CONFIRM] = LED_STEPS(
-		{ BIT(LGPS_LED_RED), SLOW_BLINK_ON_MS, SLOW_BLINK_OFF_MS, 3 },
-		{ BIT(LGPS_LED_BLUE), SLOW_BLINK_ON_MS, SLOW_BLINK_OFF_MS, 3 },
-		{ BIT(LGPS_LED_GREEN), SLOW_BLINK_ON_MS, SLOW_BLINK_OFF_MS, 3 }),
+		{ BIT(LGPS_LED_RED), CONFIRM_BLINK_ON_MS, CONFIRM_BLINK_OFF_MS, 1 },
+		{ BIT(LGPS_LED_BLUE), CONFIRM_BLINK_ON_MS, CONFIRM_BLINK_OFF_MS, 1 },
+		{ BIT(LGPS_LED_GREEN), CONFIRM_BLINK_ON_MS, CONFIRM_BLINK_OFF_MS, 1 }),
 	[LGPS_LED_PATTERN_SHUTDOWN_CONFIRM] = LED_STEPS(
-		{ BIT(LGPS_LED_GREEN), SLOW_BLINK_ON_MS, SLOW_BLINK_OFF_MS, 3 },
-		{ BIT(LGPS_LED_BLUE), SLOW_BLINK_ON_MS, SLOW_BLINK_OFF_MS, 3 },
-		{ BIT(LGPS_LED_RED), SLOW_BLINK_ON_MS, SLOW_BLINK_OFF_MS, 3 }),
+		{ BIT(LGPS_LED_GREEN), CONFIRM_BLINK_ON_MS, CONFIRM_BLINK_OFF_MS, 1 },
+		{ BIT(LGPS_LED_BLUE), CONFIRM_BLINK_ON_MS, CONFIRM_BLINK_OFF_MS, 1 },
+		{ BIT(LGPS_LED_RED), CONFIRM_BLINK_ON_MS, CONFIRM_BLINK_OFF_MS, 1 }),
 	[LGPS_LED_PATTERN_FIX] = LED_STEPS(
 		{ BIT(LGPS_LED_GREEN), FAST_BLINK_ON_MS, FAST_BLINK_ON_MS, 2 }),
 	[LGPS_LED_PATTERN_BLE_READY] = LED_STEPS(
@@ -75,6 +76,15 @@ static const struct lgps_led_sequence sequences[LGPS_LED_PATTERN_COUNT] = {
 		{ BIT(LGPS_LED_RED) | BIT(LGPS_LED_GREEN), FAST_BLINK_ON_MS, 0U, 1 }),
 	[LGPS_LED_PATTERN_LOW_BATTERY] = LED_STEPS(
 		{ BIT(LGPS_LED_RED), 100U, 100U, 10 }),
+	[LGPS_LED_PATTERN_CRITICAL_OFF] = LED_STEPS(
+		{ BIT(LGPS_LED_RED), 100U, 100U, 5 }),
+	[LGPS_LED_PATTERN_MODE_NORMAL] = LED_STEPS(
+		{ BIT(LGPS_LED_GREEN), 250U, 0U, 1 }),
+	[LGPS_LED_PATTERN_BATT_HIGH] = LED_STEPS(
+		{ BIT(LGPS_LED_GREEN), BATT_QUERY_PULSE_MS, BATT_QUERY_PULSE_MS, 2 }),
+	[LGPS_LED_PATTERN_BATT_MID] = LED_STEPS(
+		{ BIT(LGPS_LED_RED) | BIT(LGPS_LED_GREEN), BATT_QUERY_PULSE_MS,
+		  BATT_QUERY_PULSE_MS, 2 }),
 };
 
 K_MSGQ_DEFINE(led_pattern_queue, sizeof(enum lgps_led_pattern), 4, 4);
@@ -83,10 +93,11 @@ K_MSGQ_DEFINE(led_pattern_queue, sizeof(enum lgps_led_pattern), 4, 4);
  * Cancellation token for the sequence that is currently being played.
  * lgps_led_off_all() increments it; the pattern thread compares its own snapshot
  * and aborts as soon as it differs. Without this the thread could only be stopped
- * at the end of a 9 s boot/shutdown confirmation, and the power state machine's
+ * at the end of a boot/shutdown confirmation, and the power state machine's
  * fixed wait would expire before the shutdown pattern even started.
  */
 static atomic_t led_generation;
+static atomic_t led_enabled = ATOMIC_INIT(1);
 
 /*
  * Semaphore pair:
@@ -242,12 +253,40 @@ static void led_thread(void *arg1, void *arg2, void *arg3)
 
 K_THREAD_DEFINE(lgps_led_thread, LED_STACK_SIZE, led_thread, NULL, NULL, NULL, LED_PRIORITY, 0, 0);
 
+static bool led_pattern_always_allowed(enum lgps_led_pattern pattern)
+{
+	switch (pattern) {
+	case LGPS_LED_PATTERN_BOOT_CONFIRM:
+	case LGPS_LED_PATTERN_SHUTDOWN_CONFIRM:
+	case LGPS_LED_PATTERN_CRITICAL_OFF:
+	case LGPS_LED_PATTERN_LOW_BATTERY:
+		return true;
+	default:
+		return false;
+	}
+}
+
+void lgps_led_set_enabled(bool enabled)
+{
+	(void)atomic_set(&led_enabled, enabled ? 1 : 0);
+	LOG_INF("routine status LED %s", enabled ? "enabled" : "disabled");
+}
+
+bool lgps_led_is_enabled(void)
+{
+	return atomic_get(&led_enabled) != 0;
+}
+
 int lgps_led_play(enum lgps_led_pattern pattern)
 {
 	enum lgps_led_pattern dropped;
 
-	if ((unsigned int)pattern >= LGPS_LED_PATTERN_COUNT) {
+	if ((unsigned int)pattern >= (unsigned int)LGPS_LED_PATTERN_COUNT) {
 		return -EINVAL;
+	}
+
+	if (!lgps_led_is_enabled() && !led_pattern_always_allowed(pattern)) {
+		return 0;
 	}
 
 	/* Newest request wins: drop the oldest queued pattern on overflow. */

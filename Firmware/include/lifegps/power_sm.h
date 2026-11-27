@@ -41,6 +41,12 @@ void lgps_power_on_motion_irq(uint32_t now_ms, uint32_t steps_total);
 /* Request mode change via BLE SET_MODE (0x10). */
 int lgps_power_set_mode(enum lgps_power_state target);
 
+/* Configure DEEP_SLEEP auto-power-off timeout in minutes (0 disables). */
+void lgps_power_set_auto_off_min(uint16_t minutes);
+
+/* Feed GNSS fix, PDR takeover, and storage permille for LED edge/periodic cues. */
+void lgps_power_update_status(bool gnss_fix_valid, bool pdr_active, uint16_t storage_permille);
+
 /* Inject synthetic key event via BLE BUTTON_EVENT (0x33). */
 int lgps_power_inject_key(enum lgps_key_id key, enum lgps_key_event_type event);
 

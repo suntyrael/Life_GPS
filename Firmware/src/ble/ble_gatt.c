@@ -542,6 +542,85 @@ static ssize_t config_read(struct bt_conn *conn, const struct bt_gatt_attr *attr
 	return bt_gatt_attr_read(conn, attr, buf, len, offset, tlv, (size_t)encoded);
 }
 
+static bool tlv_contains_tag(const uint8_t *tlv, size_t len, uint8_t target_tag)
+{
+	size_t pos = 0U;
+
+	if (tlv == NULL) {
+		return false;
+	}
+
+	while ((len - pos) >= 2U) {
+		uint8_t tag = tlv[pos];
+		uint8_t vlen = tlv[pos + 1U];
+
+		pos += 2U;
+		if ((len - pos) < vlen) {
+			break;
+		}
+		if (tag == target_tag) {
+			return true;
+		}
+		pos += vlen;
+	}
+
+	return false;
+}
+
+/*
+ * Apply all immediately-effective Config TLVs consistently for both GATT
+ * config_write() and Control SET_CONFIG (0x13). Nav TLVs (pdr_step_k_mm,
+ * mag_anomaly_ut) and archive_hour_utc are reloaded by main.c from app_config.
+ */
+static void apply_live_config(const struct lgps_app_config *prev_cfg,
+			      const struct lgps_app_config *cfg, const uint8_t *tlv, size_t len)
+{
+	if ((prev_cfg == NULL) || (cfg == NULL)) {
+		return;
+	}
+
+	lgps_gnss_apply_config(cfg->gnss_cold_timeout_s, cfg->gnss_rate_hz);
+	lgps_led_set_enabled(cfg->led_enable != 0U);
+	lgps_power_set_auto_off_min(cfg->auto_off_min);
+
+	if (tlv_contains_tag(tlv, len, LGPS_TLV_TZ_OFFSET_MIN) ||
+	    (cfg->tz_offset_min != prev_cfg->tz_offset_min)) {
+		int err = lgps_time_set_local_offset_s((int32_t)cfg->tz_offset_min * 60);
+
+		if (err < 0) {
+			LOG_WRN("tz_offset_min=%d apply failed (%d)", (int)cfg->tz_offset_min,
+				err);
+		}
+	}
+
+	if ((tlv_contains_tag(tlv, len, LGPS_TLV_RECORD_MODE) ||
+	     (cfg->record_mode != prev_cfg->record_mode)) &&
+	    (cfg->record_mode <= (uint8_t)LGPS_PWR_HIGH_PRECISION)) {
+		int err = lgps_power_set_mode((enum lgps_power_state)cfg->record_mode);
+
+		if (err < 0) {
+			LOG_WRN("record_mode=%u apply refused (%d)",
+				(unsigned int)cfg->record_mode, err);
+		}
+	}
+
+	if (IS_ENABLED(CONFIG_LGPS_BLE_LOG) &&
+	    (tlv_contains_tag(tlv, len, LGPS_TLV_LOG_LEVEL_DEFAULT) ||
+	     (cfg->log_level_default != prev_cfg->log_level_default))) {
+		int err = lgps_ble_log_set_level(cfg->log_level_default);
+
+		if (err < 0) {
+			LOG_WRN("log_level_default=%u apply failed (%d)",
+				(unsigned int)cfg->log_level_default, err);
+		}
+	}
+
+	if (!pairing_window_open && !link_up &&
+	    (cfg->ble_adv_interval_ms != prev_cfg->ble_adv_interval_ms)) {
+		restart_advertising_now();
+	}
+}
+
 static ssize_t config_write(struct bt_conn *conn, const struct bt_gatt_attr *attr, const void *buf,
 			    uint16_t len, uint16_t offset, uint8_t flags)
 {
@@ -572,11 +651,7 @@ static ssize_t config_write(struct bt_conn *conn, const struct bt_gatt_attr *att
 	}
 
 	lgps_app_config_get(&cfg);
-	lgps_gnss_apply_config(cfg.gnss_cold_timeout_s, cfg.gnss_rate_hz);
-	if (!pairing_window_open && !link_up &&
-	    (cfg.ble_adv_interval_ms != prev_cfg.ble_adv_interval_ms)) {
-		restart_advertising_now();
-	}
+	apply_live_config(&prev_cfg, &cfg, (const uint8_t *)buf, len);
 
 	return (ssize_t)len;
 }
@@ -770,6 +845,17 @@ static void status_from_fix(struct lgps_ble_status *status,
 		status->head_acc_cdd = narrow_u16(snap->fix.head_acc_1e5 / 1000U);
 		status->hdop_1e2 = snap->fix.hdop_1e2;
 		status->vdop_1e2 = snap->fix.vdop_1e2;
+	}
+
+	/* Appended sync/storage block (offsets 116..127). */
+	{
+		uint16_t day_count = lgps_archive_day_count();
+
+		status->archive_index_ver = lgps_archive_index_version();
+		status->last_seq_id = lgps_ring_last_seq_id();
+		status->work_mode = (uint8_t)lgps_power_get_state();
+		status->archive_days_count = (uint8_t)MIN(day_count, 255U);
+		status->storage_used_permille = lgps_archive_used_permille();
 	}
 }
 
@@ -1621,15 +1707,7 @@ static uint8_t cmd_set_config(const struct lgps_ble_cmd *cmd)
 	}
 
 	lgps_app_config_get(&cfg);
-	(void)lgps_time_set_local_offset_s((int32_t)cfg.tz_offset_min * 60);
-	lgps_gnss_apply_config(cfg.gnss_cold_timeout_s, cfg.gnss_rate_hz);
-	if (cfg.record_mode <= (uint8_t)LGPS_PWR_HIGH_PRECISION) {
-		(void)lgps_power_set_mode((enum lgps_power_state)cfg.record_mode);
-	}
-	if (!pairing_window_open && !link_up &&
-	    (cfg.ble_adv_interval_ms != prev_cfg.ble_adv_interval_ms)) {
-		restart_advertising_now();
-	}
+	apply_live_config(&prev_cfg, &cfg, cmd->payload, cmd->payload_len);
 
 	return LGPS_BLE_OK;
 }
@@ -2759,6 +2837,17 @@ int lgps_ble_init(void)
 	}
 
 	lgps_ble_log_backend_init();
+	if (IS_ENABLED(CONFIG_LGPS_BLE_LOG)) {
+		struct lgps_app_config cfg;
+		int log_err;
+
+		lgps_app_config_get(&cfg);
+		log_err = lgps_ble_log_set_level(cfg.log_level_default);
+		if (log_err < 0) {
+			LOG_WRN("boot log_level_default=%u invalid (%d)",
+				(unsigned int)cfg.log_level_default, log_err);
+		}
+	}
 
 	k_thread_create(&command_thread, command_stack, K_THREAD_STACK_SIZEOF(command_stack),
 			command_handler, NULL, NULL, NULL, LGPS_BLE_THREAD_PRIO, 0, K_NO_WAIT);

@@ -128,6 +128,21 @@ class TrackIndexDb(context: Context) : SQLiteOpenHelper(
         writableDatabase.insertWithOnConflict("pois", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
+    fun restorePoi(poi: PoiRecord) {
+        val cv = ContentValues().apply {
+            put("day_id", poi.dayId)
+            put("seq_id", poi.seqId)
+            put("timestamp_ms", poi.timestampMs)
+            put("latitude", poi.latitude)
+            put("longitude", poi.longitude)
+            put("altitude_m", poi.altitudeM)
+            put("floor_level", poi.floorLevel)
+            put("title", poi.title)
+            put("note", poi.note)
+        }
+        writableDatabase.insertWithOnConflict("pois", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
     fun updatePoiText(id: Long, title: String, note: String) {
         val cv = ContentValues().apply {
             put("title", title)
@@ -139,6 +154,8 @@ class TrackIndexDb(context: Context) : SQLiteOpenHelper(
     fun deletePoi(id: Long) {
         writableDatabase.delete("pois", "id = ?", arrayOf(id.toString()))
     }
+
+    fun listAllPois(): List<PoiRecord> = listPois(dayId = null)
 
     fun listPois(dayId: Int? = null): List<PoiRecord> {
         val list = ArrayList<PoiRecord>()

@@ -35,6 +35,8 @@ struct lgps_power_sm_logic {
 	uint32_t zupt_since_ms;
 	bool zupt_tracking;
 	uint32_t auto_sleep_ms;
+	uint16_t auto_off_min;
+	uint32_t deep_sleep_since_ms;
 	bool system_off_requested;
 };
 
@@ -56,7 +58,7 @@ bool lgps_power_logic_step(struct lgps_power_sm_logic *sm, const struct lgps_pow
 bool lgps_power_logic_on_motion_irq(struct lgps_power_sm_logic *sm, uint32_t now_ms,
 				    uint32_t steps_total);
 
-/* Toggle HIGH_PRECISION <-> ACTIVE (KEY2 short press). */
+/* Toggle HIGH_PRECISION <-> ACTIVE (KEY2 2 s hold). */
 bool lgps_power_logic_toggle_precision(struct lgps_power_sm_logic *sm, uint32_t now_ms,
 				       uint8_t soc_pct, bool charging);
 
@@ -64,10 +66,13 @@ bool lgps_power_logic_toggle_precision(struct lgps_power_sm_logic *sm, uint32_t 
 int lgps_power_logic_set_mode(struct lgps_power_sm_logic *sm, enum lgps_power_state target,
 			      uint32_t now_ms, uint8_t soc_pct, bool charging);
 
-/* Request shutdown (KEY1/KEY2 8 s hold). */
+/* Request shutdown (dual-key 3 s hold, single-key 8 s hold, or auto-off). */
 void lgps_power_logic_request_shutdown(struct lgps_power_sm_logic *sm);
 
 /* Configure stationary auto-sleep delay in milliseconds (0 disables auto-sleep). */
 void lgps_power_logic_set_auto_sleep_ms(struct lgps_power_sm_logic *sm, uint32_t delay_ms);
+
+/* Configure DEEP_SLEEP auto-power-off timeout in minutes (0 disables auto-off). */
+void lgps_power_logic_set_auto_off_min(struct lgps_power_sm_logic *sm, uint16_t minutes);
 
 #endif /* LIFEGPS_POWER_SM_LOGIC_H_ */

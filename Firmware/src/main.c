@@ -106,6 +106,31 @@ static atomic_t poi_button_pending = ATOMIC_INIT(0);
 static K_SEM_DEFINE(main_wake_sem, 0, 1);
 static enum lgps_power_state applied_power_state = LGPS_PWR_ACTIVE;
 static uint16_t persisted_pdr_k_mm;
+static uint16_t applied_pdr_k_mm;
+static uint16_t applied_mag_anomaly_ut;
+static float mag_ref_ut = EARTH_MAG_REF_UT;
+
+static void sync_runtime_nav_config(const struct lgps_app_config *cfg)
+{
+	if (cfg == NULL) {
+		return;
+	}
+
+	if ((cfg->pdr_step_k_mm != applied_pdr_k_mm) &&
+	    (cfg->pdr_step_k_mm >= 300U) && (cfg->pdr_step_k_mm <= 550U)) {
+		lgps_pdr_set_k(&pdr, (float)cfg->pdr_step_k_mm / 1000.0F);
+		applied_pdr_k_mm = cfg->pdr_step_k_mm;
+		persisted_pdr_k_mm = cfg->pdr_step_k_mm;
+		LOG_INF("PDR Weinberg K -> %u mm", (unsigned int)cfg->pdr_step_k_mm);
+	}
+
+	if ((cfg->mag_anomaly_ut != applied_mag_anomaly_ut) &&
+	    (cfg->mag_anomaly_ut >= 20U) && (cfg->mag_anomaly_ut <= 120U)) {
+		mag_ref_ut = (float)cfg->mag_anomaly_ut;
+		applied_mag_anomaly_ut = cfg->mag_anomaly_ut;
+		LOG_INF("mag anomaly ref -> %u uT", (unsigned int)cfg->mag_anomaly_ut);
+	}
+}
 
 /* Weinberg K online calibration accumulators (outdoor GNSS leg). */
 static bool cal_leg_active;
@@ -318,15 +343,27 @@ static int init_subsystems(void)
 
 	{
 		struct lgps_app_config cfg;
+		int cfg_err;
 
 		lgps_app_config_get(&cfg);
-		(void)lgps_time_set_local_offset_s((int32_t)cfg.tz_offset_min * 60);
+		cfg_err = lgps_time_set_local_offset_s((int32_t)cfg.tz_offset_min * 60);
+		if (cfg_err < 0) {
+			LOG_WRN("boot tz_offset_min=%d invalid (%d)", (int)cfg.tz_offset_min,
+				cfg_err);
+		}
 		lgps_gnss_apply_config(cfg.gnss_cold_timeout_s, cfg.gnss_rate_hz);
+		lgps_led_set_enabled(cfg.led_enable != 0U);
+		lgps_power_set_auto_off_min(cfg.auto_off_min);
+		if (cfg.record_mode <= (uint8_t)LGPS_PWR_HIGH_PRECISION) {
+			cfg_err = lgps_power_set_mode((enum lgps_power_state)cfg.record_mode);
+			if (cfg_err < 0) {
+				LOG_WRN("boot record_mode=%u refused (%d)",
+					(unsigned int)cfg.record_mode, cfg_err);
+			}
+		}
 		lgps_zupt_reset(&zupt, lgps_diag_uptime_ms());
 		lgps_pdr_init(&pdr);
-		if ((cfg.pdr_step_k_mm >= 300U) && (cfg.pdr_step_k_mm <= 550U)) {
-			pdr.k = (float)cfg.pdr_step_k_mm / 1000.0F;
-		}
+		sync_runtime_nav_config(&cfg);
 	}
 	lgps_attitude_reset(&attitude, NULL);
 	lgps_step_reset(&step_detector, lgps_diag_uptime_ms());
@@ -523,7 +560,7 @@ static void update_heading_reference(const struct lgps_gnss_fix *fix)
 
 	if (hub_mag_valid) {
 		mag_anomaly_active = lgps_attitude_correct_from_mag_guarded(
-			&attitude, hub_mag_body_ut, EARTH_MAG_REF_UT, 0.02F);
+			&attitude, hub_mag_body_ut, mag_ref_ut, 0.02F);
 	} else {
 		mag_anomaly_active = false;
 	}
@@ -758,6 +795,7 @@ static void update_outdoor_calibration(const struct lgps_gnss_fix *fix)
 
 				if (lgps_app_config_update_tlv(tlv, sizeof(tlv)) == 0) {
 					persisted_pdr_k_mm = k_mm;
+					applied_pdr_k_mm = k_mm;
 				}
 			}
 			cal_start_lat_e7 = fix->lat_e7;
@@ -1148,6 +1186,9 @@ int main(void)
 					lgps_activity_update(&activity_state, &act_in);
 					sync_gnss_motion_context();
 					update_outdoor_calibration(&snap->fix);
+					lgps_power_update_status(snap->fix.valid,
+								 (!snap->fix.valid && geo_anchor.valid),
+								 lgps_archive_used_permille());
 
 					publish_pdr();
 					publish_gnss(snap);
@@ -1167,6 +1208,7 @@ int main(void)
 					struct lgps_app_config cfg;
 
 					lgps_app_config_get(&cfg);
+					sync_runtime_nav_config(&cfg);
 					lgps_archive_maybe_compact(
 						lgps_time_now_utc_s(now_ms),
 						(int32_t)cfg.tz_offset_min * 60,

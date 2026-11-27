@@ -35,6 +35,15 @@ void lgps_power_logic_set_auto_sleep_ms(struct lgps_power_sm_logic *sm, uint32_t
 	sm->auto_sleep_ms = delay_ms;
 }
 
+void lgps_power_logic_set_auto_off_min(struct lgps_power_sm_logic *sm, uint16_t minutes)
+{
+	if (sm == NULL) {
+		return;
+	}
+
+	sm->auto_off_min = minutes;
+}
+
 void lgps_power_logic_request_shutdown(struct lgps_power_sm_logic *sm)
 {
 	if (sm == NULL) {
@@ -104,6 +113,9 @@ int lgps_power_logic_set_mode(struct lgps_power_sm_logic *sm, enum lgps_power_st
 
 	switch (target) {
 	case LGPS_PWR_DEEP_SLEEP:
+		if (sm->state != LGPS_PWR_DEEP_SLEEP) {
+			sm->deep_sleep_since_ms = now_ms;
+		}
 		sm->state = LGPS_PWR_DEEP_SLEEP;
 		sm->wake_confirming = false;
 		sm->zupt_tracking = false;
@@ -173,6 +185,7 @@ bool lgps_power_logic_step(struct lgps_power_sm_logic *sm, const struct lgps_pow
 		} else if ((uint32_t)(in->now_ms - sm->wake_started_ms) >= LGPS_PWR_WAKE_CONFIRM_MS) {
 			sm->wake_confirming = false;
 			sm->state = LGPS_PWR_DEEP_SLEEP;
+			sm->deep_sleep_since_ms = in->now_ms;
 			return true;
 		}
 	}
@@ -186,10 +199,22 @@ bool lgps_power_logic_step(struct lgps_power_sm_logic *sm, const struct lgps_pow
 			} else if ((uint32_t)(in->now_ms - sm->zupt_since_ms) >= sm->auto_sleep_ms) {
 				sm->state = LGPS_PWR_DEEP_SLEEP;
 				sm->zupt_tracking = false;
+				sm->deep_sleep_since_ms = in->now_ms;
 				return true;
 			}
 		} else {
 			sm->zupt_tracking = false;
+		}
+	}
+
+	/* Auto-power-off after sustained DEEP_SLEEP when idle (not charging and BLE disconnected). */
+	if ((sm->state == LGPS_PWR_DEEP_SLEEP) && (sm->auto_off_min > 0U) &&
+	    !in->charging && !in->ble_connected) {
+		uint32_t limit_ms = (uint32_t)sm->auto_off_min * 60000U;
+
+		if ((uint32_t)(in->now_ms - sm->deep_sleep_since_ms) >= limit_ms) {
+			lgps_power_logic_request_shutdown(sm);
+			return true;
 		}
 	}
 

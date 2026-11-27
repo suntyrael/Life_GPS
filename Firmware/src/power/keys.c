@@ -25,9 +25,10 @@ struct lgps_key_state {
 	uint8_t stable_pressed;
 	uint32_t press_start_ms;
 	bool pairing_sent;
+	bool mode_hold_sent;
 	bool long_sent;
 	/* False until the key has been seen released once: a key that is low at boot
-	 * cannot start the 8 s power-off countdown. */
+	 * cannot start the power-off countdown. */
 	bool armed;
 };
 
@@ -44,6 +45,7 @@ static struct lgps_key_state keys[LGPS_KEY_COUNT] = {
 	[LGPS_KEY_MODE] = { .id = LGPS_KEY_MODE, .spec = &key_mode, .name = "KEY2_MODE" },
 };
 
+static struct k_work_delayable dual_off_work;
 static lgps_key_callback_t key_callback;
 static atomic_t debounced_levels = ATOMIC_INIT(0);
 
@@ -68,6 +70,53 @@ static void notify(enum lgps_key_id id, enum lgps_key_event_type event, uint32_t
 	}
 }
 
+static bool other_key_pressed(enum lgps_key_id id)
+{
+	enum lgps_key_id other = (id == LGPS_KEY_POI) ? LGPS_KEY_MODE : LGPS_KEY_POI;
+
+	return keys[other].stable_pressed != 0U;
+}
+
+static void dual_off_work_handler(struct k_work *work)
+{
+	struct lgps_key_state *poi = &keys[LGPS_KEY_POI];
+	struct lgps_key_state *mode = &keys[LGPS_KEY_MODE];
+	int poi_level;
+	int mode_level;
+
+	ARG_UNUSED(work);
+
+	if (!poi->armed || !mode->armed ||
+	    (poi->stable_pressed == 0U) || (mode->stable_pressed == 0U)) {
+		return;
+	}
+
+	poi_level = read_level(poi->spec);
+	if (poi_level != 0) {
+		(void)k_work_reschedule(&poi->debounce_work, K_MSEC(LGPS_KEY_DEBOUNCE_MS));
+		return;
+	}
+
+	mode_level = read_level(mode->spec);
+	if (mode_level != 0) {
+		(void)k_work_reschedule(&mode->debounce_work, K_MSEC(LGPS_KEY_DEBOUNCE_MS));
+		return;
+	}
+
+	if (poi->long_sent && mode->long_sent) {
+		return;
+	}
+
+	/* Suppress single-key PAIRING/MODE_HOLD/LONG/SHORT events for this dual-hold cycle. */
+	poi->long_sent = true;
+	mode->long_sent = true;
+	(void)k_work_cancel_delayable(&poi->hold_work);
+	(void)k_work_cancel_delayable(&mode->hold_work);
+
+	LOG_INF("KEY1_POI + KEY2_MODE dual hold (%u ms) -> power off", LGPS_KEY_DUAL_OFF_MS);
+	notify(LGPS_KEY_POI, LGPS_KEY_EVENT_DUAL_POWER_OFF, LGPS_KEY_DUAL_OFF_MS);
+}
+
 static void hold_work_handler(struct k_work *work)
 {
 	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
@@ -75,8 +124,9 @@ static void hold_work_handler(struct k_work *work)
 	int level;
 	uint32_t now_ms;
 	uint32_t held_ms;
+	bool other_pressed;
 
-	if (!key->armed || (key->stable_pressed == 0U)) {
+	if (!key->armed || (key->stable_pressed == 0U) || key->long_sent) {
 		return;
 	}
 
@@ -89,11 +139,22 @@ static void hold_work_handler(struct k_work *work)
 
 	now_ms = k_uptime_get_32();
 	held_ms = now_ms - key->press_start_ms;
+	other_pressed = other_key_pressed(key->id);
 
-	if (!key->pairing_sent && (held_ms >= LGPS_KEY_PAIRING_PRESS_MS)) {
-		key->pairing_sent = true;
-		LOG_INF("%s pairing hold (%u ms)", key->name, held_ms);
-		notify(key->id, LGPS_KEY_EVENT_PAIRING_PRESS, held_ms);
+	if (key->id == LGPS_KEY_POI) {
+		if (!key->pairing_sent && !other_pressed &&
+		    (held_ms >= LGPS_KEY_PAIRING_PRESS_MS)) {
+			key->pairing_sent = true;
+			LOG_INF("%s pairing hold (%u ms)", key->name, held_ms);
+			notify(key->id, LGPS_KEY_EVENT_PAIRING_PRESS, held_ms);
+		}
+	} else {
+		if (!key->mode_hold_sent && !other_pressed &&
+		    (held_ms >= LGPS_KEY_MODE_HOLD_MS)) {
+			key->mode_hold_sent = true;
+			LOG_INF("%s mode hold (%u ms)", key->name, held_ms);
+			notify(key->id, LGPS_KEY_EVENT_MODE_HOLD, held_ms);
+		}
 	}
 
 	if (!key->long_sent && (held_ms >= LGPS_KEY_LONG_PRESS_MS)) {
@@ -104,8 +165,10 @@ static void hold_work_handler(struct k_work *work)
 	}
 
 	if (!key->long_sent) {
+		uint32_t first_target = (key->id == LGPS_KEY_POI) ? LGPS_KEY_PAIRING_PRESS_MS
+								  : LGPS_KEY_MODE_HOLD_MS;
 		uint32_t next_target =
-			key->pairing_sent ? LGPS_KEY_LONG_PRESS_MS : LGPS_KEY_PAIRING_PRESS_MS;
+			(held_ms < first_target) ? first_target : LGPS_KEY_LONG_PRESS_MS;
 		uint32_t remain = (next_target > held_ms) ? (next_target - held_ms) : 10U;
 
 		(void)k_work_reschedule(&key->hold_work, K_MSEC(remain));
@@ -135,8 +198,12 @@ static void debounce_work_handler(struct k_work *work)
 	update_level_mask(key->id, pressed);
 
 	if (pressed != 0U) {
+		uint32_t first_hold_ms = (key->id == LGPS_KEY_POI) ? LGPS_KEY_PAIRING_PRESS_MS
+								   : LGPS_KEY_MODE_HOLD_MS;
+
 		key->press_start_ms = now_ms;
 		key->pairing_sent = false;
+		key->mode_hold_sent = false;
 		key->long_sent = false;
 
 		if (!key->armed) {
@@ -145,10 +212,17 @@ static void debounce_work_handler(struct k_work *work)
 
 		LOG_INF("%s pressed", key->name);
 		notify(key->id, LGPS_KEY_EVENT_PRESS, 0U);
-		(void)k_work_reschedule(&key->hold_work, K_MSEC(LGPS_KEY_PAIRING_PRESS_MS));
+		(void)k_work_reschedule(&key->hold_work, K_MSEC(first_hold_ms));
+
+		if ((keys[LGPS_KEY_POI].stable_pressed != 0U) &&
+		    (keys[LGPS_KEY_MODE].stable_pressed != 0U) &&
+		    keys[LGPS_KEY_POI].armed && keys[LGPS_KEY_MODE].armed) {
+			(void)k_work_reschedule(&dual_off_work, K_MSEC(LGPS_KEY_DUAL_OFF_MS));
+		}
 		return;
 	}
 
+	(void)k_work_cancel_delayable(&dual_off_work);
 	(void)k_work_cancel_delayable(&key->hold_work);
 
 	if (!key->armed) {
@@ -159,7 +233,8 @@ static void debounce_work_handler(struct k_work *work)
 
 	uint32_t held_ms = now_ms - key->press_start_ms;
 
-	if (!key->long_sent && !key->pairing_sent && (held_ms < LGPS_KEY_SHORT_PRESS_MS)) {
+	if (!key->long_sent && !key->pairing_sent && !key->mode_hold_sent &&
+	    (held_ms < LGPS_KEY_SHORT_PRESS_MS)) {
 		notify(key->id, LGPS_KEY_EVENT_SHORT_PRESS, held_ms);
 	}
 
@@ -180,6 +255,7 @@ static void key_gpio_isr(const struct device *port, struct gpio_callback *cb, ui
 int lgps_keys_init(lgps_key_callback_t callback)
 {
 	key_callback = callback;
+	k_work_init_delayable(&dual_off_work, dual_off_work_handler);
 
 	for (uint8_t id = 0U; id < LGPS_KEY_COUNT; id++) {
 		struct lgps_key_state *key = &keys[id];
@@ -208,6 +284,7 @@ int lgps_keys_init(lgps_key_callback_t callback)
 		key->stable_pressed = (level == 0) ? 1U : 0U;
 		key->press_start_ms = k_uptime_get_32();
 		key->pairing_sent = false;
+		key->mode_hold_sent = false;
 		key->long_sent = false;
 		key->armed = (key->stable_pressed == 0U);
 		update_level_mask(key->id, key->stable_pressed);
@@ -234,8 +311,9 @@ int lgps_keys_init(lgps_key_callback_t callback)
 	}
 
 	LOG_INF("keys ready (IRQ): KEY1_POI=P1.06 KEY2_MODE=P1.08 (pull-up, %u ms debounce, "
-		"%u ms pairing, %u ms power-off)",
-		LGPS_KEY_DEBOUNCE_MS, LGPS_KEY_PAIRING_PRESS_MS, LGPS_KEY_LONG_PRESS_MS);
+		"%u ms mode_hold, %u ms pairing, %u ms dual_off, %u ms long_off)",
+		LGPS_KEY_DEBOUNCE_MS, LGPS_KEY_MODE_HOLD_MS, LGPS_KEY_PAIRING_PRESS_MS,
+		LGPS_KEY_DUAL_OFF_MS, LGPS_KEY_LONG_PRESS_MS);
 
 	return 0;
 }

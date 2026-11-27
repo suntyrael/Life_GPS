@@ -134,4 +134,82 @@ class LocalDayStoreTest {
             tmpDir.deleteRecursively()
         }
     }
+
+    private fun stepRecord(seqId: Long, stepCount: Int): TrajectoryRecord = TrajectoryRecord(
+        seqId = seqId,
+        timestampSec = 200_000_000L + seqId * 10L,
+        subsecondMs = 0,
+        latitudeE7 = 312_304_160,
+        longitudeE7 = 1_214_737_010,
+        altitudeM = 12,
+        speedCms = 120,
+        headingDeciDeg = 900,
+        stepCount = stepCount,
+        hdopDeci = 10,
+        satellites = 10,
+        statusFlags = TrajectoryRecord.FLAG_FIX_VALID,
+        batteryLevel = 85,
+        floorLevel = 0,
+    )
+
+    @Test
+    fun computeSummaryDeltaStepsHandlesNormalRebootAndRollover() {
+        // 1. Normal monotonic steps (starting at 500 carried over from prior day)
+        val normalRecs = listOf(
+            stepRecord(1L, 500),
+            stepRecord(2L, 540),
+            stepRecord(3L, 625),
+            stepRecord(4L, 625),
+            stepRecord(5L, 700),
+        )
+        assertEquals(200, LocalDayStore.computeSummary(20261126, normalRecs, false).totalSteps)
+
+        // 2. Mid-day device reboot resets step counter to 0 (and then climbs again)
+        val rebootRecs = listOf(
+            stepRecord(1L, 100),
+            stepRecord(2L, 350), // +250
+            stepRecord(3L, 0),   // reboot reset (+0)
+            stepRecord(4L, 45),  // +45
+            stepRecord(5L, 12),  // second reboot with 12 steps already accumulated (+12)
+            stepRecord(6L, 62),  // +50
+        )
+        assertEquals(357, LocalDayStore.computeSummary(20261126, rebootRecs, false).totalSteps)
+
+        // 3. 16-bit counter rollover (65535 -> 10)
+        val rolloverRecs = listOf(
+            stepRecord(1L, 65500),
+            stepRecord(2L, 65535), // +35
+            stepRecord(3L, 10),    // +(65536 - 65535) + 10 = +11
+            stepRecord(4L, 40),    // +30
+        )
+        assertEquals(76, LocalDayStore.computeSummary(20261126, rolloverRecs, false).totalSteps)
+    }
+
+    @Test
+    fun listRawDayFilesAndImportRawFileRejectTraversalAndCorruption() {
+        val tmpDir = Files.createTempDirectory("lgps_backup_raw").toFile()
+        try {
+            val store = LocalDayStore(tmpDir)
+            val hsPkg = loadVector("day_package_hs.bin")
+            val liveRaw = loadVector("trajectory_basic.bin")
+
+            assertTrue(store.importRawFile("20261126.lgd", hsPkg))
+            assertTrue(store.importRawFile("20261127.lgs", liveRaw))
+
+            // Reject traversal, nested paths, wrong extensions, empty, and corrupted archives
+            assertFalse(store.importRawFile("../20261128.lgd", hsPkg))
+            assertFalse(store.importRawFile("days/20261128.lgd", hsPkg))
+            assertFalse(store.importRawFile("20261128.txt", hsPkg))
+            assertFalse(store.importRawFile("20261128.lgd", ByteArray(0)))
+            val corrupt = hsPkg.copyOf().also { it[10] = (it[10].toInt() xor 0xFF).toByte() }
+            assertFalse(store.importRawFile("20261128.lgd", corrupt))
+
+            val listed = store.listRawDayFiles().map { it.name }
+            assertEquals(listOf("20261126.lgd", "20261127.lgs"), listed)
+            assertEquals(8, store.loadDayRecords(20261126).size)
+            assertEquals(3, store.loadDayRecords(20261127).size)
+        } finally {
+            tmpDir.deleteRecursively()
+        }
+    }
 }

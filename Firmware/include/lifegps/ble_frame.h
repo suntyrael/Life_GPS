@@ -136,12 +136,14 @@ enum lgps_ble_status_code {
 #define LGPS_BLE_SOC_UNKNOWN 0xFFU
 
 /* Status body: 0..81 as v1, then the appended motion/temperature block, then the
- * appended height/accuracy/DOP block. The size grew 82 -> 100 -> 116; older hosts
- * must treat a short body as "fields absent" instead of reading past it.
+ * appended height/accuracy/DOP block, then the sync/storage extension block.
+ * The size grew 82 -> 100 -> 116 -> 128; older hosts must treat a short body as
+ * "fields absent" instead of reading past it.
  */
-#define LGPS_BLE_STATUS_BASE_SIZE 82U
-#define LGPS_BLE_STATUS_MOTION_SIZE 100U
-#define LGPS_BLE_STATUS_SIZE 116U
+#define LGPS_BLE_STATUS_BASE_SIZE LGPS_PROTO_STATUS_BASE_SIZE
+#define LGPS_BLE_STATUS_MOTION_SIZE LGPS_PROTO_STATUS_MOTION_SIZE
+#define LGPS_BLE_STATUS_ACCURACY_SIZE LGPS_PROTO_STATUS_ACCURACY_SIZE
+#define LGPS_BLE_STATUS_SIZE LGPS_PROTO_STATUS_SYNC_SIZE
 #define LGPS_BLE_CAPS_SIZE 24U
 #define LGPS_BLE_FLASH_INFO_SIZE 24U
 #define LGPS_BLE_LOG_MAX_PACKET 240U
@@ -333,6 +335,12 @@ struct lgps_ble_status {
 	uint16_t head_acc_cdd; /* heading accuracy, 0.01 deg */
 	uint16_t hdop_1e2;    /* from UBX-NAV-DOP */
 	uint16_t vdop_1e2;    /* from UBX-NAV-DOP */
+	/* Appended sync/storage block (offsets 116..127). */
+	uint32_t archive_index_ver;
+	uint32_t last_seq_id;
+	uint8_t work_mode;
+	uint8_t archive_days_count;
+	uint16_t storage_used_permille;
 };
 
 /* Parsed view of an incoming command frame; payload points into the caller's

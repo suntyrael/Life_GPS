@@ -153,14 +153,21 @@ class BleFrameTest {
         assertEquals(110, StatusOffset.HEAD_ACC_CDD)
         assertEquals(112, StatusOffset.HDOP_1E2)
         assertEquals(114, StatusOffset.VDOP_1E2)
+        assertEquals(116, StatusOffset.ARCHIVE_INDEX_VER)
+        assertEquals(120, StatusOffset.LAST_SEQ_ID)
+        assertEquals(124, StatusOffset.WORK_MODE)
+        assertEquals(125, StatusOffset.ARCHIVE_DAYS_COUNT)
+        assertEquals(126, StatusOffset.STORAGE_USED_PERMILLE)
         assertEquals(82, StatusOffset.BASE_SIZE)
         assertEquals(100, StatusOffset.MOTION_SIZE)
-        assertEquals(116, StatusOffset.SIZE)
+        assertEquals(116, StatusOffset.ACCURACY_SIZE)
+        assertEquals(128, StatusOffset.SYNC_SIZE)
+        assertEquals(128, StatusOffset.SIZE)
     }
 
     @Test
     fun parseStatusDecodesEveryFieldAtItsOffset() {
-        val raw = ByteArray(StatusOffset.SIZE)
+        val raw = ByteArray(StatusOffset.ACCURACY_SIZE)
         raw[StatusOffset.VER] = 1
         raw[StatusOffset.FLAGS] = (StatusFlags.GNSS_FIX_VALID or StatusFlags.CHARGING or
             StatusFlags.ZUPT).toByte()
@@ -254,6 +261,12 @@ class BleFrameTest {
         assertTrue(status.magTempValid)
         assertTrue(status.baroTempValid)
         assertTrue(status.accuracyFields)
+        assertFalse(status.hasSyncFields)
+        assertEquals(-1, status.workMode)
+        assertEquals(0L, status.archiveIndexVer)
+        assertEquals(0L, status.lastSeqId)
+        assertEquals(0, status.archiveDaysCount)
+        assertEquals(0, status.storageUsedPermille)
         assertEquals(-12345, status.heightMm)
         assertEquals(106, status.hAccCm)
         assertEquals(62, status.vAccCm)
@@ -269,6 +282,8 @@ class BleFrameTest {
         assertFalse(baseOnly.hasMotionFields)
         assertFalse(baseOnly.hasTempFields)
         assertFalse(baseOnly.hasAccuracyFields)
+        assertFalse(baseOnly.hasSyncFields)
+        assertEquals(-1, baseOnly.workMode)
         assertEquals(listOf(0, 0, 0), baseOnly.gravityMg)
         assertEquals(listOf(0, 0, 0), baseOnly.linearMg)
         assertEquals(0, baseOnly.imuTempCc)
@@ -283,6 +298,8 @@ class BleFrameTest {
         motionOnly!!
         assertTrue(motionOnly.hasMotionFields)
         assertFalse(motionOnly.hasAccuracyFields)
+        assertFalse(motionOnly.hasSyncFields)
+        assertEquals(-1, motionOnly.workMode)
         assertEquals(3456, motionOnly.imuTempCc)
         assertEquals(0, motionOnly.heightMm)
         assertEquals(0, motionOnly.hAccCm)
@@ -291,6 +308,31 @@ class BleFrameTest {
 
         // Anything shorter than the base contract is "missing", never partially parsed.
         assertNull(BleFrame.parseStatus(raw.copyOf(StatusOffset.BASE_SIZE - 1)))
+    }
+
+    @Test
+    fun parseStatusDecodes128ByteSyncExtension() {
+        val raw = ByteArray(StatusOffset.SYNC_SIZE)
+        raw[StatusOffset.VER] = 1
+        raw[StatusOffset.FLAGS] = StatusFlags.GNSS_FIX_VALID.toByte()
+        writeU32(raw, StatusOffset.BAT_MV, 3950)
+        writeU32(raw, StatusOffset.ARCHIVE_INDEX_VER, 0x00123456L)
+        writeU32(raw, StatusOffset.LAST_SEQ_ID, 0x9ABCDEF0L)
+        raw[StatusOffset.WORK_MODE] = 2 // HIGH_PRECISION
+        raw[StatusOffset.ARCHIVE_DAYS_COUNT] = 14
+        writeU16(raw, StatusOffset.STORAGE_USED_PERMILLE, 678)
+
+        val status = BleFrame.parseStatus(raw)
+        assertNotNull(status)
+        status!!
+        assertTrue(status.hasMotionFields)
+        assertTrue(status.hasAccuracyFields)
+        assertTrue(status.hasSyncFields)
+        assertEquals(0x00123456L, status.archiveIndexVer)
+        assertEquals(0x9ABCDEF0L, status.lastSeqId)
+        assertEquals(2, status.workMode)
+        assertEquals(14, status.archiveDaysCount)
+        assertEquals(678, status.storageUsedPermille)
     }
 
     // --- caps / flash info ----------------------------------------------------

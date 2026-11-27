@@ -3,6 +3,8 @@ package com.lifegps.app.prod
 
 import android.content.Context
 import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -76,10 +78,9 @@ import com.lifegps.app.ui.theme.Green
 import com.lifegps.app.ui.theme.Red
 import com.lifegps.app.ui.theme.TextDim
 import com.lifegps.app.ui.theme.TextMain
-import com.lifegps.core.data.DeviceConfig
 import com.lifegps.core.data.ExportFormat
+import com.lifegps.core.data.RemoteDayIndexEntry
 import com.lifegps.core.model.BondState
-import com.lifegps.core.model.CoordSystem
 import com.lifegps.core.model.CoordTransform
 import com.lifegps.core.model.DayTrackSummary
 import com.lifegps.core.model.DeviceOperatingMode
@@ -88,11 +89,14 @@ import com.lifegps.core.model.PoiRecord
 import com.lifegps.core.protocol.TrajectoryRecord
 import java.io.File
 import java.time.Instant
-import java.time.ZoneOffset
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private enum class ProdTab(val label: String, val badge: String) {
     HOME("首页", "设备"),
@@ -108,6 +112,7 @@ fun ProdAppHost(
     topBarExtraAction: (@Composable () -> Unit)? = null,
     onOpenOta: (() -> Unit)? = null,
 ) {
+    val appContext = LocalContext.current.applicationContext
     val repo = container.repo
     val device by repo.device.collectAsStateWithLifecycle()
     val bondState by repo.bondState.collectAsStateWithLifecycle()
@@ -117,6 +122,16 @@ fun ProdAppHost(
     var selectedDayId by rememberSaveable { mutableIntStateOf(0) }
     var showDeviceScanner by rememberSaveable { mutableStateOf(false) }
     var showOtaScreen by rememberSaveable { mutableStateOf(false) }
+    var tileProvider by remember { mutableStateOf(loadSavedTileProvider(appContext)) }
+    val onSelectTileProvider: (MapTileProvider) -> Unit = { provider ->
+        tileProvider = provider
+        saveTileProvider(appContext, provider)
+        container.setDisplayCoordSystem(provider.coordSystem)
+    }
+
+    LaunchedEffect(tileProvider) {
+        container.setDisplayCoordSystem(tileProvider.coordSystem)
+    }
 
     if (showDeviceScanner) {
         ProdDeviceScanScreen(
@@ -201,6 +216,8 @@ fun ProdAppHost(
                     container = container,
                     selectedDayId = selectedDayId,
                     onSelectDay = { selectedDayId = it },
+                    tileProvider = tileProvider,
+                    onSelectTileProvider = onSelectTileProvider,
                 )
                 ProdTab.TIMELINE -> ProdTimelineTab(
                     container = container,
@@ -211,6 +228,8 @@ fun ProdAppHost(
                 )
                 ProdTab.SETTINGS -> ProdSettingsTab(
                     container = container,
+                    tileProvider = tileProvider,
+                    onSelectTileProvider = onSelectTileProvider,
                     onOpenScanner = { showDeviceScanner = true },
                     onOpenOta = onOpenOta ?: { showOtaScreen = true },
                 )
@@ -285,16 +304,34 @@ private fun ProdHomeTab(
                     Spacer(Modifier.height(12.dp))
                     HorizontalDivider(color = MaterialTheme.colorScheme.background)
                     Spacer(Modifier.height(10.dp))
-                    MetricRow("记录模式", DeviceOperatingMode.fromWire(cfg.recordMode).label, Cyan)
+                    val activeModeCode = if (device.workMode >= 0) device.workMode else cfg.recordMode
+                    MetricRow("记录模式", DeviceOperatingMode.fromWire(activeModeCode).label, Cyan)
                     MetricRow("GNSS 状态", if (gnss.fix) "已定位 (${gnss.sats} 颗星)" else gnss.state)
-                    MetricRow(
-                        "设备存储 (32/64M)",
-                        if (flash.totalMb > 0f) {
-                            String.format(Locale.US, "%.2f / %.0f MB (%d 条)", flash.usedMb, flash.totalMb, flash.recordCount)
-                        } else {
-                            "—"
-                        },
-                    )
+                    val storageText = when {
+                        flash.totalMb > 0f && device.workMode >= 0 -> String.format(
+                            Locale.US,
+                            "%.2f / %.0f MB (%.1f%% · %d 天归档)",
+                            flash.usedMb,
+                            flash.totalMb,
+                            device.storageUsedPermille / 10.0,
+                            device.archiveDaysCount,
+                        )
+                        flash.totalMb > 0f -> String.format(
+                            Locale.US,
+                            "%.2f / %.0f MB (%d 条)",
+                            flash.usedMb,
+                            flash.totalMb,
+                            flash.recordCount,
+                        )
+                        device.workMode >= 0 -> String.format(
+                            Locale.US,
+                            "已用 %.1f%% · %d 天归档",
+                            device.storageUsedPermille / 10.0,
+                            device.archiveDaysCount,
+                        )
+                        else -> "—"
+                    }
+                    MetricRow("设备存储 (32/64M)", storageText)
                     Spacer(Modifier.height(12.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -430,13 +467,15 @@ private fun ProdMapTab(
     container: AppContainer,
     selectedDayId: Int,
     onSelectDay: (Int) -> Unit,
+    tileProvider: MapTileProvider,
+    onSelectTileProvider: (MapTileProvider) -> Unit,
 ) {
     val repo = container.repo
     val trackRepo = container.trackRepo
     val gnss by repo.gnss.collectAsStateWithLifecycle()
     val liveTrail by repo.geoTrail.collectAsStateWithLifecycle()
     val days by trackRepo.days.collectAsStateWithLifecycle()
-    val coordSystem by container.displayCoordSystem.collectAsStateWithLifecycle()
+    val coordSystem = tileProvider.coordSystem
 
     val dayRecords = remember(selectedDayId, days) {
         if (selectedDayId != 0) trackRepo.loadDayRecords(selectedDayId) else emptyList()
@@ -478,38 +517,39 @@ private fun ProdMapTab(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                modifier = Modifier
-                    .weight(1f)
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
+            FilterChip(
+                selected = selectedDayId == 0,
+                onClick = { onSelectDay(0) },
+                label = { Text("实时", fontSize = 11.sp) },
+            )
+            days.take(7).forEach { day ->
                 FilterChip(
-                    selected = selectedDayId == 0,
-                    onClick = { onSelectDay(0) },
-                    label = { Text("实时", fontSize = 11.sp) },
+                    selected = selectedDayId == day.dayId,
+                    onClick = { onSelectDay(day.dayId) },
+                    label = { Text(formatDayId(day.dayId), fontSize = 11.sp) },
                 )
-                days.take(7).forEach { day ->
-                    FilterChip(
-                        selected = selectedDayId == day.dayId,
-                        onClick = { onSelectDay(day.dayId) },
-                        label = { Text(formatDayId(day.dayId), fontSize = 11.sp) },
-                    )
-                }
             }
-            Spacer(Modifier.width(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                CoordSystem.entries.forEach { sys ->
-                    FilterChip(
-                        selected = coordSystem == sys,
-                        onClick = { container.setDisplayCoordSystem(sys) },
-                        label = { Text(sys.name, fontSize = 10.sp) },
-                    )
-                }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            MapTileProvider.entries.forEach { provider ->
+                FilterChip(
+                    selected = tileProvider == provider,
+                    onClick = { onSelectTileProvider(provider) },
+                    label = { Text(provider.label, fontSize = 11.sp) },
+                )
             }
         }
 
@@ -525,9 +565,9 @@ private fun ProdMapTab(
                     records = dayRecords,
                     fallbackTrail = if (selectedDayId == 0) fallbackPts else emptyList(),
                     cursorPoint = cursorPoint,
-                    coordSystem = coordSystem,
                     cameraResetKey = selectedDayId,
                     modifier = Modifier.fillMaxSize(),
+                    tileProvider = tileProvider,
                 )
                 // Mode legend pill
                 Row(
@@ -642,6 +682,7 @@ private fun ProdTimelineTab(
     val pois by trackRepo.pois.collectAsStateWithLifecycle()
 
     var exportTargetDay by remember { mutableStateOf<DayTrackSummary?>(null) }
+    var deleteLocalDayTarget by remember { mutableStateOf<DayTrackSummary?>(null) }
     var editPoiTarget by remember { mutableStateOf<PoiRecord?>(null) }
 
     exportTargetDay?.let { target ->
@@ -669,6 +710,28 @@ private fun ProdTimelineTab(
             },
             confirmButton = {
                 TextButton(onClick = { exportTargetDay = null }) { Text("关闭") }
+            },
+        )
+    }
+
+    deleteLocalDayTarget?.let { target ->
+        val dayStr = formatDayId(target.dayId)
+        AlertDialog(
+            onDismissRequest = { deleteLocalDayTarget = null },
+            title = { Text("确认删除 $dayStr 本机轨迹？") },
+            text = {
+                Text("将永久删除本机保存的 $dayStr 轨迹记录（${target.recordCount} 个点）及相关摘要，删除后无法恢复。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleteLocalDayTarget = null
+                        trackRepo.deleteLocalDay(target.dayId)
+                    },
+                ) { Text("确认删除", color = Red) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteLocalDayTarget = null }) { Text("取消") }
             },
         )
     }
@@ -724,7 +787,7 @@ private fun ProdTimelineTab(
                     summary = day,
                     onClick = { onOpenDayOnMap(day.dayId) },
                     onExport = { exportTargetDay = day },
-                    onDelete = { trackRepo.deleteLocalDay(day.dayId) },
+                    onDelete = { deleteLocalDayTarget = day },
                 )
             }
         }
@@ -775,18 +838,113 @@ private fun ProdTimelineTab(
 @Composable
 private fun ProdSettingsTab(
     container: AppContainer,
+    tileProvider: MapTileProvider,
+    onSelectTileProvider: (MapTileProvider) -> Unit,
     onOpenScanner: () -> Unit,
     onOpenOta: (() -> Unit)?,
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val repo = container.repo
     val trackRepo = container.trackRepo
     val device by repo.device.collectAsStateWithLifecycle()
     val bondState by repo.bondState.collectAsStateWithLifecycle()
-    val coordSystem by container.displayCoordSystem.collectAsStateWithLifecycle()
     val cfg by trackRepo.deviceConfig.collectAsStateWithLifecycle()
     val remoteDays by trackRepo.remoteDays.collectAsStateWithLifecycle()
 
     var draftCfg by remember(cfg) { mutableStateOf(cfg) }
+    var eraseRemoteDayTarget by remember { mutableStateOf<RemoteDayIndexEntry?>(null) }
+    var backupBusy by remember { mutableStateOf(false) }
+    var backupMessage by remember { mutableStateOf<String?>(null) }
+    var backupIsError by remember { mutableStateOf(false) }
+
+    val exportBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/zip"),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        backupBusy = true
+        backupMessage = "正在导出备份…"
+        backupIsError = false
+        scope.launch {
+            val result: Result<Int> = withContext(Dispatchers.IO) {
+                try {
+                    val os = context.contentResolver.openOutputStream(uri)
+                        ?: error("无法打开目标文件进行写入")
+                    os.use { stream -> trackRepo.exportBackupZip(stream) }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    Result.failure(t)
+                }
+            }
+            backupBusy = false
+            result.fold(
+                onSuccess = { count ->
+                    backupMessage = "已导出 $count 天轨迹与 POI 备份"
+                    backupIsError = false
+                },
+                onFailure = { err ->
+                    backupMessage = "导出备份失败：${err.message ?: err.javaClass.simpleName}"
+                    backupIsError = true
+                },
+            )
+        }
+    }
+
+    val importBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        backupBusy = true
+        backupMessage = "正在从备份恢复…"
+        backupIsError = false
+        scope.launch {
+            val result: Result<Int> = withContext(Dispatchers.IO) {
+                try {
+                    val ins = context.contentResolver.openInputStream(uri)
+                        ?: error("无法打开所选备份文件")
+                    ins.use { stream -> trackRepo.importBackupZip(stream) }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    Result.failure(t)
+                }
+            }
+            backupBusy = false
+            result.fold(
+                onSuccess = { count ->
+                    backupMessage = "已恢复 $count 天轨迹与 POI"
+                    backupIsError = false
+                },
+                onFailure = { err ->
+                    backupMessage = "恢复备份失败：${err.message ?: err.javaClass.simpleName}"
+                    backupIsError = true
+                },
+            )
+        }
+    }
+
+    eraseRemoteDayTarget?.let { target ->
+        val dayStr = formatDayId(target.dayId)
+        AlertDialog(
+            onDismissRequest = { eraseRemoteDayTarget = null },
+            title = { Text("确认擦除设备端 $dayStr 归档？") },
+            text = {
+                Text("将擦除设备外置 Flash 中该日归档（$dayStr · ${target.recordCount} 条 · ${target.packageLen} B），删除后无法恢复（不影响已同步到本机的轨迹）。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        eraseRemoteDayTarget = null
+                        trackRepo.eraseRemoteDay(target.dayId)
+                    },
+                ) { Text("确认擦除", color = Red) }
+            },
+            dismissButton = {
+                TextButton(onClick = { eraseRemoteDayTarget = null }) { Text("取消") }
+            },
+        )
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -871,18 +1029,73 @@ private fun ProdSettingsTab(
         }
 
         item {
-            SectionHeader("地图显示坐标系", "内部存储与导出始终为 WGS-84")
+            SectionHeader("地图图源与坐标系", "图源与坐标系自动配对；存储与导出始终为 WGS-84")
             CardBlock {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CoordSystem.entries.forEach { sys ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    MapTileProvider.entries.forEach { provider ->
                         FilterChip(
-                            selected = coordSystem == sys,
-                            onClick = { container.setDisplayCoordSystem(sys) },
-                            label = {
-                                Text(if (sys == CoordSystem.WGS84) "WGS-84（原始）" else "GCJ-02（国内纠偏）")
-                            },
+                            selected = tileProvider == provider,
+                            onClick = { onSelectTileProvider(provider) },
+                            label = { Text(provider.label, fontSize = 12.sp) },
                         )
                     }
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = if (tileProvider.usesGcj02) {
+                        "当前：${tileProvider.label}（已自动启用显示层 GCJ-02 纠偏，匹配国内底图）"
+                    } else {
+                        "当前：${tileProvider.label}（直接使用原始 WGS-84 坐标，匹配国际底图）"
+                    },
+                    color = TextDim,
+                    fontSize = 12.sp,
+                )
+            }
+        }
+
+        item {
+            SectionHeader("本地备份与迁移", "纯离线 ZIP 打包本机全部轨迹与 POI")
+            CardBlock {
+                Text(
+                    text = "所有数据仅保存在本机。换机或重装前可导出全部轨迹与 POI 为 ZIP 备份文件，随时离线恢复。",
+                    color = TextDim,
+                    fontSize = 12.sp,
+                )
+                Spacer(Modifier.height(10.dp))
+                Button(
+                    onClick = {
+                        val stamp = BACKUP_NAME_FMT
+                            .withZone(ZoneId.systemDefault())
+                            .format(Instant.now())
+                        exportBackupLauncher.launch("lifegps_backup_$stamp.zip")
+                    },
+                    enabled = !backupBusy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (backupBusy) "处理中…" else "导出全部轨迹备份 (.zip)")
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        importBackupLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
+                    },
+                    enabled = !backupBusy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("从备份恢复 (.zip)")
+                }
+                backupMessage?.let { msg ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = msg,
+                        color = if (backupIsError) Red else Green,
+                        fontSize = 12.sp,
+                    )
                 }
             }
         }
@@ -903,7 +1116,7 @@ private fun ProdSettingsTab(
                             Text("${rday.recordCount} 条 · ${rday.packageLen} B", color = TextDim, fontSize = 12.sp)
                         }
                         TextButton(
-                            onClick = { trackRepo.eraseRemoteDay(rday.dayId) },
+                            onClick = { eraseRemoteDayTarget = rday },
                             enabled = device.connected,
                         ) { Text("擦除", color = Red) }
                     }
@@ -1129,6 +1342,21 @@ private fun shareExportedFile(context: Context, file: File, format: ExportFormat
     context.startActivity(Intent.createChooser(intent, "分享 ${format.label} 轨迹"))
 }
 
+private const val MAP_PREFS_NAME = "lifegps_ui_prefs"
+private const val KEY_MAP_TILE_PROVIDER = "map_tile_provider"
+
+private fun loadSavedTileProvider(context: Context): MapTileProvider {
+    val prefs = context.getSharedPreferences(MAP_PREFS_NAME, Context.MODE_PRIVATE)
+    return MapTileProvider.fromPrefKey(prefs.getString(KEY_MAP_TILE_PROVIDER, null))
+}
+
+private fun saveTileProvider(context: Context, provider: MapTileProvider) {
+    context.getSharedPreferences(MAP_PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(KEY_MAP_TILE_PROVIDER, provider.prefKey)
+        .apply()
+}
+
 private fun formatDayId(dayId: Int): String {
     val y = dayId / 10_000
     val m = (dayId / 100) % 100
@@ -1137,6 +1365,10 @@ private fun formatDayId(dayId: Int): String {
 }
 
 private val TIME_FMT: DateTimeFormatter =
-    DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneOffset.ofHours(8))
+    DateTimeFormatter.ofPattern("HH:mm:ss", Locale.US)
 
-private fun formatTimeLocal(epochMs: Long): String = TIME_FMT.format(Instant.ofEpochMilli(epochMs))
+private val BACKUP_NAME_FMT: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("yyyyMMdd_HHmm", Locale.US)
+
+private fun formatTimeLocal(epochMs: Long): String =
+    TIME_FMT.withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(epochMs))

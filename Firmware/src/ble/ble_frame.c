@@ -301,8 +301,20 @@ int lgps_ble_status_encode(const struct lgps_ble_status *status, uint8_t *out, s
 	put_u16(&out[112], status->hdop_1e2);
 	put_u16(&out[114], status->vdop_1e2);
 
+	/* Appended sync/storage extension block (offsets 116..127). */
+	put_u32(&out[LGPS_PROTO_STATUS_OFF_ARCHIVE_INDEX_VER], status->archive_index_ver);
+	put_u32(&out[LGPS_PROTO_STATUS_OFF_LAST_SEQ_ID], status->last_seq_id);
+	out[LGPS_PROTO_STATUS_OFF_WORK_MODE] = status->work_mode;
+	out[LGPS_PROTO_STATUS_OFF_ARCHIVE_DAYS_COUNT] = status->archive_days_count;
+	put_u16(&out[LGPS_PROTO_STATUS_OFF_STORAGE_USED_PERMILLE], status->storage_used_permille);
+
 	return (int)LGPS_BLE_STATUS_SIZE;
 }
+
+_Static_assert(LGPS_BLE_STATUS_SIZE == 128U,
+	       "BLE status frame size must match 128-byte sync extension layout");
+_Static_assert(LGPS_PROTO_STATUS_OFF_STORAGE_USED_PERMILLE + 2U == LGPS_BLE_STATUS_SIZE,
+	       "BLE status sync extension offsets must end at LGPS_BLE_STATUS_SIZE");
 
 int lgps_ble_caps_encode(const struct lgps_ble_caps *caps, uint8_t *out, size_t out_size)
 {

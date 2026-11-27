@@ -244,6 +244,60 @@ class LocalDayStore(private val rootDir: File) {
         return a && b
     }
 
+    /** Returns all valid `.lgd` and `.lgs` files currently stored in `days/`, sorted by name. */
+    @Synchronized
+    fun listRawDayFiles(): List<File> =
+        daysDir.listFiles()
+            ?.filter { it.isFile && RAW_DAY_FILE_REGEX.matches(it.name) }
+            ?.sortedBy { it.name }
+            ?: emptyList()
+
+    /**
+     * Imports a raw `.lgd` or `.lgs` day file from a local backup archive.
+     * Strictly validates [fileName] against `^\d{8}\.(lgd|lgs)$`, checks canonical path containment
+     * to prevent Zip-Slip / path traversal, validates binary framing/CRCs, and commits atomically.
+     */
+    @Synchronized
+    fun importRawFile(fileName: String, bytes: ByteArray): Boolean {
+        if (!RAW_DAY_FILE_REGEX.matches(fileName) || bytes.isEmpty()) return false
+        val target = File(daysDir, fileName)
+        if (target.canonicalFile.parentFile != daysDir.canonicalFile) return false
+
+        if (fileName.endsWith(".lgd")) {
+            val valid = try {
+                DayPackageCodec.decode(bytes)
+                true
+            } catch (_: Throwable) {
+                false
+            }
+            if (!valid) return false
+        } else {
+            val stride = GeneratedProtocol.TrajectoryRecord.SIZE
+            if (bytes.size % stride != 0) return false
+            val count = bytes.size / stride
+            for (i in 0 until count) {
+                if (TrajectoryRecord.decode(bytes, i * stride) == null) return false
+            }
+        }
+
+        val tmp = File(daysDir, "$fileName.tmp")
+        FileOutputStream(tmp).use { fos ->
+            fos.write(bytes)
+            fos.fd.sync()
+        }
+        if (!tmp.renameTo(target)) {
+            if (target.exists() && !target.delete()) {
+                tmp.delete()
+                return false
+            }
+            if (!tmp.renameTo(target)) {
+                tmp.delete()
+                return false
+            }
+        }
+        return true
+    }
+
     fun quarantineFiles(): List<File> =
         quarantineDir.listFiles()?.sortedBy { it.name } ?: emptyList()
 
@@ -253,6 +307,8 @@ class LocalDayStore(private val rootDir: File) {
     }
 
     companion object {
+        private val RAW_DAY_FILE_REGEX = Regex("^\\d{8}\\.(lgd|lgs)$")
+
         fun dayIdFromEpochMs(epochMs: Long, zone: ZoneOffset = ZoneOffset.ofHours(8)): Int {
             val zdt = Instant.ofEpochMilli(epochMs).atOffset(zone)
             return zdt.year * 10_000 + zdt.monthValue * 100 + zdt.dayOfMonth
@@ -263,13 +319,16 @@ class LocalDayStore(private val rootDir: File) {
             records: List<TrajectoryRecord>,
             isArchived: Boolean,
         ): DayTrackSummary {
+            val ordered = if (records.size <= 1) records else records.sortedBy { it.seqId }
             var distM = 0.0
             var prevValid: TrajectoryRecord? = null
             var minAlt = Int.MAX_VALUE
             var maxAlt = Int.MIN_VALUE
             var poiCount = 0
+            var totalSteps = 0
+            var prevStep: Int? = null
 
-            for (r in records) {
+            for (r in ordered) {
                 if (r.isPoi) poiCount++
                 if (r.altitudeM < minAlt) minAlt = r.altitudeM
                 if (r.altitudeM > maxAlt) maxAlt = r.altitudeM
@@ -282,17 +341,24 @@ class LocalDayStore(private val rootDir: File) {
                     }
                     prevValid = r
                 }
-            }
 
-            val firstSteps = records.first().stepCount
-            val lastSteps = records.last().stepCount
-            val steps = if (lastSteps >= firstSteps) lastSteps - firstSteps else lastSteps
+                val curr = r.stepCount and 0xFFFF
+                val prev = prevStep
+                if (prev != null) {
+                    totalSteps += when {
+                        curr >= prev -> curr - prev
+                        prev - curr > 32_768 -> (65_536 - prev) + curr
+                        else -> curr
+                    }
+                }
+                prevStep = curr
+            }
 
             return DayTrackSummary(
                 dayId = dayId,
-                recordCount = records.size,
+                recordCount = ordered.size,
                 distanceMeters = distM,
-                totalSteps = steps,
+                totalSteps = totalSteps,
                 poiCount = poiCount,
                 isArchived = isArchived,
                 minAltM = if (minAlt == Int.MAX_VALUE) 0 else minAlt,
