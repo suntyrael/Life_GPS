@@ -470,7 +470,7 @@ static void compact_work_handler(struct k_work *work)
 		for (uint16_t i = 0U; i < got; i++) {
 			const uint8_t *r = &scan_batch[(size_t)i * LGPS_RECORD_TRAJECTORY_SIZE];
 			uint32_t seq = rec_u32_le(&r[LGPS_RECORD_TRAJECTORY_OFF_SEQ_ID]);
-			uint32_t ts = rec_u32_le(&r[LGPS_RECORD_TRAJECTORY_OFF_TIMESTAMP_S]);
+			uint32_t ts = rec_u32_le(&r[LGPS_RECORD_TRAJECTORY_OFF_TIMESTAMP]);
 			uint32_t d;
 
 			if (seq >= cursor) {
@@ -512,7 +512,7 @@ static void compact_work_handler(struct k_work *work)
 		for (uint16_t i = 0U; (i < got) && (kept < COMPACT_MAX_RECS); i++) {
 			const uint8_t *r = &scan_batch[(size_t)i * LGPS_RECORD_TRAJECTORY_SIZE];
 			uint32_t seq = rec_u32_le(&r[LGPS_RECORD_TRAJECTORY_OFF_SEQ_ID]);
-			uint32_t ts = rec_u32_le(&r[LGPS_RECORD_TRAJECTORY_OFF_TIMESTAMP_S]);
+			uint32_t ts = rec_u32_le(&r[LGPS_RECORD_TRAJECTORY_OFF_TIMESTAMP]);
 
 			if (seq >= cursor) {
 				cursor = seq + 1U;
