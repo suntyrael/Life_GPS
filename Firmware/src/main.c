@@ -706,8 +706,8 @@ static void update_outdoor_calibration(const struct lgps_gnss_fix *fix)
 			     (k_mm > (persisted_pdr_k_mm + 5U)) ||
 			     ((k_mm + 5U) < persisted_pdr_k_mm))) {
 				uint8_t tlv[4] = {
-					LGPS_CFG_TAG_PDR_STEP_K,
-					2U,
+					LGPS_TLV_PDR_STEP_K_MM,
+					LGPS_TLV_PDR_STEP_K_MM_LEN,
 					(uint8_t)(k_mm & 0xFFU),
 					(uint8_t)((k_mm >> 8) & 0xFFU),
 				};
