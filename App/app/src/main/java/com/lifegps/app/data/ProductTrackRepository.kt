@@ -97,8 +97,17 @@ class ProductTrackRepository(
             try {
                 val tzMin = _deviceConfig.value.tzOffsetMin
                 val watermark = indexDb.getLastSyncedSeqId()
-                val result = syncEngine.syncAll(fromSeqId = watermark, tzOffsetMinutes = tzMin)
-                if (result.newWatermarkSeqId > watermark) {
+                val dev = bleRepo.device.value
+                val batteryPct = if (dev.batteryMv > 0) dev.batteryPct else null
+                val result = syncEngine.syncAll(
+                    fromSeqId = watermark,
+                    tzOffsetMinutes = tzMin,
+                    deviceBatteryPct = batteryPct,
+                    deviceCharging = dev.charging,
+                )
+                if (result.newWatermarkSeqId != watermark &&
+                    (result.error == null || result.newWatermarkSeqId > watermark)
+                ) {
                     indexDb.setLastSyncedSeqId(result.newWatermarkSeqId)
                 }
                 for (dayId in result.touchedDayIds) {
@@ -124,7 +133,9 @@ class ProductTrackRepository(
                 }
                 _days.value = indexDb.listDaySummaries()
                 _pois.value = indexDb.listPois()
-                _remoteDays.value = syncEngine.fetchRemoteDayIndex()
+                if (result.error == null || result.touchedDayIds.isNotEmpty() || result.failedDays.isNotEmpty()) {
+                    _remoteDays.value = syncEngine.fetchRemoteDayIndex()
+                }
                 _statusMessage.value = result.error
                     ?: "同步完成：${result.liveRecordsSynced} 条记录，${result.archivedDaysDownloaded} 个日包"
             } finally {
@@ -202,6 +213,7 @@ class ProductTrackRepository(
                 timeoutMs = 8_000L,
             )
             if (reply != null && reply.status == GeneratedProtocol.StatusCode.OK) {
+                indexDb.setLastSyncedSeqId(0L)
                 _remoteDays.value = emptyList()
                 bleRepo.clearRememberedDevice()
                 _statusMessage.value = "设备已执行恢复出厂设置并重启，请在系统蓝牙中忽略旧配对后重新连接"

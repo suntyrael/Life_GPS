@@ -8,6 +8,7 @@ import com.lifegps.core.protocol.GeneratedProtocol
 import com.lifegps.core.protocol.TrajectoryRecord
 import java.io.File
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import java.time.Instant
 import java.time.ZoneOffset
 import kotlin.math.asin
@@ -15,6 +16,13 @@ import kotlin.math.cos
 import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
+
+data class ArchivedDayMeta(
+    val dayId: Int,
+    val recordCount: Long,
+    val crc32: Long,
+    val fileLength: Long,
+)
 
 /**
  * Local offline-first binary trajectory storage:
@@ -40,6 +48,68 @@ class LocalDayStore(private val rootDir: File) {
     fun hasArchivedDay(dayId: Int): Boolean = archivedFile(dayId).isFile
 
     /**
+     * Reads LGD1 header + footer CRC-32 without decompressing the payload.
+     * Returns null if missing, truncated, or header CRC-16 validation fails.
+     */
+    @Synchronized
+    fun readArchivedDayMeta(dayId: Int): ArchivedDayMeta? {
+        val file = archivedFile(dayId)
+        if (!file.isFile) return null
+        return try {
+            RandomAccessFile(file, "r").use { raf ->
+                val fileLen = raf.length()
+                val minSize = GeneratedProtocol.DayPackage.HEADER_SIZE.toLong() +
+                    GeneratedProtocol.DayPackage.FOOTER_SIZE.toLong()
+                if (fileLen < minSize) return null
+
+                val hdrBytes = ByteArray(GeneratedProtocol.DayPackage.HEADER_SIZE)
+                raf.readFully(hdrBytes)
+                val header = DayPackageCodec.parseHeader(hdrBytes)
+                val expectedSize = GeneratedProtocol.DayPackage.HEADER_SIZE.toLong() +
+                    header.packedLen +
+                    GeneratedProtocol.DayPackage.FOOTER_SIZE.toLong()
+                if (fileLen != expectedSize) return null
+
+                raf.seek(GeneratedProtocol.DayPackage.HEADER_SIZE.toLong() + header.packedLen)
+                val crcBytes = ByteArray(4)
+                raf.readFully(crcBytes)
+                val footerCrc32 = (crcBytes[0].toLong() and 0xFFL) or
+                    ((crcBytes[1].toLong() and 0xFFL) shl 8) or
+                    ((crcBytes[2].toLong() and 0xFFL) shl 16) or
+                    ((crcBytes[3].toLong() and 0xFFL) shl 24)
+
+                ArchivedDayMeta(
+                    dayId = header.dayId.toInt(),
+                    recordCount = header.recordCount,
+                    crc32 = footerCrc32,
+                    fileLength = fileLen,
+                )
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    @Synchronized
+    fun readArchivedDayCrc32(dayId: Int): Long? = readArchivedDayMeta(dayId)?.crc32
+
+    /**
+     * Returns true iff a valid local `.lgd` archive exists for [dayId] whose CRC-32 and
+     * record count match the remote journal entry (so mid-day updated archives trigger re-download).
+     */
+    @Synchronized
+    fun hasMatchingArchive(
+        dayId: Int,
+        expectedCrc32: Long,
+        expectedRecordCount: Long,
+    ): Boolean {
+        val meta = readArchivedDayMeta(dayId) ?: return false
+        if (expectedRecordCount > 0L && meta.recordCount != expectedRecordCount) return false
+        if (expectedCrc32 != 0L && meta.crc32 != expectedCrc32) return false
+        return true
+    }
+
+    /**
      * Append live synced [records] to their local calendar `.lgs` files, deduplicating
      * by `seqId` per day. Returns the set of affected `dayId`s (YYYYMMDD).
      */
@@ -54,7 +124,6 @@ class LocalDayStore(private val rootDir: File) {
         val touched = LinkedHashSet<Int>()
 
         for ((dayId, dayRecs) in grouped) {
-            if (hasArchivedDay(dayId)) continue
             val existingSeqs = loadDayRecords(dayId).mapTo(HashSet()) { it.seqId }
             val fresh = dayRecs
                 .filter { it.seqId !in existingSeqs }
@@ -76,7 +145,8 @@ class LocalDayStore(private val rootDir: File) {
 
     /**
      * Validate a full LGD1 archive package (header CRC-16 + payload CRC-32 + per-record CRC-8),
-     * atomically commit to `days/<dayId>.lgd`, and supersede any `.lgs` live file for that day.
+     * atomically commit to `days/<dayId>.lgd`, and remove `days/<dayId>.lgs` ONLY if every
+     * live record's `seqId` is already present in the decoded archive.
      * On corruption, quarantines the raw bytes into `quarantine/` and throws.
      */
     @Synchronized
@@ -94,35 +164,56 @@ class LocalDayStore(private val rootDir: File) {
             fos.write(lgdBytes)
             fos.fd.sync()
         }
-        if (target.exists() && !target.delete()) {
-            tmp.delete()
-            throw IllegalStateException("Cannot replace existing archive ${target.name}")
-        }
         if (!tmp.renameTo(target)) {
-            tmp.delete()
-            throw IllegalStateException("Atomic rename failed for ${target.name}")
+            if (target.exists() && !target.delete()) {
+                tmp.delete()
+                throw IllegalStateException("Cannot replace existing archive ${target.name}")
+            }
+            if (!tmp.renameTo(target)) {
+                tmp.delete()
+                throw IllegalStateException("Atomic rename failed for ${target.name}")
+            }
         }
-        liveFile(dayId).delete()
+
+        val lgs = liveFile(dayId)
+        if (lgs.isFile) {
+            val archivedSeqs = decoded.records.mapTo(HashSet(decoded.records.size)) { it.seqId }
+            val hasUncoveredLive = readLiveRecordsFromFile(lgs).any { it.seqId !in archivedSeqs }
+            if (!hasUncoveredLive) {
+                lgs.delete()
+            }
+        }
         return decoded
     }
 
     @Synchronized
     fun loadDayRecords(dayId: Int): List<TrajectoryRecord> {
+        val bySeq = LinkedHashMap<Long, TrajectoryRecord>()
         val lgd = archivedFile(dayId)
         if (lgd.isFile) {
-            return DayPackageCodec.decode(lgd.readBytes()).records.sortedBy { it.seqId }
+            for (rec in DayPackageCodec.decode(lgd.readBytes()).records) {
+                bySeq[rec.seqId] = rec
+            }
         }
         val lgs = liveFile(dayId)
-        if (!lgs.isFile) return emptyList()
+        if (lgs.isFile) {
+            for (rec in readLiveRecordsFromFile(lgs)) {
+                bySeq.putIfAbsent(rec.seqId, rec)
+            }
+        }
+        return bySeq.values.sortedBy { it.seqId }
+    }
+
+    private fun readLiveRecordsFromFile(lgs: File): List<TrajectoryRecord> {
         val raw = lgs.readBytes()
         val stride = GeneratedProtocol.TrajectoryRecord.SIZE
         val count = raw.size / stride
-        val bySeq = LinkedHashMap<Long, TrajectoryRecord>(count)
+        val out = ArrayList<TrajectoryRecord>(count)
         for (i in 0 until count) {
             val rec = TrajectoryRecord.decode(raw, i * stride) ?: continue
-            bySeq[rec.seqId] = rec
+            out.add(rec)
         }
-        return bySeq.values.sortedBy { it.seqId }
+        return out
     }
 
     @Synchronized

@@ -84,14 +84,19 @@ object SyncProtocol {
         }
 
     fun encodeGetDayIndexReq(startIdx: Int = 0): ByteArray =
-        byteArrayOf((startIdx and 0xFF).toByte())
+        if (startIdx in 0..255) {
+            byteArrayOf(startIdx.toByte())
+        } else {
+            ByteArray(2).also { putU16(it, 0, startIdx) }
+        }
 
     fun decodeDayIndexPage(body: ByteArray): DayIndexPage? {
         if (body.size < 8) return null
         val ver = getU32(body, 0)
-        val total = body[4].toInt() and 0xFF
+        val ext = body[7].toInt() and 0xFF
+        val total = (body[4].toInt() and 0xFF) or ((ext and 0x0F) shl 8)
         val returned = body[5].toInt() and 0xFF
-        val start = body[6].toInt() and 0xFF
+        val start = (body[6].toInt() and 0xFF) or (((ext ushr 4) and 0x0F) shl 8)
         val entries = ArrayList<RemoteDayIndexEntry>(returned)
         var off = 8
         for (i in 0 until returned) {

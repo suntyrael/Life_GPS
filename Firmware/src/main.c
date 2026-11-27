@@ -515,6 +515,35 @@ static void update_heading_reference(const struct lgps_gnss_fix *fix)
 	}
 }
 
+static uint16_t current_attitude_heading_ddeg(void)
+{
+	float heading_deg = lgps_attitude_heading_rad(&attitude) * RAD_TO_DEG;
+
+	if (heading_deg < 0.0F) {
+		heading_deg += 360.0F;
+	}
+	if (!(heading_deg >= 0.0F)) {
+		return 0U;
+	}
+	if (heading_deg >= 359.9F) {
+		return 3599U;
+	}
+
+	return (uint16_t)(heading_deg * 10.0F);
+}
+
+static void sync_ble_nav_ctx(void)
+{
+	int32_t pdr_lat_e7 = 0;
+	int32_t pdr_lon_e7 = 0;
+	bool pdr_valid = lgps_nav_anchor_project(&geo_anchor, pdr.position_x_m, pdr.position_y_m,
+						 &pdr_lat_e7, &pdr_lon_e7);
+
+	lgps_ble_set_nav_ctx(pdr_valid, pdr_lat_e7, pdr_lon_e7, current_attitude_heading_ddeg(),
+			     lgps_floor_level(&floor_det), lgps_zupt_locked(&zupt),
+			     mag_anomaly_active, activity_state.kind == LGPS_ACT_VEHICLE);
+}
+
 /* Publish the current dead-reckoning position to the phone. */
 static void publish_pdr(void)
 {
@@ -524,6 +553,7 @@ static void publish_pdr(void)
 		heading_deg += 360.0F;
 	}
 
+	sync_ble_nav_ctx();
 	lgps_ble_publish_pdr((int32_t)(pdr.position_x_m * 1000.0F),
 			     (int32_t)(pdr.position_y_m * 1000.0F),
 			     (int16_t)(heading_deg * 10.0F), (uint16_t)pdr.steps_total);
@@ -779,7 +809,8 @@ static void maybe_record_trajectory(uint32_t now_ms, const struct lgps_telemetry
 	}
 
 	memset(&traj, 0, sizeof(traj));
-	traj.seq_id = lgps_recorder_commit(&recorder, &rsample);
+	(void)lgps_recorder_commit(&recorder, &rsample);
+	traj.seq_id = lgps_ring_alloc_seq_id();
 	traj.timestamp_s = lgps_time_now_utc_s(now_ms);
 	traj.subsecond_ms = (uint16_t)(now_ms % 1000U);
 	traj.lat_e7 = lat_e7;

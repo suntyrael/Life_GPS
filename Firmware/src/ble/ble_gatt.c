@@ -83,6 +83,8 @@ BUILD_ASSERT(LGPS_BATT_SOC_UNKNOWN == LGPS_BLE_SOC_UNKNOWN,
 #define LGPS_BLE_PAIRING_WINDOW_MS 60000U
 #define LGPS_BLE_SYNC_RECS_PER_CHUNK 7U /* 7 * 32 = 224 B <= 228 B max data payload */
 #define LGPS_BLE_DAY_INDEX_MAX_PAGE 8U  /* 9 + 8 * 28 = 233 B <= 235 B max cmd payload */
+#define LGPS_BLE_NOTIFY_RETRY_MAX 6U
+#define LGPS_BLE_NOTIFY_RETRY_MS 10U
 
 /* --- state ----------------------------------------------------------------- */
 
@@ -222,6 +224,21 @@ static struct k_spinlock status_lock;
 static atomic_t published_steps;
 static atomic_t published_soc_pct;
 
+/* Published by main thread via lgps_ble_set_nav_ctx(); read by command_thread in POI_MARK. */
+struct lgps_ble_nav_ctx {
+	int32_t pdr_lat_e7;
+	int32_t pdr_lon_e7;
+	uint16_t heading_ddeg;
+	int8_t floor_level;
+	bool pdr_valid;
+	bool zupt_locked;
+	bool mag_anomaly;
+	bool vehicle_mode;
+};
+
+static struct lgps_ble_nav_ctx nav_ctx;
+static struct k_spinlock nav_ctx_lock;
+
 /* Counted instead of logged inside the notify path; reported from publish(), in
  * the main thread, where the log backend is not on the notification path.
  */
@@ -320,12 +337,16 @@ static void adv_restart_handler(struct k_work *work)
 
 /* --- notifications --------------------------------------------------------- */
 
-static void notify_guarded(struct bt_gatt_attr *attr, const uint8_t *data, uint16_t len)
+static int notify_guarded(const struct bt_gatt_attr *attr, const void *data, uint16_t len)
 {
 	int err;
 
-	if ((attr == NULL) || !link_up) {
-		return;
+	if (attr == NULL) {
+		return -EINVAL;
+	}
+
+	if (!link_up) {
+		return -ENOTCONN;
 	}
 
 	err = bt_gatt_notify(NULL, attr, data, len);
@@ -340,6 +361,39 @@ static void notify_guarded(struct bt_gatt_attr *attr, const uint8_t *data, uint1
 		 */
 		(void)atomic_inc(&notify_failures);
 	}
+
+	return err;
+}
+
+/*
+ * Backpressure-aware notify helper for bulk DATA streaming (SYNC_READ / GET_ARCHIVE).
+ * Retries transient ATT TX exhaustion (-ENOMEM / -EAGAIN) up to 6 times with 10 ms
+ * backoff, failing immediately on disconnect or non-transient error.
+ */
+static int notify_guarded_retry(const struct bt_gatt_attr *attr, const void *data, uint16_t len)
+{
+	int err = -ENOTCONN;
+
+	for (uint8_t attempt = 0U; attempt < LGPS_BLE_NOTIFY_RETRY_MAX; attempt++) {
+		if (!link_up) {
+			return -ENOTCONN;
+		}
+
+		err = notify_guarded(attr, data, len);
+		if (err == 0) {
+			return 0;
+		}
+
+		if ((err != -ENOMEM) && (err != -EAGAIN)) {
+			return err;
+		}
+
+		if ((attempt + 1U) < LGPS_BLE_NOTIFY_RETRY_MAX) {
+			k_sleep(K_MSEC(LGPS_BLE_NOTIFY_RETRY_MS));
+		}
+	}
+
+	return err;
 }
 
 /* --- GATT ------------------------------------------------------------------ */
@@ -387,7 +441,7 @@ static void status_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 	k_spin_unlock(&status_lock, key);
 
 	if (valid) {
-		notify_guarded(status_attr, copy, (uint16_t)sizeof(copy));
+		(void)notify_guarded(status_attr, copy, (uint16_t)sizeof(copy));
 	}
 }
 
@@ -789,10 +843,15 @@ static uint8_t cmd_flash_info(uint8_t *payload, size_t capacity, size_t *out_len
 static uint8_t cmd_poi_mark(uint8_t *payload, size_t capacity, size_t *out_len)
 {
 	struct lgps_gnss_fix fix;
-	struct lgps_ring_stats stats = { 0 };
+	struct lgps_ble_nav_ctx nav;
 	struct lgps_traj_sample sample = { 0 };
 	uint8_t record[LGPS_RECORD_TRAJECTORY_SIZE];
+	k_spinlock_key_t key;
+	uint32_t now_ms;
 	atomic_val_t soc_pct;
+	bool pdr_source = false;
+	bool baro_alt = false;
+	uint8_t flags;
 	int err;
 
 	if (capacity < 2U) {
@@ -800,56 +859,91 @@ static uint8_t cmd_poi_mark(uint8_t *payload, size_t capacity, size_t *out_len)
 	}
 
 	lgps_gnss_get_fix(&fix);
-	if (!fix.valid) {
-		/* A POI without a position is not a point of interest; saying OK
-		 * here would make the app drop a pin at 0,0.
+	key = k_spin_lock(&nav_ctx_lock);
+	nav = nav_ctx;
+	k_spin_unlock(&nav_ctx_lock, key);
+
+	if (!fix.valid && !nav.pdr_valid) {
+		/* A POI without either a GNSS fix or a projected indoor PDR position
+		 * is not a point of interest; saying OK here would drop a pin at 0,0.
 		 */
 		return LGPS_BLE_INVALID_ARGUMENT;
 	}
 
-	lgps_ring_get_stats(&stats);
+	now_ms = lgps_diag_uptime_ms();
 	soc_pct = atomic_get(&published_soc_pct);
 
-	sample.seq_id = stats.records_written;
-	sample.timestamp_s = fix.utc_epoch_s;
-	sample.subsecond_ms = 0U;
-	sample.lat_e7 = fix.lat_e7;
-	sample.lon_e7 = fix.lon_e7;
-	/* The record field is int16 metres: a ballistic GNSS altitude jump must not
-	 * wrap the sign and place the POI below sea level.
-	 */
-	{
-		int32_t altitude_m = fix.hmsl_mm / 1000;
+	sample.seq_id = lgps_ring_alloc_seq_id();
+	sample.timestamp_s = (fix.valid && (fix.utc_epoch_s != 0U))
+				     ? fix.utc_epoch_s
+				     : lgps_time_now_utc_s(now_ms);
+	sample.subsecond_ms = (uint16_t)(now_ms % 1000U);
 
-		if (altitude_m > 32767) {
-			altitude_m = 32767;
-		} else if (altitude_m < -32768) {
-			altitude_m = -32768;
+	if (fix.valid) {
+		sample.lat_e7 = fix.lat_e7;
+		sample.lon_e7 = fix.lon_e7;
+		sample.speed_cms = fix.speed_cms;
+		sample.heading_ddeg = (fix.heading_ddeg <= 3599U) ? fix.heading_ddeg : 0U;
+		/* The record field is hDOP (traj.h: hdop_d1, 0.1 resolution). Before 0.4.0 the
+		 * firmware had no hDOP at all and stored pDOP/10 here; NAV-DOP now supplies the
+		 * real value, and pDOP is only the fallback for the first epochs after a fix
+		 * where NAV-DOP has not arrived yet. The u8 cast is clamped, not wrapped.
+		 */
+		{
+			uint16_t dop_1e2 = (fix.hdop_1e2 != 0U) ? fix.hdop_1e2 : fix.pdop_1e2;
+
+			if (dop_1e2 > 2550U) {
+				dop_1e2 = 2550U;
+			}
+
+			sample.hdop_d1 = (uint8_t)((dop_1e2 + 5U) / 10U);
 		}
-
-		sample.alt_m = (int16_t)altitude_m;
+		sample.satellites = fix.satellites;
+	} else {
+		pdr_source = true;
+		sample.lat_e7 = nav.pdr_lat_e7;
+		sample.lon_e7 = nav.pdr_lon_e7;
+		sample.speed_cms = 0U;
+		sample.heading_ddeg = (nav.heading_ddeg <= 3599U) ? nav.heading_ddeg : 0U;
+		sample.hdop_d1 = 0U;
+		sample.satellites = 0U;
 	}
-	sample.speed_cms = fix.speed_cms;
-	sample.heading_ddeg = fix.heading_ddeg;
-	sample.step_count = (uint16_t)atomic_get(&published_steps);
-	/* The record field is hDOP (traj.h: hdop_d1, 0.1 resolution). Before 0.4.0 the
-	 * firmware had no hDOP at all and stored pDOP/10 here; NAV-DOP now supplies the
-	 * real value, and pDOP is only the fallback for the first epochs after a fix
-	 * where NAV-DOP has not arrived yet. The u8 cast is clamped, not wrapped.
+
+	/* Prefer barometric MSL altitude when calibrated (consistent with main.c);
+	 * otherwise clamp GNSS hMSL to int16 metres so a spike cannot wrap the sign.
 	 */
-	{
-		uint16_t dop_1e2 = (fix.hdop_1e2 != 0U) ? fix.hdop_1e2 : fix.pdop_1e2;
-
-		if (dop_1e2 > 2550U) {
-			dop_1e2 = 2550U;
-		}
-
-		sample.hdop_d1 = (uint8_t)((dop_1e2 + 5U) / 10U);
+	if (lgps_baro_msl_valid()) {
+		sample.alt_m = (int16_t)CLAMP(lgps_baro_msl_altitude_mm() / 1000,
+					      INT16_MIN, INT16_MAX);
+		baro_alt = true;
+	} else if (fix.valid) {
+		sample.alt_m = (int16_t)CLAMP(fix.hmsl_mm / 1000, INT16_MIN, INT16_MAX);
 	}
-	sample.satellites = fix.satellites;
-	sample.status_flags = (uint8_t)(LGPS_FLAG_FIX_VALID | LGPS_FLAG_POI_EVENT);
-	sample.battery_pct = (soc_pct <= 100) ? (uint8_t)soc_pct : 0U;
-	sample.floor_level = 0;
+
+	sample.step_count = (uint16_t)(atomic_get(&published_steps) & 0xFFFF);
+
+	flags = (uint8_t)(LGPS_FLAG_FIX_VALID | LGPS_FLAG_POI_EVENT);
+	if (pdr_source) {
+		flags |= (uint8_t)LGPS_FLAG_NAV_SRC;
+	}
+	if (fix.valid && (fix.fix_type >= 3U)) {
+		flags |= (uint8_t)LGPS_FLAG_GNSS_TYPE;
+	}
+	if (nav.vehicle_mode) {
+		flags |= (uint8_t)LGPS_FLAG_VEHICLE_MODE;
+	}
+	if (nav.zupt_locked) {
+		flags |= (uint8_t)LGPS_FLAG_STN_LOCK;
+	}
+	if (nav.mag_anomaly) {
+		flags |= (uint8_t)LGPS_FLAG_MAG_ANOMALY;
+	}
+	if (baro_alt) {
+		flags |= (uint8_t)LGPS_FLAG_ALT_SRC;
+	}
+	sample.status_flags = flags;
+	sample.battery_pct = ((soc_pct >= 0) && (soc_pct <= 100)) ? (uint8_t)soc_pct : 0U;
+	sample.floor_level = nav.floor_level;
 
 	err = lgps_traj_encode(&sample, record);
 	if (err != 0) {
@@ -1561,7 +1655,7 @@ static uint8_t cmd_sync_read(const struct lgps_ble_cmd *cmd, uint8_t *payload, s
 	if (capacity < 1U + 7U) {
 		return LGPS_BLE_INTERNAL_ERROR;
 	}
-	if (cmd->payload_len != 10U) {
+	if ((cmd->payload_len != 10U) || (cmd->payload == NULL)) {
 		return LGPS_BLE_INVALID_ARGUMENT;
 	}
 
@@ -1575,14 +1669,19 @@ static uint8_t cmd_sync_read(const struct lgps_ble_cmd *cmd, uint8_t *payload, s
 	if (!sync_session_open || (transfer_id != sync_active_transfer_id)) {
 		return LGPS_BLE_SESSION_EXPIRED;
 	}
+	if (!data_subscribed) {
+		return LGPS_BLE_BUSY;
+	}
 
 	for (uint16_t c = 0U; c < max_chunks; c++) {
 		uint16_t count = 0U;
 		int err = lgps_ring_read_from_seq(cursor_seq, sync_rec_buf,
 						  (uint16_t)LGPS_BLE_SYNC_RECS_PER_CHUNK, &count);
-		uint32_t last_in_chunk = cursor_seq;
+		uint32_t last_in_chunk;
 		uint8_t flags = 0U;
+		bool chunk_is_last = false;
 		int frame_len;
+		int nerr;
 
 		if (err < 0) {
 			return LGPS_BLE_FLASH_ERROR;
@@ -1594,9 +1693,8 @@ static uint8_t cmd_sync_read(const struct lgps_ble_cmd *cmd, uint8_t *payload, s
 
 		last_in_chunk = read_le32(&sync_rec_buf[(size_t)(count - 1U) *
 							LGPS_RECORD_TRAJECTORY_SIZE]);
-		cursor_seq = last_in_chunk + 1U;
 		if (count < LGPS_BLE_SYNC_RECS_PER_CHUNK) {
-			done = true;
+			chunk_is_last = true;
 			flags |= (uint8_t)LGPS_BLE_DATA_FLAG_LAST_CHUNK;
 		}
 
@@ -1609,13 +1707,29 @@ static uint8_t cmd_sync_read(const struct lgps_ble_cmd *cmd, uint8_t *payload, s
 			return LGPS_BLE_INTERNAL_ERROR;
 		}
 
-		if (data_subscribed) {
-			notify_guarded(data_attr, sync_data_frame, (uint16_t)frame_len);
-			k_sleep(K_MSEC(4));
+		if (!data_subscribed) {
+			done = false;
+			if (chunks_sent == 0U) {
+				return LGPS_BLE_BUSY;
+			}
+			break;
 		}
-		chunks_sent++;
 
-		if (done) {
+		nerr = notify_guarded_retry(data_attr, sync_data_frame, (uint16_t)frame_len);
+		if (nerr < 0) {
+			done = false;
+			if ((chunks_sent == 0U) && (nerr == -ENOTCONN)) {
+				return LGPS_BLE_INTERNAL_ERROR;
+			}
+			break;
+		}
+
+		cursor_seq = last_in_chunk + 1U;
+		chunks_sent++;
+		k_sleep(K_MSEC(4));
+
+		if (chunk_is_last) {
+			done = true;
 			break;
 		}
 	}
@@ -1639,45 +1753,57 @@ static uint8_t cmd_sync_end(const struct lgps_ble_cmd *cmd)
 
 /*
  * GET_DAY_INDEX (0x23):
- *   req: optional [u8 start_idx]
- *   rsp: [u8 status, u32 index_version, u8 total_days, u8 returned_days,
- *         u8 start_idx, u8 reserved, entries[returned_days * 28B]]
+ *   req: optional [u8 start_idx] or [u16le start_idx] (for >255 archived days)
+ *   rsp: [u8 status, u32 index_version, u8 total_days_lo, u8 returned_days,
+ *         u8 start_idx_lo, u8 high_nibbles (lo4=total_days[11:8], hi4=start_idx[11:8]),
+ *         entries[returned_days * 28B]]
  */
 static uint8_t cmd_get_day_index(const struct lgps_ble_cmd *cmd, uint8_t *payload, size_t capacity,
 				 size_t *out_len)
 {
-	static struct lgps_journal journal_snap;
-	uint8_t start_idx = 0U;
+	struct lgps_journal_entry page[LGPS_BLE_DAY_INDEX_MAX_PAGE];
+	uint16_t start_idx = 0U;
+	uint16_t total_days = 0U;
+	uint32_t index_ver = 0U;
+	uint16_t copied;
 	uint8_t returned = 0U;
 
 	if (capacity < 9U) {
 		return LGPS_BLE_INTERNAL_ERROR;
 	}
+	if ((cmd->payload_len > 0U) && (cmd->payload == NULL)) {
+		return LGPS_BLE_INVALID_ARGUMENT;
+	}
 	if (cmd->payload_len == 1U) {
 		start_idx = cmd->payload[0];
+	} else if (cmd->payload_len == 2U) {
+		start_idx = read_le16(&cmd->payload[0]);
 	} else if (cmd->payload_len != 0U) {
 		return LGPS_BLE_INVALID_ARGUMENT;
 	}
 
-	lgps_archive_get_journal(&journal_snap);
+	copied = lgps_archive_copy_entries(start_idx, page,
+					   (uint16_t)LGPS_BLE_DAY_INDEX_MAX_PAGE,
+					   &total_days, &index_ver);
+	if (copied > (uint16_t)LGPS_BLE_DAY_INDEX_MAX_PAGE) {
+		copied = (uint16_t)LGPS_BLE_DAY_INDEX_MAX_PAGE;
+	}
 
-	write_le32(&payload[1], journal_snap.index_version);
-	payload[5] = (uint8_t)MIN(journal_snap.count, 255U);
-	payload[7] = start_idx;
-	payload[8] = 0U;
-
-	for (uint16_t idx = start_idx;
-	     (idx < journal_snap.count) && (returned < LGPS_BLE_DAY_INDEX_MAX_PAGE); idx++) {
+	for (uint16_t idx = 0U; idx < copied; idx++) {
 		size_t off = 9U + ((size_t)returned * LGPS_JOURNAL_ENTRY_SIZE);
 
 		if ((off + LGPS_JOURNAL_ENTRY_SIZE) > capacity) {
 			break;
 		}
-		lgps_journal_entry_encode(&journal_snap.entries[idx], &payload[off]);
+		lgps_journal_entry_encode(&page[idx], &payload[off]);
 		returned++;
 	}
 
+	write_le32(&payload[1], index_ver);
+	payload[5] = (uint8_t)(total_days & 0xFFU);
 	payload[6] = returned;
+	payload[7] = (uint8_t)(start_idx & 0xFFU);
+	payload[8] = (uint8_t)(((total_days >> 8) & 0x0FU) | (((start_idx >> 8) & 0x0FU) << 4));
 	*out_len = 9U + ((size_t)returned * LGPS_JOURNAL_ENTRY_SIZE);
 	return LGPS_BLE_OK;
 }
@@ -1703,8 +1829,11 @@ static uint8_t cmd_get_archive(const struct lgps_ble_cmd *cmd, uint8_t *payload,
 	if (capacity < 12U) {
 		return LGPS_BLE_INTERNAL_ERROR;
 	}
-	if (cmd->payload_len != 10U) {
+	if ((cmd->payload_len != 10U) || (cmd->payload == NULL)) {
 		return LGPS_BLE_INVALID_ARGUMENT;
+	}
+	if (!data_subscribed) {
+		return LGPS_BLE_BUSY;
 	}
 
 	day_id = read_le32(&cmd->payload[0]);
@@ -1717,9 +1846,11 @@ static uint8_t cmd_get_archive(const struct lgps_ble_cmd *cmd, uint8_t *payload,
 	for (uint16_t c = 0U; c < max_chunks; c++) {
 		uint16_t got = 0U;
 		uint8_t flags = 0U;
+		bool chunk_is_last = false;
 		int err = lgps_archive_read_chunk(day_id, offset, chunk_buf,
 						  (uint16_t)sizeof(chunk_buf), &got, &total_len);
 		int frame_len;
+		int nerr;
 
 		if (err == -ENOENT) {
 			return LGPS_BLE_NOT_FOUND;
@@ -1733,7 +1864,7 @@ static uint8_t cmd_get_archive(const struct lgps_ble_cmd *cmd, uint8_t *payload,
 		}
 
 		if ((offset + got) >= total_len) {
-			done = true;
+			chunk_is_last = true;
 			flags |= (uint8_t)LGPS_BLE_DATA_FLAG_LAST_CHUNK;
 		}
 
@@ -1744,14 +1875,29 @@ static uint8_t cmd_get_archive(const struct lgps_ble_cmd *cmd, uint8_t *payload,
 			return LGPS_BLE_INTERNAL_ERROR;
 		}
 
-		if (data_subscribed) {
-			notify_guarded(data_attr, data_frame, (uint16_t)frame_len);
-			k_sleep(K_MSEC(4));
+		if (!data_subscribed) {
+			done = false;
+			if (chunks_sent == 0U) {
+				return LGPS_BLE_BUSY;
+			}
+			break;
+		}
+
+		nerr = notify_guarded_retry(data_attr, data_frame, (uint16_t)frame_len);
+		if (nerr < 0) {
+			done = false;
+			if ((chunks_sent == 0U) && (nerr == -ENOTCONN)) {
+				return LGPS_BLE_INTERNAL_ERROR;
+			}
+			break;
 		}
 
 		offset += got;
 		chunks_sent++;
-		if (done) {
+		k_sleep(K_MSEC(4));
+
+		if (chunk_is_last) {
+			done = true;
 			break;
 		}
 	}
@@ -1995,7 +2141,7 @@ static void command_handler(void *unused1, void *unused2, void *unused3)
 			status);
 
 		if (control_subscribed) {
-			notify_guarded(control_attr, response, (uint16_t)frame_len);
+			(void)notify_guarded_retry(control_attr, response, (uint16_t)frame_len);
 		}
 
 		if (reboot_pending) {
@@ -2027,7 +2173,7 @@ static void log_handler(void *unused1, void *unused2, void *unused3)
 			}
 
 			if (log_subscribed) {
-				notify_guarded(log_attr, packet, (uint16_t)len);
+				(void)notify_guarded(log_attr, packet, (uint16_t)len);
 			}
 		}
 	}
@@ -2253,6 +2399,23 @@ void lgps_ble_open_pairing_window(void)
 #endif
 }
 
+void lgps_ble_set_nav_ctx(bool pdr_valid, int32_t pdr_lat_e7, int32_t pdr_lon_e7,
+			  uint16_t heading_ddeg, int8_t floor_level, bool zupt_locked,
+			  bool mag_anomaly, bool vehicle_mode)
+{
+	k_spinlock_key_t key = k_spin_lock(&nav_ctx_lock);
+
+	nav_ctx.pdr_valid = pdr_valid;
+	nav_ctx.pdr_lat_e7 = pdr_lat_e7;
+	nav_ctx.pdr_lon_e7 = pdr_lon_e7;
+	nav_ctx.heading_ddeg = (heading_ddeg <= 3599U) ? heading_ddeg : 0U;
+	nav_ctx.floor_level = floor_level;
+	nav_ctx.zupt_locked = zupt_locked;
+	nav_ctx.mag_anomaly = mag_anomaly;
+	nav_ctx.vehicle_mode = vehicle_mode;
+	k_spin_unlock(&nav_ctx_lock, key);
+}
+
 void lgps_ble_publish(const struct lgps_telemetry_snapshot *snap)
 {
 	struct lgps_ble_status status;
@@ -2287,7 +2450,7 @@ void lgps_ble_publish(const struct lgps_telemetry_snapshot *snap)
 	atomic_set(&published_soc_pct, (atomic_val_t)status.soc_pct);
 
 	if (status_subscribed) {
-		notify_guarded(status_attr, frame, (uint16_t)len);
+		(void)notify_guarded(status_attr, frame, (uint16_t)len);
 	}
 }
 
@@ -2319,7 +2482,7 @@ void lgps_ble_publish_imu(const int16_t acc_lsb[3], const int16_t gyro_lsb[3],
 	telem_seq_imu++;
 
 	if (len == (int)LGPS_BLE_TELEM_IMU_SIZE) {
-		notify_guarded(telem_attr, packet, (uint16_t)len);
+		(void)notify_guarded(telem_attr, packet, (uint16_t)len);
 	}
 }
 
@@ -2342,7 +2505,7 @@ void lgps_ble_publish_pdr(int32_t x_mm, int32_t y_mm, int16_t heading_ddeg, uint
 	telem_seq_pdr++;
 
 	if (len == (int)LGPS_BLE_TELEM_PDR_SIZE) {
-		notify_guarded(telem_attr, packet, (uint16_t)len);
+		(void)notify_guarded(telem_attr, packet, (uint16_t)len);
 	}
 }
 
@@ -2389,7 +2552,7 @@ void lgps_ble_publish_baro(const struct lgps_telemetry_snapshot *snap)
 	telem_seq_baro++;
 
 	if (len == (int)LGPS_BLE_TELEM_BARO_SIZE) {
-		notify_guarded(telem_attr, packet, (uint16_t)len);
+		(void)notify_guarded(telem_attr, packet, (uint16_t)len);
 	}
 }
 
@@ -2406,7 +2569,7 @@ void lgps_ble_publish_gnss(const struct lgps_ble_telem_gnss *gnss)
 	telem_seq_gnss++;
 
 	if (len == (int)LGPS_BLE_TELEM_GNSS_SIZE) {
-		notify_guarded(telem_attr, packet, (uint16_t)len);
+		(void)notify_guarded(telem_attr, packet, (uint16_t)len);
 	}
 }
 
@@ -2425,7 +2588,7 @@ void lgps_ble_publish_sat(const struct lgps_ble_telem_sat_entry *entries, uint8_
 	telem_seq_sat++;
 
 	if (len > 0) {
-		notify_guarded(telem_attr, packet, (uint16_t)len);
+		(void)notify_guarded(telem_attr, packet, (uint16_t)len);
 	}
 }
 
@@ -2442,7 +2605,7 @@ void lgps_ble_publish_nmea(const char *line, uint8_t len)
 	telem_seq_nmea++;
 
 	if (out_len > 0) {
-		notify_guarded(telem_attr, packet, (uint16_t)out_len);
+		(void)notify_guarded(telem_attr, packet, (uint16_t)out_len);
 	}
 }
 
@@ -2475,6 +2638,7 @@ int lgps_ble_init(void)
 	status_frame_valid = false;
 	pairing_window_open = false;
 	sync_session_open = false;
+	memset(&nav_ctx, 0, sizeof(nav_ctx));
 	atomic_clear(&published_steps);
 	atomic_set(&published_soc_pct, (atomic_val_t)LGPS_BLE_SOC_UNKNOWN);
 

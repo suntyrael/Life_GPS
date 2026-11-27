@@ -149,6 +149,28 @@ ZTEST(lifegps_ring, test_seal_only_clears_bits)
 		      "archived flags must be a subset of the writing flags");
 }
 
+ZTEST(lifegps_ring, test_release_to_erasing_only_clears_bits_and_keeps_crc)
+{
+	struct lgps_sector_header sealed;
+	struct lgps_sector_header released;
+	const uint8_t *sealed_bytes = (const uint8_t *)&sealed;
+	const uint8_t *released_bytes = (const uint8_t *)&released;
+
+	lgps_sector_header_init(&sealed, 12U, 4U);
+	lgps_sector_header_seal(&sealed);
+	released = sealed;
+	released.commit_flags = LGPS_RING_FLAGS_ERASING;
+
+	for (size_t i = 0U; i < sizeof(released); i++) {
+		zassert_equal(released_bytes[i], (uint8_t)(released_bytes[i] & sealed_bytes[i]),
+			      "byte %u needs a 0 -> 1 transition (illegal on NOR)",
+			      (unsigned int)i);
+	}
+	zassert_equal(released.erase_count, sealed.erase_count, "erase_count preserved");
+	zassert_equal(released.header_crc16, sealed.header_crc16, "header_crc16 preserved");
+	zassert_true(lgps_sector_header_valid(&released), "released header must stay valid");
+}
+
 ZTEST(lifegps_ring, test_slot_erased)
 {
 	uint8_t slot[LGPS_RING_RECORD_SIZE];

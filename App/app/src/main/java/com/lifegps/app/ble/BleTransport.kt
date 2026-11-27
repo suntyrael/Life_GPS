@@ -124,8 +124,22 @@ class BleTransport(
     @Volatile
     private var telemChar: BluetoothGattCharacteristic? = null
 
+    private data class PendingCccdWrite(val uuid: UUID, val enable: Boolean)
+
     @Volatile
     private var cccdFailed = false
+
+    @Volatile
+    private var activeCccdWrite: PendingCccdWrite? = null
+
+    @Volatile
+    private var bondingRetryCount = 0
+
+    private val bondLock = Any()
+    private var pendingBondCccd: PendingCccdWrite? = null
+    private var bondWaitReceiver: BroadcastReceiver? = null
+    private var bondWaitTimeoutJob: Job? = null
+    private var bondRetryJob: Job? = null
 
     @Volatile
     private var foundCount = 0
@@ -139,12 +153,7 @@ class BleTransport(
     private val bondReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
-            val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-            }
+            val device = extractBluetoothDevice(intent)
             if (device != null && activeAddress != null && device.address == activeAddress) {
                 val raw = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
                 _bondState.value = mapBondState(raw)
@@ -158,7 +167,7 @@ class BleTransport(
                 appContext,
                 bondReceiver,
                 IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED),
-                ContextCompat.RECEIVER_NOT_EXPORTED,
+                ContextCompat.RECEIVER_EXPORTED,
             )
             bondReceiverRegistered = true
         } catch (_: Throwable) {
@@ -401,6 +410,8 @@ class BleTransport(
             BondState.NONE
         }
         cccdFailed = false
+        activeCccdWrite = null
+        bondingRetryCount = 0
         connectionMtu = 0
         _state.value = LinkState.CONNECTING
         try {
@@ -411,6 +422,7 @@ class BleTransport(
     }
 
     override fun disconnect() {
+        clearBondWait()
         val current = gatt
         if (current == null) {
             _state.value = LinkState.DISCONNECTED
@@ -424,6 +436,9 @@ class BleTransport(
     }
 
     private fun forgetGatt(target: BluetoothGatt?, disconnectFirst: Boolean) {
+        clearBondWait()
+        activeCccdWrite = null
+        bondingRetryCount = 0
         if (target != null && gatt === target) {
             gatt = null
             statusChar = null
@@ -571,9 +586,27 @@ class BleTransport(
             status: Int,
         ) {
             if (g !== gatt) return
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                cccdFailed = true
+            val written = activeCccdWrite ?: descriptor.characteristic?.uuid?.let {
+                PendingCccdWrite(it, enable = true)
             }
+            activeCccdWrite = null
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                completeOp()
+                return
+            }
+            if (isAuthOrEncryptionError(status) && written != null) {
+                if (bondingRetryCount < MAX_BOND_RETRIES) {
+                    bondingRetryCount++
+                    handleCccdAuthError(g, written)
+                    return
+                }
+                clearBondWait()
+                cccdFailed = true
+                resetQueue()
+                _state.value = LinkState.ERROR(BOND_ERROR_MESSAGE)
+                return
+            }
+            cccdFailed = true
             completeOp()
         }
 
@@ -599,6 +632,185 @@ class BleTransport(
         }
     }
 
+    private fun handleCccdAuthError(g: BluetoothGatt, pending: PendingCccdWrite) {
+        val device = g.device
+        val currentBondState = try {
+            device.bondState
+        } catch (_: SecurityException) {
+            BluetoothDevice.BOND_NONE
+        }
+        _bondState.value = mapBondState(currentBondState)
+
+        if (currentBondState == BluetoothDevice.BOND_BONDED) {
+            scheduleCccdRetry(g, pending)
+            return
+        }
+
+        clearBondWait()
+        val targetAddress = device.address
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
+                val dev = extractBluetoothDevice(intent) ?: return
+                if (dev.address != targetAddress) return
+                val newState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
+                _bondState.value = mapBondState(newState)
+                when (newState) {
+                    BluetoothDevice.BOND_BONDED -> {
+                        val toRetry = takePendingBondCccdAndClear() ?: return
+                        scheduleCccdRetry(g, toRetry)
+                    }
+                    BluetoothDevice.BOND_NONE -> {
+                        onBondWaitFailed(g)
+                    }
+                }
+            }
+        }
+
+        val registered = try {
+            ContextCompat.registerReceiver(
+                appContext,
+                receiver,
+                IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED),
+                ContextCompat.RECEIVER_EXPORTED,
+            )
+            true
+        } catch (_: Throwable) {
+            false
+        }
+
+        if (!registered) {
+            onBondWaitFailed(g, requirePending = false)
+            return
+        }
+
+        synchronized(bondLock) {
+            pendingBondCccd = pending
+            bondWaitReceiver = receiver
+            bondWaitTimeoutJob = scope.launch {
+                delay(BOND_TIMEOUT_MS)
+                onBondWaitFailed(g)
+            }
+        }
+
+        if (currentBondState == BluetoothDevice.BOND_NONE) {
+            val started = try {
+                device.createBond()
+            } catch (_: SecurityException) {
+                false
+            }
+            val postState = try {
+                device.bondState
+            } catch (_: SecurityException) {
+                BluetoothDevice.BOND_NONE
+            }
+            _bondState.value = mapBondState(postState)
+            if (postState == BluetoothDevice.BOND_BONDED) {
+                val toRetry = takePendingBondCccdAndClear()
+                if (toRetry != null) {
+                    scheduleCccdRetry(g, toRetry)
+                }
+                return
+            }
+            if (!started && postState == BluetoothDevice.BOND_NONE) {
+                onBondWaitFailed(g)
+                return
+            }
+        } else {
+            val postState = try {
+                device.bondState
+            } catch (_: SecurityException) {
+                BluetoothDevice.BOND_NONE
+            }
+            if (postState == BluetoothDevice.BOND_BONDED) {
+                val toRetry = takePendingBondCccdAndClear()
+                if (toRetry != null) {
+                    scheduleCccdRetry(g, toRetry)
+                }
+            }
+        }
+    }
+
+    private fun scheduleCccdRetry(expectedGatt: BluetoothGatt, pending: PendingCccdWrite) {
+        synchronized(bondLock) {
+            bondRetryJob?.cancel()
+            bondRetryJob = scope.launch {
+                delay(BOND_RETRY_DELAY_MS)
+                if (closed || gatt !== expectedGatt) return@launch
+                retryCccd(pending)
+            }
+        }
+    }
+
+    private fun retryCccd(pending: PendingCccdWrite) {
+        synchronized(queueLock) {
+            gattQueue.addFirst { writeCccd(pending.uuid, pending.enable) }
+            queueBusy = false
+        }
+        drainQueue()
+    }
+
+    private fun takePendingBondCccdAndClear(): PendingCccdWrite? {
+        val pending: PendingCccdWrite?
+        val receiver: BroadcastReceiver?
+        val timeoutJob: Job?
+        synchronized(bondLock) {
+            pending = pendingBondCccd
+            pendingBondCccd = null
+            receiver = bondWaitReceiver
+            bondWaitReceiver = null
+            timeoutJob = bondWaitTimeoutJob
+            bondWaitTimeoutJob = null
+        }
+        timeoutJob?.cancel()
+        if (receiver != null) {
+            try {
+                appContext.unregisterReceiver(receiver)
+            } catch (_: Throwable) {
+                // ignore
+            }
+        }
+        return pending
+    }
+
+    private fun clearBondWait() {
+        val receiver: BroadcastReceiver?
+        val timeoutJob: Job?
+        val retryJob: Job?
+        synchronized(bondLock) {
+            pendingBondCccd = null
+            receiver = bondWaitReceiver
+            bondWaitReceiver = null
+            timeoutJob = bondWaitTimeoutJob
+            bondWaitTimeoutJob = null
+            retryJob = bondRetryJob
+            bondRetryJob = null
+        }
+        timeoutJob?.cancel()
+        retryJob?.cancel()
+        if (receiver != null) {
+            try {
+                appContext.unregisterReceiver(receiver)
+            } catch (_: Throwable) {
+                // ignore
+            }
+        }
+    }
+
+    private fun onBondWaitFailed(expectedGatt: BluetoothGatt, requirePending: Boolean = true) {
+        val pending = takePendingBondCccdAndClear()
+        if (requirePending && pending == null) return
+        if (closed || gatt !== expectedGatt) return
+        cccdFailed = true
+        resetQueue()
+        _state.value = LinkState.ERROR(BOND_ERROR_MESSAGE)
+    }
+
+    private fun isAuthOrEncryptionError(status: Int): Boolean =
+        status == BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION ||
+            status == BluetoothGatt.GATT_INSUFFICIENT_ENCRYPTION ||
+            status == GATT_AUTH_FAIL
+
     private fun writeCccd(uuid: UUID, enable: Boolean): Boolean {
         val current = gatt ?: return false
         val service = current.getService(BleUuids.SERVICE) ?: return false
@@ -610,7 +822,8 @@ class BleTransport(
         } else {
             BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
         }
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        activeCccdWrite = PendingCccdWrite(uuid, enable)
+        val accepted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             current.writeDescriptor(descriptor, payload) == BluetoothStatusCodes.SUCCESS
         } else {
             @Suppress("DEPRECATION")
@@ -618,6 +831,10 @@ class BleTransport(
             @Suppress("DEPRECATION")
             current.writeDescriptor(descriptor)
         }
+        if (!accepted) {
+            activeCccdWrite = null
+        }
+        return accepted
     }
 
     // --- command writes -------------------------------------------------------
@@ -671,6 +888,7 @@ class BleTransport(
         if (closed) return
         closed = true
         stopScan()
+        clearBondWait()
         scope.cancel()
         if (bondReceiverRegistered) {
             try {
@@ -686,6 +904,14 @@ class BleTransport(
     }
 
     // --- platform helpers -----------------------------------------------------
+
+    private fun extractBluetoothDevice(intent: Intent): BluetoothDevice? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+        }
 
     private fun mapBondState(raw: Int): BondState = when (raw) {
         BluetoothDevice.BOND_BONDED -> BondState.BONDED
@@ -717,5 +943,10 @@ class BleTransport(
         const val REQUESTED_MTU = 247
         const val SCAN_TIMEOUT_MS = 10_000L
         const val SCAN_FILTER_FALLBACK_MS = 4_000L
+        const val GATT_AUTH_FAIL = 137
+        const val MAX_BOND_RETRIES = 2
+        const val BOND_TIMEOUT_MS = 25_000L
+        const val BOND_RETRY_DELAY_MS = 200L
+        const val BOND_ERROR_MESSAGE = "BLE 配对失败或已取消，请长按设备 KEY1 3秒进入配对模式后重试"
     }
 }

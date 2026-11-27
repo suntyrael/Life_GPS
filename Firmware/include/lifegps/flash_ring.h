@@ -82,12 +82,28 @@ void lgps_ring_get_capacity(struct lgps_ring_capacity *out);
 /* Highest trajectory seq_id recovered on mount or appended since boot (0 when empty). */
 uint32_t lgps_ring_last_seq_id(void);
 
+/* Thread-safe monotonic seq_id allocator shared by recorder and BLE POI_MARK. */
+uint32_t lgps_ring_alloc_seq_id(void);
+
 /*
  * Read up to @p max_records valid 32-byte trajectory records whose seq_id >= @p start_seq,
  * ordered by sector_seq then slot index. Used by BLE SYNC_READ and nightly archiver.
  */
 int lgps_ring_read_from_seq(uint32_t start_seq, uint8_t *out_buf, uint16_t max_records,
 			    uint16_t *out_count);
+
+/*
+ * Count valid trajectory records across all non-erasing staging ring sectors
+ * whose seq_id > @p after_seq_id.
+ */
+uint16_t lgps_ring_count_after_seq(uint32_t after_seq_id);
+
+/*
+ * Mark sealed (non-active) staging ring sectors as LGPS_RING_FLAGS_ERASING
+ * (0x0000, pure 1->0 NOR update preserving erase_count and header_crc16) once
+ * every valid record in the sector has seq_id <= @p max_archived_seq.
+ */
+int lgps_ring_release_sectors_up_to(uint32_t max_archived_seq);
 
 /* Erase all 16 staging ring sectors (0..15) and reset cursors (FACTORY_RESET 0x51). */
 int lgps_ring_erase_all(void);

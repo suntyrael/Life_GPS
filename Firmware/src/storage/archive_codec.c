@@ -474,11 +474,12 @@ void lgps_journal_init(struct lgps_journal *j, uint32_t flash_limit_bytes)
 int lgps_journal_add(struct lgps_journal *j, const struct lgps_journal_entry *entry)
 {
 	uint32_t aligned_len;
+	uint32_t aligned_end;
 
 	if ((j == NULL) || (entry == NULL) || (entry->day_id == 0U)) {
 		return -EINVAL;
 	}
-	if (j->count >= LGPS_JOURNAL_MAX_DAYS) {
+	if (entry->package_len > (UINT32_MAX - 4095U)) {
 		return -ENOSPC;
 	}
 
@@ -489,18 +490,30 @@ int lgps_journal_add(struct lgps_journal *j, const struct lgps_journal_entry *en
 		return -ENOSPC;
 	}
 
-	/* Replace existing day_id if re-archived, else append. */
+	aligned_end = entry->flash_offset + aligned_len;
+
+	/* Replace existing day_id in place if re-archived / merged. */
 	for (uint16_t i = 0U; i < j->count; i++) {
 		if (j->entries[i].day_id == entry->day_id) {
 			j->entries[i] = *entry;
+			if (aligned_end > j->next_write_offset) {
+				j->next_write_offset = aligned_end;
+			}
 			j->index_version++;
 			return 0;
 		}
 	}
 
+	/* Evict oldest entry when the 2048-day table is full. */
+	if (j->count >= LGPS_JOURNAL_MAX_DAYS) {
+		memmove(&j->entries[0], &j->entries[1],
+			(size_t)(LGPS_JOURNAL_MAX_DAYS - 1U) * sizeof(j->entries[0]));
+		j->count = (uint16_t)(LGPS_JOURNAL_MAX_DAYS - 1U);
+	}
+
 	j->entries[j->count++] = *entry;
-	if ((entry->flash_offset + aligned_len) > j->next_write_offset) {
-		j->next_write_offset = entry->flash_offset + aligned_len;
+	if (aligned_end > j->next_write_offset) {
+		j->next_write_offset = aligned_end;
 	}
 	j->index_version++;
 	return 0;

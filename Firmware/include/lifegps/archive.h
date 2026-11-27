@@ -22,15 +22,17 @@
  *   Sector  16      (0x10000..0x10FFF): calibration store (4 KB)
  *   Sector  17      (0x11000..0x11FFF): baro baseline store (4 KB)
  *   Sectors 18..19  (0x12000..0x13FFF): device config TLV store (8 KB)
- *   Sectors 20..21  (0x14000..0x15FFF): journal index ping-pong (8 KB, up to 128 days)
- *   Offset  0x16000 .. (traj_bytes - 1): archived LGD1 day packages (scales to 32M or 64M)
+ *   Sectors 20..35  (0x14000..0x23FFF): journal index Bank A (64 KB, up to 2048 days)
+ *   Sectors 36..51  (0x24000..0x33FFF): journal index Bank B (64 KB, up to 2048 days)
+ *   Offset  0x34000 .. (traj_bytes - 1): archived LGD1 day packages (scales to 32M or 64M)
  */
 #define LGPS_ARCHIVE_CONFIG_SECTOR_START 18U
+#define LGPS_ARCHIVE_JOURNAL_BANK_SECTORS 16U
 #define LGPS_ARCHIVE_JOURNAL_SECTOR_A 20U
-#define LGPS_ARCHIVE_JOURNAL_SECTOR_B 21U
-#define LGPS_ARCHIVE_DATA_OFFSET (22U * 4096U)
+#define LGPS_ARCHIVE_JOURNAL_SECTOR_B 36U
+#define LGPS_ARCHIVE_DATA_OFFSET (52U * 4096U)
 
-#define LGPS_JOURNAL_MAX_DAYS 128U
+#define LGPS_JOURNAL_MAX_DAYS 2048U
 #define LGPS_JOURNAL_ENTRY_SIZE 28U
 #define LGPS_JOURNAL_MAGIC 0x4A4E4C31U /* "JNL1" */
 
@@ -119,11 +121,28 @@ void lgps_journal_entry_decode(const uint8_t in[LGPS_JOURNAL_ENTRY_SIZE], struct
 
 /* --- Runtime NOR journal & archive backend (journal_store.c) --------------- */
 
-/* Mount ping-pong journal index from NOR sectors 20..21 bounded by SFDP traj_bytes. */
+/* Mount multi-sector ping-pong journal index from NOR sectors 20..51 bounded by SFDP traj_bytes. */
 int lgps_archive_init(void);
 
-/* Snapshot current journal metadata (thread-safe). */
+/* Snapshot current journal metadata (thread-safe; caller must NOT place struct lgps_journal on stack). */
 void lgps_archive_get_journal(struct lgps_journal *out);
+
+/* Copy up to @p max_entries journal entries starting at @p start_idx without copying the full table. */
+uint16_t lgps_archive_copy_entries(uint16_t start_idx, struct lgps_journal_entry *out,
+				   uint16_t max_entries, uint16_t *total_out,
+				   uint32_t *index_ver_out);
+
+/* Return true if @p day_id is currently indexed in the journal. */
+bool lgps_archive_has_day(uint32_t day_id);
+
+/* Copy one journal entry for @p day_id into @p out; returns 0 or -ENOENT / -EINVAL. */
+int lgps_archive_get_day_entry(uint32_t day_id, struct lgps_journal_entry *out);
+
+/* Number of days currently indexed in the journal. */
+uint16_t lgps_archive_day_count(void);
+
+/* Current monotonic journal index version. */
+uint32_t lgps_archive_index_version(void);
 
 /* Write a complete encoded LGD1 package to NOR and commit journal entry. */
 int lgps_archive_write_day(uint32_t day_id, uint32_t record_count, uint32_t traj_crc32,
@@ -148,8 +167,8 @@ uint16_t lgps_archive_used_permille(void);
 
 /*
  * Non-blocking scheduler hook called periodically from main loop.
- * Compacts unarchived staging-ring records belonging to a completed day (or the
- * current day during the configured nightly idle window) into LGD1 on a
+ * Compacts unarchived staging-ring records belonging to completed days (or the
+ * current day when the staging ring reaches >=75% watermark) into LGD1 on a
  * dedicated storage workqueue so main/IMU/BLE are never blocked by NOR erases.
  */
 void lgps_archive_maybe_compact(uint32_t now_utc_s, int32_t tz_offset_s, uint8_t archive_hour_utc,

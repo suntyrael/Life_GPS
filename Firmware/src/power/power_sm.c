@@ -29,10 +29,14 @@ LOG_MODULE_REGISTER(lgps_power, LOG_LEVEL_INF);
  * Nine slow blinks (three colours x on/off) plus a small margin.
  */
 #define SHUTDOWN_SEQUENCE_MS (3U * 3U * 2U * 500U + 500U)
-/* Hold duration required on KEY1_POI after waking from System OFF (prevents pocket bumps). */
-#define WAKE_CONFIRM_HOLD_MS 3000U
+/*
+ * Hold duration required on KEY1_POI or KEY2_MODE after waking from System OFF
+ * to reject accidental pocket bumps (Q1=A: 2.5 s wake-confirm hold).
+ */
+#define WAKE_CONFIRM_HOLD_MS 2500U
 
 static const struct gpio_dt_spec key_poi_wake = GPIO_DT_SPEC_GET(DT_NODELABEL(key_poi), gpios);
+static const struct gpio_dt_spec key_mode_wake = GPIO_DT_SPEC_GET(DT_NODELABEL(key_mode), gpios);
 static const struct device *const ext_nor = DEVICE_DT_GET(DT_NODELABEL(w25q512));
 
 static K_MUTEX_DEFINE(power_lock);
@@ -43,6 +47,50 @@ static bool last_charging;
 static struct k_work_delayable shutdown_work;
 static lgps_power_poi_cb_t poi_callback;
 static lgps_power_pairing_cb_t pairing_callback;
+
+static bool wake_key_is_pressed(const struct gpio_dt_spec *spec)
+{
+	int val;
+
+	if ((spec == NULL) || !gpio_is_ready_dt(spec)) {
+		return false;
+	}
+
+	/*
+	 * Read the physical pad level directly (same active-low convention as
+	 * keys.c and board_io.c) to avoid the gpio_pin_get_dt() polarity trap.
+	 */
+	val = gpio_pin_get_raw(spec->port, spec->pin);
+	if (val < 0) {
+		LOG_ERR("wake key pin %u read failed (%d)", (unsigned int)spec->pin, val);
+		return false;
+	}
+
+	return val == 0;
+}
+
+static void configure_wake_keys_for_poweroff(void)
+{
+	int ret;
+
+	/*
+	 * Configure both KEY1_POI (P1.06) and KEY2_MODE (P1.08), active-low with
+	 * internal pull-up, as System OFF level-low wake sources.
+	 */
+	if (gpio_is_ready_dt(&key_poi_wake)) {
+		ret = gpio_pin_interrupt_configure_dt(&key_poi_wake, GPIO_INT_LEVEL_LOW);
+		if (ret < 0) {
+			LOG_ERR("KEY1_POI wake IRQ configure failed (%d)", ret);
+		}
+	}
+
+	if (gpio_is_ready_dt(&key_mode_wake)) {
+		ret = gpio_pin_interrupt_configure_dt(&key_mode_wake, GPIO_INT_LEVEL_LOW);
+		if (ret < 0) {
+			LOG_ERR("KEY2_MODE wake IRQ configure failed (%d)", ret);
+		}
+	}
+}
 
 static void schedule_shutdown_locked(void)
 {
@@ -71,10 +119,7 @@ static void enter_system_off(void)
 	}
 #endif
 
-	/* Configure KEY1_POI (P1.06, active-low with internal pull-up) as System OFF wake. */
-	if (gpio_is_ready_dt(&key_poi_wake)) {
-		(void)gpio_pin_interrupt_configure_dt(&key_poi_wake, GPIO_INT_LEVEL_LOW);
-	}
+	configure_wake_keys_for_poweroff();
 
 	/* Let the last UART line drain before the rail collapses. */
 	k_msleep(50);
@@ -84,37 +129,69 @@ static void enter_system_off(void)
 
 void lgps_power_boot_confirm(void)
 {
-	uint32_t cause = 0U;
+	uint32_t cause;
+	bool poi_ready;
+	bool mode_ready;
 
+	/*
+	 * Gate Q1=A 2.5 s System OFF wake-confirm behind CONFIG_LGPS_BOOT_HOLD_8S
+	 * so conf/debug.conf continues to skip the hold during bench development.
+	 */
 	if (!IS_ENABLED(CONFIG_LGPS_BOOT_HOLD_8S)) {
 		return;
 	}
 
-	if (hwinfo_get_reset_cause(&cause) != 0) {
-		return;
-	}
+	/* Read cached reset cause (lgps_diag_banner() already cleared RESETREAS). */
+	cause = lgps_diag_reset_cause_raw();
 
 	/* Only gate wakes from System OFF; POR, J-Link debug, and OTA/software reboots boot immediately. */
 	if ((cause & RESET_LOW_POWER_WAKE) == 0U) {
 		return;
 	}
 
-	if (!gpio_is_ready_dt(&key_poi_wake)) {
+	poi_ready = gpio_is_ready_dt(&key_poi_wake);
+	mode_ready = gpio_is_ready_dt(&key_mode_wake);
+
+	if (!poi_ready && !mode_ready) {
 		return;
 	}
-	(void)gpio_pin_configure_dt(&key_poi_wake, GPIO_INPUT);
+
+	if (poi_ready) {
+		int ret = gpio_pin_configure_dt(&key_poi_wake, GPIO_INPUT);
+
+		if (ret < 0) {
+			LOG_ERR("KEY1_POI wake input configure failed (%d)", ret);
+			poi_ready = false;
+		}
+	}
+
+	if (mode_ready) {
+		int ret = gpio_pin_configure_dt(&key_mode_wake, GPIO_INPUT);
+
+		if (ret < 0) {
+			LOG_ERR("KEY2_MODE wake input configure failed (%d)", ret);
+			mode_ready = false;
+		}
+	}
+
+	if (!poi_ready && !mode_ready) {
+		return;
+	}
 
 	for (uint32_t held_ms = 0U; held_ms < WAKE_CONFIRM_HOLD_MS; held_ms += 50U) {
-		if (gpio_pin_get_dt(&key_poi_wake) <= 0) {
-			LOG_INF("System OFF wake aborted (KEY1 released at %u ms)", held_ms);
-			(void)gpio_pin_interrupt_configure_dt(&key_poi_wake, GPIO_INT_LEVEL_LOW);
+		bool poi_pressed = poi_ready && wake_key_is_pressed(&key_poi_wake);
+		bool mode_pressed = mode_ready && wake_key_is_pressed(&key_mode_wake);
+
+		if (!poi_pressed && !mode_pressed) {
+			LOG_INF("System OFF wake aborted (keys released at %u ms)", held_ms);
+			configure_wake_keys_for_poweroff();
 			k_msleep(20);
 			sys_poweroff();
 		}
 		k_msleep(50);
 	}
 
-	LOG_INF("System OFF wake confirmed (KEY1 held %u ms)", WAKE_CONFIRM_HOLD_MS);
+	LOG_INF("System OFF wake confirmed (key held %u ms)", WAKE_CONFIRM_HOLD_MS);
 }
 
 static void shutdown_work_handler(struct k_work *work)

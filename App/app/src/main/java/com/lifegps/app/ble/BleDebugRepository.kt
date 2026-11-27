@@ -38,6 +38,7 @@ import java.time.LocalTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.TimeZone
 import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.sqrt
@@ -417,16 +418,10 @@ class BleDebugRepository(
         }
     }
 
-    private fun buildSetTimePayload(): ByteArray {
-        val unixSec = Instant.now().epochSecond
-        val lgpsEpoch = (unixSec - com.lifegps.core.protocol.TrajectoryRecord.LIFE_GPS_EPOCH_UNIX_S).coerceAtLeast(0L)
-        return byteArrayOf(
-            (lgpsEpoch and 0xFFL).toByte(),
-            ((lgpsEpoch ushr 8) and 0xFFL).toByte(),
-            ((lgpsEpoch ushr 16) and 0xFFL).toByte(),
-            ((lgpsEpoch ushr 24) and 0xFFL).toByte(),
-        )
-    }
+    private fun buildSetTimePayload(
+        nowMs: Long = System.currentTimeMillis(),
+        tzOffsetMin: Int = TimeZone.getDefault().getOffset(nowMs) / 60_000,
+    ): ByteArray = Companion.buildSetTimePayload(nowMs = nowMs, tzOffsetMin = tzOffsetMin)
 
     private suspend fun runAutoCommand(opcode: Opcode) {
         val result = execute(opcode, ByteArray(0))
@@ -1368,15 +1363,12 @@ class BleDebugRepository(
         transport.disconnect()
     }
 
-    /** Sends `SET_TIME (0x11)` with the phone's current UTC in Life_GPS epoch seconds. */
+    /** Sends `SET_TIME (0x11)` with the phone's current UTC, subsecond ms, and local timezone offset. */
     fun syncTimeNow() {
-        val unixSec = Instant.now().epochSecond
-        val lgpsEpoch = (unixSec - com.lifegps.core.protocol.TrajectoryRecord.LIFE_GPS_EPOCH_UNIX_S).coerceAtLeast(0L)
-        val b0 = (lgpsEpoch and 0xFFL).toInt()
-        val b1 = ((lgpsEpoch ushr 8) and 0xFFL).toInt()
-        val b2 = ((lgpsEpoch ushr 16) and 0xFFL).toInt()
-        val b3 = ((lgpsEpoch ushr 24) and 0xFFL).toInt()
-        val hexPayload = String.format(Locale.US, "%02X%02X%02X%02X", b0, b1, b2, b3)
+        val payload = buildSetTimePayload()
+        val hexPayload = payload.joinToString(separator = "") { b ->
+            String.format(Locale.US, "%02X", b.toInt() and 0xFF)
+        }
         sendCommand("SET_TIME", hexPayload)
     }
 
@@ -2386,8 +2378,33 @@ class BleDebugRepository(
         CheckItem("BLE", "等待 GET_CAPS（0x01）", CheckState.PENDING),
     )
 
-    private companion object {
-        const val COMMAND_TIMEOUT_MS = 2_000L
+    companion object {
+        /**
+         * Encodes the 8-byte little-endian `SET_TIME (0x11)` payload expected by
+         * `Firmware/src/ble/ble_gatt.c` (`cmd_set_time`):
+         * `[u32 epoch_2020_s_le, u16 subsec_ms_le, i16 tz_offset_min_le]`.
+         */
+        internal fun buildSetTimePayload(
+            nowMs: Long = System.currentTimeMillis(),
+            tzOffsetMin: Int = TimeZone.getDefault().getOffset(nowMs) / 60_000,
+        ): ByteArray {
+            val unixSec = Math.floorDiv(nowMs, 1000L)
+            val lgpsEpoch = (unixSec - TrajectoryRecord.LIFE_GPS_EPOCH_UNIX_S).coerceAtLeast(0L)
+            val subsecMs = Math.floorMod(nowMs, 1000L).toInt().coerceIn(0, 999)
+            val tz16 = tzOffsetMin.toShort().toInt()
+            return byteArrayOf(
+                (lgpsEpoch and 0xFFL).toByte(),
+                ((lgpsEpoch ushr 8) and 0xFFL).toByte(),
+                ((lgpsEpoch ushr 16) and 0xFFL).toByte(),
+                ((lgpsEpoch ushr 24) and 0xFFL).toByte(),
+                (subsecMs and 0xFF).toByte(),
+                ((subsecMs ushr 8) and 0xFF).toByte(),
+                (tz16 and 0xFF).toByte(),
+                ((tz16 ushr 8) and 0xFF).toByte(),
+            )
+        }
+
+        private const val COMMAND_TIMEOUT_MS = 2_000L
 
         /**
          * A GNSS_CFG (0x35) write is ACK + the CFG-SIGNAL restart margin (0.5 s)
@@ -2395,53 +2412,53 @@ class BleDebugRepository(
          * flat 2 s command budget is too tight. The firmware itself waits up to
          * 2.4 s (`GNSS_CFG_SET_WAIT_MS` in `src/gnss/gnss.c`).
          */
-        const val GNSS_CFG_TIMEOUT_MS = 4_000L
+        private const val GNSS_CFG_TIMEOUT_MS = 4_000L
 
         /** QUERY cadence while a capture runs; 30 Hz sampling needs ~2.5 Hz of polling. */
-        const val CALIB_POLL_PERIOD_MS = 400L
+        private const val CALIB_POLL_PERIOD_MS = 400L
 
         /** FINISH_SAVE computes the coefficients and writes the flash record. */
-        const val CALIB_SAVE_TIMEOUT_MS = 6_000L
+        private const val CALIB_SAVE_TIMEOUT_MS = 6_000L
 
-        const val CALIB_CLEAR_TIMEOUT_MS = 4_000L
+        private const val CALIB_CLEAR_TIMEOUT_MS = 4_000L
 
         /** acc_lsb unit is 0.122 mg/LSB at ±4 g; convert to g. */
-        const val ACC_G_PER_LSB = 0.122f / 1000f
+        private const val ACC_G_PER_LSB = 0.122f / 1000f
 
         /** gyro_lsb unit is 35 mdps/LSB at ±1000 dps; convert to °/s. */
-        const val GYRO_DPS_PER_LSB = 35f / 1000f
+        private const val GYRO_DPS_PER_LSB = 35f / 1000f
 
         /** LIS2MDL: 1.5 mG/LSB = 0.15 µT/LSB. */
-        const val MAG_UT_PER_LSB = 0.15f
+        private const val MAG_UT_PER_LSB = 0.15f
 
         /** Attitude is pushed into Compose at ~15 Hz even though the IMU sends 30 Hz. */
-        const val ATTITUDE_UI_PERIOD_MS = 66L
+        private const val ATTITUDE_UI_PERIOD_MS = 66L
 
-        const val MAX_GEO_POINTS = 2_000
-        const val MAX_TRAIL_POINTS = 600
-        const val MAX_LOG_ENTRIES = 300
-        const val MAX_CONSOLE_ENTRIES = 40
+        private const val MAX_GEO_POINTS = 2_000
+        private const val MAX_TRAIL_POINTS = 600
+        private const val MAX_LOG_ENTRIES = 300
+        private const val MAX_CONSOLE_ENTRIES = 40
 
         /** NMEA lines kept in memory; a 1 Hz stream with ~15 sentences/s fills this in ~30 s. */
-        const val MAX_NMEA_LINES = 500
+        private const val MAX_NMEA_LINES = 500
 
-        const val PENDING_RESPONSE = "-- 等待响应…"
+        private const val PENDING_RESPONSE = "-- 等待响应…"
 
         /** Seconds between the Life_GPS 2020 epoch and the Unix epoch. */
-        const val LIFEGPS_EPOCH_UNIX_OFFSET_S = 1_577_836_800L
+        private const val LIFEGPS_EPOCH_UNIX_OFFSET_S = 1_577_836_800L
 
         /**
          * Default zone of the GNSS time on screen: UTC+8 (China Standard Time, no
          * daylight saving). The receiver reports UTC only; this is the one place
          * the offset from UTC to the product's civil time is decided.
          */
-        const val DEFAULT_UTC_OFFSET_HOURS = 8
+        private const val DEFAULT_UTC_OFFSET_HOURS = 8
 
-        val LOCAL_FORMAT: DateTimeFormatter =
+        private val LOCAL_FORMAT: DateTimeFormatter =
             DateTimeFormatter.ofPattern("HH:mm:ss")
                 .withZone(ZoneOffset.ofHours(DEFAULT_UTC_OFFSET_HOURS))
 
-        val LOCAL_CLOCK_FORMAT: DateTimeFormatter =
+        private val LOCAL_CLOCK_FORMAT: DateTimeFormatter =
             DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
                 .withZone(ZoneOffset.ofHours(DEFAULT_UTC_OFFSET_HOURS))
     }

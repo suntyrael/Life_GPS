@@ -49,14 +49,14 @@ uint8_t lgps_crc8(const uint8_t *data, size_t len_bytes)
 }
 
 /* CRC-16/CCITT-FALSE, poly 0x1021, init 0xFFFF, non-reflected. */
-uint16_t lgps_crc16_ccitt_false(const uint8_t *data, size_t len_bytes)
+uint16_t lgps_crc16_ccitt_false_update(uint16_t crc, const uint8_t *data, size_t len_bytes)
 {
-	uint16_t value = 0xFFFFU;
+	uint16_t value = crc;
 	size_t index;
 	uint8_t bit;
 
 	if (data == NULL) {
-		return value;
+		return crc;
 	}
 
 	for (index = 0U; index < len_bytes; index++) {
@@ -73,15 +73,20 @@ uint16_t lgps_crc16_ccitt_false(const uint8_t *data, size_t len_bytes)
 	return value;
 }
 
-/* CRC-32/ISO-HDLC, reflected: shift right, reflected poly 0xEDB88320. */
-uint32_t lgps_crc32_iso_hdlc(const uint8_t *data, size_t len_bytes)
+uint16_t lgps_crc16_ccitt_false(const uint8_t *data, size_t len_bytes)
 {
-	uint32_t value = 0xFFFFFFFFU;
+	return lgps_crc16_ccitt_false_update(0xFFFFU, data, len_bytes);
+}
+
+/* CRC-32/ISO-HDLC, reflected: shift right, reflected poly 0xEDB88320. */
+uint32_t lgps_crc32_iso_hdlc_update(uint32_t running_crc, const uint8_t *data, size_t len_bytes)
+{
+	uint32_t value = running_crc;
 	size_t index;
 	uint8_t bit;
 
 	if (data == NULL) {
-		return ~value;
+		return running_crc;
 	}
 
 	for (index = 0U; index < len_bytes; index++) {
@@ -95,6 +100,11 @@ uint32_t lgps_crc32_iso_hdlc(const uint8_t *data, size_t len_bytes)
 		}
 	}
 
+	return value;
+}
+
+uint32_t lgps_crc32_iso_hdlc(const uint8_t *data, size_t len_bytes)
+{
 	/* xorout 0xFFFFFFFF, i.e. the complement of the running register. */
-	return ~value;
+	return ~lgps_crc32_iso_hdlc_update(0xFFFFFFFFU, data, len_bytes);
 }

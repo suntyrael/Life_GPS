@@ -62,6 +62,10 @@ static void decode_reset_cause(void)
 
 	int ret;
 
+	if (reset_cause_valid) {
+		return;
+	}
+
 	ret = hwinfo_get_reset_cause(&reset_cause);
 
 	if (ret < 0) {
@@ -111,6 +115,15 @@ static void decode_reset_cause(void)
 const char *lgps_diag_reset_reason(void)
 {
 	return reset_text;
+}
+
+uint32_t lgps_diag_reset_cause_raw(void)
+{
+	if (!reset_cause_valid) {
+		decode_reset_cause();
+	}
+
+	return reset_cause_valid ? reset_cause : 0U;
 }
 
 void lgps_diag_banner(void)

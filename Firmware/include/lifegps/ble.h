@@ -91,4 +91,9 @@ void lgps_ble_publish_baro(const struct lgps_telemetry_snapshot *snap);
 /* One raw NMEA sentence (telemetry 0x08). Cheap no-op when nobody subscribes. */
 void lgps_ble_publish_nmea(const char *line, uint8_t len);
 
+/* Publish latest indoor PDR / floor / nav flags for BLE POI_MARK (0x10). */
+void lgps_ble_set_nav_ctx(bool pdr_valid, int32_t pdr_lat_e7, int32_t pdr_lon_e7,
+			  uint16_t heading_ddeg, int8_t floor_level, bool zupt_locked,
+			  bool mag_anomaly, bool vehicle_mode);
+
 #endif /* LIFEGPS_BLE_H_ */

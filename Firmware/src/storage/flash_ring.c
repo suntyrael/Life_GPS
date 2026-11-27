@@ -25,10 +25,24 @@ static struct lgps_ring_stats stats;
 static uint8_t active_sector;
 static bool ring_ready;
 static struct lgps_ring_capacity capacity;
+static uint32_t last_seq_id;
+static uint32_t next_seq_id;
+
+#define RING_SCAN_CHUNK_BYTES 256U
+#define RING_SCAN_RECORDS (RING_SCAN_CHUNK_BYTES / LGPS_RING_RECORD_SIZE)
+
+/* Shared 256-byte scan buffer; all accesses are serialized by ring_lock. */
+static uint8_t scan_chunk[RING_SCAN_CHUNK_BYTES];
 
 static off_t sector_offset(uint8_t sector)
 {
 	return (off_t)sector * (off_t)LGPS_RING_SECTOR_SIZE;
+}
+
+static uint32_t read_record_seq_id(const uint8_t rec[LGPS_RING_RECORD_SIZE])
+{
+	return (uint32_t)rec[0] | ((uint32_t)rec[1] << 8) |
+	       ((uint32_t)rec[2] << 16) | ((uint32_t)rec[3] << 24);
 }
 
 /*
@@ -74,9 +88,6 @@ static void start_sector(uint8_t sector, uint32_t sector_seq, uint32_t erase_cou
 	}
 }
 
-#define RING_SCAN_CHUNK_BYTES 256U
-#define RING_SCAN_RECORDS (RING_SCAN_CHUNK_BYTES / LGPS_RING_RECORD_SIZE)
-
 /*
  * Recover the write cursor of the sector an earlier boot left open.
  *
@@ -88,12 +99,11 @@ static void start_sector(uint8_t sector, uint32_t sector_seq, uint32_t erase_cou
  * is where the next record belongs. A serialised record always carries its CRC-8
  * byte and can therefore never be all-0xFF.
  *
- * Cost: one 256-byte static buffer (8 records per flash_read) and 16 reads of
+ * Cost: shared 256-byte static buffer (8 records per flash_read) and 16 reads of
  * 256 B at mount time. Nothing here touches the stack.
  */
 static int count_used_records(uint8_t sector, uint16_t *used)
 {
-	static uint8_t chunk[RING_SCAN_CHUNK_BYTES];
 	uint16_t total = 0U;
 
 	for (uint16_t base = 0U; base < LGPS_RING_RECORDS_PER_SECTOR;
@@ -104,7 +114,7 @@ static int count_used_records(uint8_t sector, uint16_t *used)
 			       (off_t)((uint32_t)base * LGPS_RING_RECORD_SIZE);
 		size_t len_bytes = (size_t)slots * (size_t)LGPS_RING_RECORD_SIZE;
 		uint16_t in_chunk;
-		int ret = flash_read(nor, offset, chunk, len_bytes);
+		int ret = flash_read(nor, offset, scan_chunk, len_bytes);
 
 		if (ret < 0) {
 			LOG_ERR("sector %u record scan at 0x%08x failed (%d)", sector,
@@ -115,7 +125,7 @@ static int count_used_records(uint8_t sector, uint16_t *used)
 		/* Same helper the unit test covers: count programmed slots until the
 		 * first erased one.
 		 */
-		in_chunk = lgps_sector_used_records(chunk, len_bytes);
+		in_chunk = lgps_sector_used_records(scan_chunk, len_bytes);
 		total = (uint16_t)(total + in_chunk);
 
 		if (in_chunk < slots) {
@@ -127,6 +137,62 @@ static int count_used_records(uint8_t sector, uint16_t *used)
 	*used = total;
 
 	return 0;
+}
+
+/*
+ * Scan all valid ring sectors in descending sector_seq order and recover the
+ * maximum valid trajectory seq_id across the entire ring. Handles reboots
+ * immediately after rotating to an empty active sector (records_in_sector == 0).
+ */
+static void recover_last_seq_all_locked(void)
+{
+	struct lgps_sector_header headers[LGPS_RING_SECTOR_COUNT];
+	uint8_t order[LGPS_RING_SECTOR_COUNT];
+	uint8_t valid_count = 0U;
+	uint8_t rec[LGPS_RING_RECORD_SIZE];
+
+	for (uint8_t s = 0U; s < LGPS_RING_SECTOR_COUNT; s++) {
+		if ((header_read(s, &headers[s]) == 0) && lgps_sector_header_valid(&headers[s])) {
+			order[valid_count++] = s;
+		}
+	}
+
+	/* Insertion sort valid sectors by descending sector_seq. */
+	for (uint8_t i = 1U; i < valid_count; i++) {
+		uint8_t key_s = order[i];
+		uint32_t key_seq = headers[key_s].sector_seq;
+		int j = (int)i - 1;
+
+		while ((j >= 0) && (headers[order[j]].sector_seq < key_seq)) {
+			order[j + 1] = order[j];
+			j--;
+		}
+		order[j + 1] = key_s;
+	}
+
+	for (uint8_t oi = 0U; oi < valid_count; oi++) {
+		uint8_t s = order[oi];
+		uint16_t used = 0U;
+
+		if ((count_used_records(s, &used) != 0) || (used == 0U)) {
+			continue;
+		}
+
+		for (uint16_t slot = used; slot > 0U; slot--) {
+			off_t offset = sector_offset(s) + (off_t)LGPS_RING_HEADER_SIZE +
+				       (off_t)((uint32_t)(slot - 1U) * LGPS_RING_RECORD_SIZE);
+
+			if ((flash_read(nor, offset, rec, sizeof(rec)) == 0) &&
+			    lgps_traj_record_valid(rec)) {
+				uint32_t seq = read_record_seq_id(rec);
+
+				if (seq > last_seq_id) {
+					last_seq_id = seq;
+				}
+				break;
+			}
+		}
+	}
 }
 
 static int sector_rotate(void)
@@ -230,6 +296,7 @@ int lgps_ring_init(void)
 	stats.records_written = 0U;
 	stats.erase_count_max = 0U;
 	stats.records_in_sector = 0U;
+	last_seq_id = 0U;
 
 	for (uint8_t sector = 0U; sector < LGPS_RING_SECTOR_COUNT; sector++) {
 		ret = header_read(sector, &header);
@@ -266,9 +333,10 @@ int lgps_ring_init(void)
 		stats.sector_seq = best_seq;
 		stats.records_in_sector = (uint8_t)used_records;
 		stats.erase_count_max = (uint8_t)MIN(best_erase, 255U);
-		LOG_INF("ring mounted on sector %u (seq %u, %u/%u records used, max erase count %u)",
+		recover_last_seq_all_locked();
+		LOG_INF("ring mounted on sector %u (seq %u, %u/%u records used, last_seq %u, max erase count %u)",
 			best_sector, best_seq, used_records, LGPS_RING_RECORDS_PER_SECTOR,
-			stats.erase_count_max);
+			last_seq_id, stats.erase_count_max);
 	} else {
 		/* Fresh flash: erase and publish sector 0. */
 		ret = flash_erase(nor, sector_offset(0U), LGPS_RING_SECTOR_SIZE);
@@ -283,6 +351,7 @@ int lgps_ring_init(void)
 			LGPS_RING_SECTOR_SIZE);
 	}
 
+	next_seq_id = last_seq_id + 1U;
 	ring_ready = true;
 	k_mutex_unlock(&ring_lock);
 
@@ -290,34 +359,6 @@ int lgps_ring_init(void)
 		LGPS_RING_SECTOR_COUNT, LGPS_RING_RECORDS_PER_SECTOR, LGPS_RING_RECORD_SIZE);
 
 	return 0;
-}
-
-static uint32_t last_seq_id;
-
-static uint32_t read_record_seq_id(const uint8_t rec[LGPS_RING_RECORD_SIZE])
-{
-	return (uint32_t)rec[0] | ((uint32_t)rec[1] << 8) |
-	       ((uint32_t)rec[2] << 16) | ((uint32_t)rec[3] << 24);
-}
-
-static void recover_last_seq_locked(uint8_t sector, uint16_t used_records)
-{
-	uint8_t rec[LGPS_RING_RECORD_SIZE];
-
-	if (used_records == 0U) {
-		return;
-	}
-
-	off_t offset = sector_offset(sector) + (off_t)LGPS_RING_HEADER_SIZE +
-		       (off_t)((uint32_t)(used_records - 1U) * LGPS_RING_RECORD_SIZE);
-
-	if (flash_read(nor, offset, rec, sizeof(rec)) == 0 && lgps_traj_record_valid(rec)) {
-		uint32_t seq = read_record_seq_id(rec);
-
-		if (seq > last_seq_id) {
-			last_seq_id = seq;
-		}
-	}
 }
 
 int lgps_ring_append(const uint8_t *record)
@@ -362,6 +403,9 @@ int lgps_ring_append(const uint8_t *record)
 		if (seq > last_seq_id) {
 			last_seq_id = seq;
 		}
+		if (next_seq_id <= last_seq_id) {
+			next_seq_id = last_seq_id + 1U;
+		}
 	}
 
 	k_mutex_unlock(&ring_lock);
@@ -374,13 +418,33 @@ uint32_t lgps_ring_last_seq_id(void)
 	uint32_t seq;
 
 	k_mutex_lock(&ring_lock, K_FOREVER);
-	if (ring_ready && (last_seq_id == 0U) && (stats.records_in_sector > 0U)) {
-		recover_last_seq_locked(active_sector, stats.records_in_sector);
+	if (ring_ready && (last_seq_id == 0U)) {
+		recover_last_seq_all_locked();
+		if (next_seq_id <= last_seq_id) {
+			next_seq_id = last_seq_id + 1U;
+		}
 	}
 	seq = last_seq_id;
 	k_mutex_unlock(&ring_lock);
 
 	return seq;
+}
+
+uint32_t lgps_ring_alloc_seq_id(void)
+{
+	uint32_t id;
+
+	k_mutex_lock(&ring_lock, K_FOREVER);
+	if (next_seq_id <= last_seq_id) {
+		next_seq_id = last_seq_id + 1U;
+	}
+	if (next_seq_id == 0U) {
+		next_seq_id = 1U;
+	}
+	id = next_seq_id++;
+	k_mutex_unlock(&ring_lock);
+
+	return id;
 }
 
 int lgps_ring_read_from_seq(uint32_t start_seq, uint8_t *out_buf, uint16_t max_records,
@@ -391,7 +455,6 @@ int lgps_ring_read_from_seq(uint32_t start_seq, uint8_t *out_buf, uint16_t max_r
 	uint8_t order[LGPS_RING_SECTOR_COUNT];
 	uint8_t valid_count = 0U;
 	uint16_t copied = 0U;
-	static uint8_t scan_chunk[RING_SCAN_CHUNK_BYTES];
 
 	if ((out_buf == NULL) || (out_count == NULL)) {
 		return -EINVAL;
@@ -468,6 +531,152 @@ int lgps_ring_read_from_seq(uint32_t start_seq, uint8_t *out_buf, uint16_t max_r
 	return 0;
 }
 
+uint16_t lgps_ring_count_after_seq(uint32_t after_seq_id)
+{
+	struct lgps_sector_header header;
+	uint16_t count = 0U;
+
+	if (!ring_ready) {
+		return 0U;
+	}
+
+	k_mutex_lock(&ring_lock, K_FOREVER);
+
+	for (uint8_t s = 0U; s < LGPS_RING_SECTOR_COUNT; s++) {
+		if ((header_read(s, &header) < 0) || !lgps_sector_header_valid(&header) ||
+		    (header.commit_flags == LGPS_RING_FLAGS_ERASING)) {
+			continue;
+		}
+
+		bool sector_done = false;
+
+		for (uint16_t base = 0U;
+		     (base < LGPS_RING_RECORDS_PER_SECTOR) && !sector_done;
+		     base = (uint16_t)(base + RING_SCAN_RECORDS)) {
+			uint16_t slots = (uint16_t)MIN((uint32_t)RING_SCAN_RECORDS,
+						       (uint32_t)LGPS_RING_RECORDS_PER_SECTOR -
+							       base);
+			off_t offset = sector_offset(s) + (off_t)LGPS_RING_HEADER_SIZE +
+				       (off_t)((uint32_t)base * LGPS_RING_RECORD_SIZE);
+			size_t len_bytes = (size_t)slots * (size_t)LGPS_RING_RECORD_SIZE;
+
+			if (flash_read(nor, offset, scan_chunk, len_bytes) < 0) {
+				break;
+			}
+
+			for (uint16_t k = 0U; k < slots; k++) {
+				const uint8_t *rec = &scan_chunk[(size_t)k * LGPS_RING_RECORD_SIZE];
+
+				if (lgps_sector_slot_erased(rec)) {
+					sector_done = true;
+					break;
+				}
+				if (!lgps_traj_record_valid(rec)) {
+					continue;
+				}
+				if (read_record_seq_id(rec) > after_seq_id) {
+					count++;
+				}
+			}
+		}
+	}
+
+	k_mutex_unlock(&ring_lock);
+	return count;
+}
+
+int lgps_ring_release_sectors_up_to(uint32_t max_archived_seq)
+{
+	struct lgps_sector_header header;
+	int ret = 0;
+
+	if (!ring_ready) {
+		return -EACCES;
+	}
+	if (max_archived_seq == 0U) {
+		return 0;
+	}
+
+	k_mutex_lock(&ring_lock, K_FOREVER);
+
+	for (uint8_t s = 0U; s < LGPS_RING_SECTOR_COUNT; s++) {
+		int err;
+		uint16_t valid_recs = 0U;
+		bool all_archived = true;
+		bool sector_done = false;
+		bool io_err = false;
+
+		if (s == active_sector) {
+			continue;
+		}
+
+		err = header_read(s, &header);
+		if (err < 0) {
+			if (ret == 0) {
+				ret = err;
+			}
+			continue;
+		}
+
+		if (!lgps_sector_header_valid(&header) ||
+		    (header.commit_flags == LGPS_RING_FLAGS_ERASING)) {
+			continue;
+		}
+
+		for (uint16_t base = 0U;
+		     (base < LGPS_RING_RECORDS_PER_SECTOR) && !sector_done && all_archived;
+		     base = (uint16_t)(base + RING_SCAN_RECORDS)) {
+			uint16_t slots = (uint16_t)MIN((uint32_t)RING_SCAN_RECORDS,
+						       (uint32_t)LGPS_RING_RECORDS_PER_SECTOR -
+							       base);
+			off_t offset = sector_offset(s) + (off_t)LGPS_RING_HEADER_SIZE +
+				       (off_t)((uint32_t)base * LGPS_RING_RECORD_SIZE);
+			size_t len_bytes = (size_t)slots * (size_t)LGPS_RING_RECORD_SIZE;
+
+			err = flash_read(nor, offset, scan_chunk, len_bytes);
+			if (err < 0) {
+				if (ret == 0) {
+					ret = err;
+				}
+				io_err = true;
+				break;
+			}
+
+			for (uint16_t k = 0U; k < slots; k++) {
+				const uint8_t *rec = &scan_chunk[(size_t)k * LGPS_RING_RECORD_SIZE];
+
+				if (lgps_sector_slot_erased(rec)) {
+					sector_done = true;
+					break;
+				}
+				if (!lgps_traj_record_valid(rec)) {
+					continue;
+				}
+				valid_recs++;
+				if (read_record_seq_id(rec) > max_archived_seq) {
+					all_archived = false;
+					break;
+				}
+			}
+		}
+
+		if (!io_err && (valid_recs > 0U) && all_archived) {
+			/* Pure 1->0 NOR update: preserves erase_count and header_crc16. */
+			header.commit_flags = LGPS_RING_FLAGS_ERASING;
+			err = header_write(s, &header);
+			if ((err < 0) && (ret == 0)) {
+				ret = err;
+			} else if (err == 0) {
+				LOG_INF("ring sector %u released (seq %u, <= %u)", s,
+					header.sector_seq, max_archived_seq);
+			}
+		}
+	}
+
+	k_mutex_unlock(&ring_lock);
+	return ret;
+}
+
 void lgps_ring_get_capacity(struct lgps_ring_capacity *out)
 {
 	if (out == NULL) {
@@ -506,6 +715,8 @@ int lgps_ring_erase_all(void)
 	}
 	memset(&stats, 0, sizeof(stats));
 	active_sector = 0U;
+	last_seq_id = 0U;
+	next_seq_id = 1U;
 	if (ret == 0) {
 		start_sector(0U, 1U, 1U);
 		ring_ready = true;

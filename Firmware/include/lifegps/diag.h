@@ -30,6 +30,9 @@ void lgps_diag_banner(void);
 /* Human readable reset cause as reported by the nRF54L15 RESETREAS registers. */
 const char *lgps_diag_reset_reason(void);
 
+/* Raw Zephyr hwinfo reset-cause bitmask cached before RESETREAS is cleared. */
+uint32_t lgps_diag_reset_cause_raw(void);
+
 /* Hex dump (tag + offset + 16 bytes per line) through the log backend. */
 void lgps_diag_hexdump(const char *tag, const uint8_t *data, size_t len_bytes);
 
