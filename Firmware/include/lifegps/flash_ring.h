@@ -39,14 +39,16 @@
 #define LGPS_RING_FLAGS_ARCHIVED 0x55AAU
 #define LGPS_RING_FLAGS_ERASING 0x0000U
 
-/* OTA slot1 lives at the top of the external flash, so the trajectory area is
- * "whatever the part really is" minus this reservation (Firmware/docs/PARTITIONS.md).
+/* Since M5, MCUboot slot1_partition (712 KB) lives in internal nRF54L15 RRAM
+ * (Firmware/docs/PARTITIONS.md, Firmware/boards/lifegps/lifegps/lifegps_nrf54l15_cpuapp.dts),
+ * so external SPI NOR reserves 0 bytes for OTA and the full SFDP density is
+ * available to the trajectory/archive area.
  */
-#define LGPS_EXT_FLASH_OTA_SLOT1_BYTES (1024U * 1024U)
+#define LGPS_EXT_FLASH_OTA_SLOT1_BYTES 0U
 
 struct lgps_ring_capacity {
 	uint32_t flash_bytes;     /* density reported by SFDP */
-	uint32_t ota_slot1_bytes; /* reserved at the top for MCUboot slot1 */
+	uint32_t ota_slot1_bytes; /* reserved on external NOR for OTA slot1 (0 since M5) */
 	uint32_t traj_bytes;      /* flash_bytes - ota_slot1_bytes */
 };
 

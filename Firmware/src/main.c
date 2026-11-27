@@ -60,7 +60,12 @@ LOG_MODULE_REGISTER(lgps_main, LOG_LEVEL_INF);
 
 /* Poll faster than the 30 Hz ODR and let the data-ready bit do the pacing. */
 #define MAIN_LOOP_PERIOD_MS 10U
-#define DEEP_SLEEP_LOOP_PERIOD_MS 1000U
+/* WDT timeout is 30 s (LGPS_WDT_TIMEOUT_MS) with a 5 s supervision window;
+ * 10 s wakes stay safely below timeout/2 while minimizing System ON wakeups.
+ */
+#define DEEP_SLEEP_LOOP_PERIOD_MS 10000U
+BUILD_ASSERT(DEEP_SLEEP_LOOP_PERIOD_MS < (LGPS_WDT_TIMEOUT_MS / 2U),
+	     "deep sleep poll interval must stay safely below WDT timeout");
 /* The five-line text frame on DEBUG_UART keeps its 1 Hz cadence: it is the
  * scope-free instrument for bring-up and changing it would invalidate every
  * earlier capture.
@@ -71,6 +76,7 @@ LOG_MODULE_REGISTER(lgps_main, LOG_LEVEL_INF);
 #define NMEA_PUMP_BURST 4U
 #define GNSS_NMEA_LINE_MAX_TEXT 96U
 #define BATTERY_PERIOD_MS 10000U
+#define BATTERY_DEEP_SLEEP_PERIOD_MS 60000U
 /* The BLE Status frame is the phone UI's only live feed, so it is published much
  * faster - but only while a central is subscribed. Without a subscriber there is
  * nothing to show, so the snapshot is refreshed at the text cadence and the
@@ -116,6 +122,12 @@ static void on_imu_wake_irq(void)
 
 static void on_poi_button(void)
 {
+	struct lgps_gnss_fix fix;
+
+	lgps_gnss_get_fix(&fix);
+	if (!fix.valid) {
+		lgps_gnss_request_wake_pulse();
+	}
 	(void)atomic_set(&poi_button_pending, 1);
 	k_sem_give(&main_wake_sem);
 }
@@ -309,6 +321,7 @@ static int init_subsystems(void)
 
 		lgps_app_config_get(&cfg);
 		(void)lgps_time_set_local_offset_s((int32_t)cfg.tz_offset_min * 60);
+		lgps_gnss_apply_config(cfg.gnss_cold_timeout_s, cfg.gnss_rate_hz);
 		lgps_zupt_reset(&zupt, lgps_diag_uptime_ms());
 		lgps_pdr_init(&pdr);
 		if ((cfg.pdr_step_k_mm >= 300U) && (cfg.pdr_step_k_mm <= 550U)) {
@@ -341,7 +354,7 @@ static int init_subsystems(void)
 static struct lgps_telemetry_snapshot *build_snapshot(uint32_t now_ms,
 					      const struct lgps_imu_sample *sample,
 					      bool imu_valid, int32_t bat_mv, bool bat_valid,
-					      bool refresh_hub)
+					      bool refresh_hub, bool allow_hub_io)
 {
 	static struct lgps_telemetry_snapshot snap;
 	static struct lgps_imu_mag cached_mag;
@@ -392,8 +405,9 @@ static struct lgps_telemetry_snapshot *build_snapshot(uint32_t now_ms,
 
 	/* Decouple external I2C Sensor Hub reads (LIS2MDL + BMP388) from 10 Hz BLE
 	 * Status notifications: refresh at 1 Hz or on first boot, then reuse cache.
+	 * Never touch SPI while DEEP_SLEEP is active.
 	 */
-	if (refresh_hub || !cached_hub_valid) {
+	if (allow_hub_io && (refresh_hub || !cached_hub_valid)) {
 		ret = lgps_imu_read_hub(&cached_mag, &cached_baro);
 		if (ret == 0) {
 			float mag_ut[3];
@@ -841,6 +855,49 @@ static void maybe_record_trajectory(uint32_t now_ms, const struct lgps_telemetry
 	}
 }
 
+static void apply_power_state(enum lgps_power_state pwr_state)
+{
+	bool entering_sleep;
+	bool leaving_sleep;
+	int ret;
+
+	if (pwr_state == applied_power_state) {
+		return;
+	}
+
+	entering_sleep = (pwr_state == LGPS_PWR_DEEP_SLEEP);
+	leaving_sleep = (applied_power_state == LGPS_PWR_DEEP_SLEEP) &&
+			(pwr_state != LGPS_PWR_DEEP_SLEEP) &&
+			(pwr_state != LGPS_PWR_SYSTEM_OFF);
+	applied_power_state = pwr_state;
+
+	ret = lgps_imu_set_low_power(entering_sleep);
+	if (ret < 0) {
+		LOG_WRN("IMU low-power(%d) transition failed (%d)", entering_sleep ? 1 : 0, ret);
+	}
+	lgps_gnss_set_policy(entering_sleep, pwr_state == LGPS_PWR_HIGH_PRECISION);
+	lgps_ble_set_low_power(entering_sleep);
+	if (leaving_sleep) {
+		lgps_gnss_request_wake_pulse();
+	}
+}
+
+static void sync_gnss_motion_context(void)
+{
+	static bool synced;
+	static bool last_zupt;
+	static bool last_vehicle;
+	bool zupt_now = lgps_zupt_locked(&zupt);
+	bool vehicle_now = (activity_state.kind == LGPS_ACT_VEHICLE);
+
+	if (!synced || (zupt_now != last_zupt) || (vehicle_now != last_vehicle)) {
+		synced = true;
+		last_zupt = zupt_now;
+		last_vehicle = vehicle_now;
+		lgps_gnss_set_motion_context(zupt_now, vehicle_now);
+	}
+}
+
 int main(void)
 {
 	uint32_t last_telemetry_ms = 0U;
@@ -869,28 +926,92 @@ int main(void)
 	for (;;) {
 		uint32_t now_ms = lgps_diag_uptime_ms();
 		enum lgps_power_state pwr_state;
+		bool in_deep_sleep;
 		bool force_poi = atomic_cas(&poi_button_pending, 1, 0);
-		int ret = -EAGAIN;
-		uint32_t ble_period_ms = lgps_ble_status_subscribed() ? BLE_STATUS_PERIOD_MS
-								      : BLE_STATUS_IDLE_PERIOD_MS;
-		bool ble_due = (uint32_t)(now_ms - last_ble_ms) >= ble_period_ms;
-		bool telemetry_due = (uint32_t)(now_ms - last_telemetry_ms) >= TELEMETRY_PERIOD_MS;
+		uint32_t battery_period_ms;
+		int ret;
+		uint32_t ble_period_ms;
+		bool ble_due;
+		bool telemetry_due;
 
 		lgps_wdt_checkin(LGPS_WDT_TASK_MAIN);
 
 		if (atomic_cas(&imu_wake_pending, 1, 0)) {
 			uint8_t wake_src = 0U;
+			int wake_ret = lgps_imu_read_wake_src(&wake_src);
 
-			(void)lgps_imu_read_wake_src(&wake_src);
-			LOG_INF("IMU INT1 wake IRQ (WAKE_UP_SRC=0x%02x)", wake_src);
+			if (wake_ret < 0) {
+				LOG_WRN("IMU WAKE_UP_SRC read failed (%d)", wake_ret);
+			} else {
+				LOG_INF("IMU INT1 wake IRQ (WAKE_UP_SRC=0x%02x)", wake_src);
+			}
 			lgps_power_on_motion_irq(now_ms, pdr.steps_total);
 		}
 
 		pwr_state = lgps_power_get_state();
-		if (pwr_state != LGPS_PWR_DEEP_SLEEP) {
-			ret = lgps_imu_read_sample_if_ready(&sample);
+		apply_power_state(pwr_state);
+		in_deep_sleep = (pwr_state == LGPS_PWR_DEEP_SLEEP);
+
+		battery_period_ms =
+			in_deep_sleep ? BATTERY_DEEP_SLEEP_PERIOD_MS : BATTERY_PERIOD_MS;
+		if ((uint32_t)(now_ms - last_battery_ms) >= battery_period_ms) {
+			int32_t millivolts = 0;
+			int err;
+
+			last_battery_ms = now_ms;
+			err = lgps_battery_read_mv(&millivolts);
+			bat_valid = (err == 0);
+			if (bat_valid) {
+				bat_mv = millivolts;
+			} else {
+				LOG_WRN("battery read failed (%d)", err);
+			}
 		}
 
+		if (in_deep_sleep) {
+			bool charging = false;
+			uint8_t soc_pct = LGPS_BATT_SOC_UNKNOWN;
+
+			(void)lgps_charger_charging(&charging);
+			if (bat_valid) {
+				int soc_ret = lgps_battery_soc_pct(bat_mv, charging, &soc_pct);
+
+				if (soc_ret < 0) {
+					soc_pct = LGPS_BATT_SOC_UNKNOWN;
+				}
+			}
+
+			pwr_state = lgps_power_tick(now_ms, pdr.steps_total,
+						    lgps_zupt_locked(&zupt),
+						    lgps_ble_connected(), charging, soc_pct);
+			apply_power_state(pwr_state);
+
+			if (force_poi || lgps_ble_status_subscribed()) {
+				struct lgps_telemetry_snapshot *snap =
+					build_snapshot(now_ms, &sample, imu_valid, bat_mv,
+						       bat_valid, false, false);
+
+				last_ble_ms = now_ms;
+				lgps_ble_publish(snap);
+				if (force_poi) {
+					maybe_record_trajectory(now_ms, snap, pwr_state, true);
+				}
+			}
+
+			lgps_wdt_feed();
+			(void)k_sem_take(&main_wake_sem,
+					 K_MSEC((pwr_state == LGPS_PWR_DEEP_SLEEP)
+							? DEEP_SLEEP_LOOP_PERIOD_MS
+							: MAIN_LOOP_PERIOD_MS));
+			continue;
+		}
+
+		ble_period_ms = lgps_ble_status_subscribed() ? BLE_STATUS_PERIOD_MS
+							     : BLE_STATUS_IDLE_PERIOD_MS;
+		ble_due = (uint32_t)(now_ms - last_ble_ms) >= ble_period_ms;
+		telemetry_due = (uint32_t)(now_ms - last_telemetry_ms) >= TELEMETRY_PERIOD_MS;
+
+		ret = lgps_imu_read_sample_if_ready(&sample);
 		if (ret == 0) {
 			float accel_body[3];
 			float gyro_body[3];
@@ -930,6 +1051,7 @@ int main(void)
 
 			lgps_zupt_update(&zupt, accel_body, gyro_rps, now_ms);
 			lgps_pdr_set_frozen(&pdr, lgps_zupt_locked(&zupt));
+			sync_gnss_motion_context();
 			imu_valid = true;
 
 			/* Attitude: one filter step per IMU sample. The first usable
@@ -973,25 +1095,10 @@ int main(void)
 			LOG_ERR("IMU read failed (%d)", ret);
 		}
 
-		if ((uint32_t)(now_ms - last_battery_ms) >= BATTERY_PERIOD_MS) {
-			int32_t millivolts = 0;
-
-			int err;
-
-			last_battery_ms = now_ms;
-			err = lgps_battery_read_mv(&millivolts);
-			bat_valid = (err == 0);
-			if (bat_valid) {
-				bat_mv = millivolts;
-			} else {
-				LOG_WRN("battery read failed (%d)", err);
-			}
-		}
-
 		if (ble_due || telemetry_due || force_poi) {
 			struct lgps_telemetry_snapshot *snap =
 				build_snapshot(now_ms, &sample, imu_valid, bat_mv, bat_valid,
-					       telemetry_due || force_poi);
+					       telemetry_due || force_poi, true);
 
 			if (ble_due) {
 				last_ble_ms = now_ms;
@@ -1039,6 +1146,7 @@ int main(void)
 					}
 
 					lgps_activity_update(&activity_state, &act_in);
+					sync_gnss_motion_context();
 					update_outdoor_calibration(&snap->fix);
 
 					publish_pdr();
@@ -1051,13 +1159,7 @@ int main(void)
 							    lgps_zupt_locked(&zupt),
 							    lgps_ble_connected(), snap->charging,
 							    soc_pct);
-				if (pwr_state != applied_power_state) {
-					applied_power_state = pwr_state;
-					(void)lgps_imu_set_low_power(
-						pwr_state == LGPS_PWR_DEEP_SLEEP);
-					lgps_gnss_set_policy(pwr_state == LGPS_PWR_DEEP_SLEEP,
-							     pwr_state == LGPS_PWR_HIGH_PRECISION);
-				}
+				apply_power_state(pwr_state);
 
 				maybe_record_trajectory(now_ms, snap, pwr_state, force_poi);
 

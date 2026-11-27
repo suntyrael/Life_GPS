@@ -108,12 +108,19 @@ enum lgps_gnss_fsm_action lgps_gnss_fsm_step(struct lgps_gnss_fsm *fsm,
 					     const struct lgps_gnss_fsm_input *in)
 {
 	uint32_t elapsed_ms;
+	uint32_t cold_timeout_ms;
+	uint32_t pulse_period_ms;
 
 	if ((fsm == NULL) || (in == NULL)) {
 		return LGPS_GNSS_FSM_ACTION_NONE;
 	}
 
 	elapsed_ms = (uint32_t)(in->now_ms - fsm->state_since_ms);
+	fsm->cold_timeout_ms = in->cold_timeout_ms;
+	cold_timeout_ms =
+		(in->cold_timeout_ms != 0U) ? in->cold_timeout_ms : LGPS_GNSS_FSM_COLD_TIMEOUT_MS;
+	pulse_period_ms =
+		(in->pulse_period_ms != 0U) ? in->pulse_period_ms : LGPS_GNSS_FSM_PULSE_PERIOD_MS;
 
 	/* Explicit high-precision continuous tracking or debug power hold keeps rail on. */
 	if (in->high_precision || in->hold_power) {
@@ -128,6 +135,20 @@ enum lgps_gnss_fsm_action lgps_gnss_fsm_step(struct lgps_gnss_fsm *fsm,
 			fsm->state = LGPS_GNSS_FSM_TRACKING;
 		}
 		return LGPS_GNSS_FSM_ACTION_NONE;
+	}
+
+	/* Deep sleep cuts the rail immediately and holds OFF until deep_sleep clears. */
+	if (in->deep_sleep) {
+		enum lgps_gnss_fsm_action action =
+			fsm->rail_on ? LGPS_GNSS_FSM_ACTION_POWER_DOWN : LGPS_GNSS_FSM_ACTION_NONE;
+
+		fsm->rail_on = false;
+		fsm->next_wait_ms = 0U;
+		if (fsm->state != LGPS_GNSS_FSM_OFF) {
+			fsm->state = LGPS_GNSS_FSM_OFF;
+			fsm->state_since_ms = in->now_ms;
+		}
+		return action;
 	}
 
 	switch (fsm->state) {
@@ -145,7 +166,7 @@ enum lgps_gnss_fsm_action lgps_gnss_fsm_step(struct lgps_gnss_fsm *fsm,
 			fsm->state_since_ms = in->now_ms;
 			return LGPS_GNSS_FSM_ACTION_NONE;
 		}
-		if (elapsed_ms >= LGPS_GNSS_FSM_COLD_TIMEOUT_MS) {
+		if (elapsed_ms >= cold_timeout_ms) {
 			if (fsm->fail_streak < 255U) {
 				fsm->fail_streak++;
 			}
@@ -162,7 +183,7 @@ enum lgps_gnss_fsm_action lgps_gnss_fsm_step(struct lgps_gnss_fsm *fsm,
 			fsm->fail_streak = 0U;
 			return enter_sleep(fsm, in->now_ms,
 					   in->vehicle_mode ? LGPS_GNSS_FSM_VEHICLE_PERIOD_MS
-							    : LGPS_GNSS_FSM_PULSE_PERIOD_MS);
+							    : pulse_period_ms);
 		}
 		return LGPS_GNSS_FSM_ACTION_NONE;
 
@@ -172,7 +193,7 @@ enum lgps_gnss_fsm_action lgps_gnss_fsm_step(struct lgps_gnss_fsm *fsm,
 			fsm->fail_streak = 0U;
 			return enter_sleep(fsm, in->now_ms,
 					   in->vehicle_mode ? LGPS_GNSS_FSM_VEHICLE_PERIOD_MS
-							    : LGPS_GNSS_FSM_PULSE_PERIOD_MS);
+							    : pulse_period_ms);
 		}
 		if (elapsed_ms >= lgps_gnss_fsm_hot_timeout_ms(fsm)) {
 			if (fsm->fail_streak < 255U) {
@@ -190,7 +211,7 @@ enum lgps_gnss_fsm_action lgps_gnss_fsm_step(struct lgps_gnss_fsm *fsm,
 		}
 		return enter_sleep(fsm, in->now_ms,
 				   in->vehicle_mode ? LGPS_GNSS_FSM_VEHICLE_PERIOD_MS
-						    : LGPS_GNSS_FSM_PULSE_PERIOD_MS);
+						    : pulse_period_ms);
 
 	case LGPS_GNSS_FSM_BACKOFF:
 		if (in->wake_trigger) {
@@ -209,5 +230,46 @@ enum lgps_gnss_fsm_action lgps_gnss_fsm_step(struct lgps_gnss_fsm *fsm,
 	default:
 		fsm->state = LGPS_GNSS_FSM_OFF;
 		return LGPS_GNSS_FSM_ACTION_NONE;
+	}
+}
+
+uint32_t lgps_gnss_fsm_next_wake_ms(const struct lgps_gnss_fsm *fsm, uint32_t now_ms)
+{
+	uint32_t elapsed_ms;
+	uint32_t deadline_ms;
+
+	if (fsm == NULL) {
+		return UINT32_MAX;
+	}
+
+	elapsed_ms = (uint32_t)(now_ms - fsm->state_since_ms);
+
+	switch (fsm->state) {
+	case LGPS_GNSS_FSM_OFF:
+	case LGPS_GNSS_FSM_TRACKING:
+		return UINT32_MAX;
+
+	case LGPS_GNSS_FSM_COLD_ACQ:
+		deadline_ms = (fsm->cold_timeout_ms != 0U) ? fsm->cold_timeout_ms
+							   : LGPS_GNSS_FSM_COLD_TIMEOUT_MS;
+		return (elapsed_ms >= deadline_ms) ? 0U : (deadline_ms - elapsed_ms);
+
+	case LGPS_GNSS_FSM_EPHEMERIS_HOLD:
+		return (elapsed_ms >= LGPS_GNSS_FSM_EPHEMERIS_HOLD_MS)
+			       ? 0U
+			       : (LGPS_GNSS_FSM_EPHEMERIS_HOLD_MS - elapsed_ms);
+
+	case LGPS_GNSS_FSM_HOT_ACQ:
+		deadline_ms = lgps_gnss_fsm_hot_timeout_ms(fsm);
+		return (elapsed_ms >= deadline_ms) ? 0U : (deadline_ms - elapsed_ms);
+
+	case LGPS_GNSS_FSM_BACKOFF:
+		if (fsm->next_wait_ms == UINT32_MAX) {
+			return UINT32_MAX;
+		}
+		return (elapsed_ms >= fsm->next_wait_ms) ? 0U : (fsm->next_wait_ms - elapsed_ms);
+
+	default:
+		return UINT32_MAX;
 	}
 }

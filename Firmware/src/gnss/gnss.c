@@ -19,6 +19,7 @@
 #include <lifegps/board_io.h>
 #include <lifegps/diag.h>
 #include <lifegps/gnss.h>
+#include <lifegps/gnss_fsm.h>
 #include <lifegps/time.h>
 #include <lifegps/ubx.h>
 #include <lifegps/wdt.h>
@@ -48,6 +49,30 @@ LOG_MODULE_REGISTER(lgps_gnss, LOG_LEVEL_INF);
 /* Wait before retrying after a forced power cycle that repairs a split link. */
 #define GNSS_LINK_RECOVERY_MS 500U
 
+/* Normal hot-pulse sleep period (README section 6.1: 45 s pedestrian/normal duty cycle). */
+#define GNSS_NORMAL_PULSE_PERIOD_MS 45000U
+
+/* UART RX drain cadence while the receiver rail is powered. */
+#define GNSS_ACTIVE_POLL_MS 50U
+
+/*
+ * Maximum sleep chunk while the GNSS rail is OFF.
+ *
+ * WDT30 (lifegps/wdt.h) evaluates task check-ins every LGPS_WDT_FEED_WINDOW_MS (5 s)
+ * and clears the bitmap each window, so sleeping longer than 5 s would withhold WDT
+ * feeds and reset the SoC. Capping at 4 s lets the thread sleep 8x longer than the
+ * old 500 ms poll while guaranteeing a WDT check-in inside every supervision window.
+ */
+#define GNSS_OFF_SLEEP_CAP_MS (LGPS_WDT_FEED_WINDOW_MS - 1000U)
+BUILD_ASSERT(GNSS_OFF_SLEEP_CAP_MS < LGPS_WDT_FEED_WINDOW_MS,
+	     "GNSS off sleep cap must be shorter than the WDT supervision window");
+
+/* Runtime config bounds for lgps_gnss_apply_config(). */
+#define GNSS_CFG_COLD_TIMEOUT_MIN_S 15U
+#define GNSS_CFG_COLD_TIMEOUT_MAX_S 300U
+#define GNSS_CFG_RATE_MIN_HZ 1U
+#define GNSS_CFG_RATE_MAX_HZ 5U
+
 /*
  * Configuration path: UBX-CFG-VALSET / UBX-CFG-VALGET.
  *
@@ -69,8 +94,10 @@ static struct lgps_ubx_parser parser;
 static struct lgps_gnss_fix current_fix;
 static struct k_spinlock fix_lock;
 static K_SEM_DEFINE(gnss_wake_sem, 0, 1);
+static struct lgps_gnss_fsm gnss_fsm;
 static enum lgps_gnss_state gnss_state = LGPS_GNSS_STATE_OFF;
-static uint32_t state_since_ms;
+static uint32_t link_since_ms;
+static bool fix_this_cycle;
 static uint32_t last_pvt_log_ms;
 /* One bad UTC must not turn into a WRN at the PVT rate; one line per 5 s. */
 static uint32_t last_clock_reject_ms;
@@ -198,6 +225,7 @@ static struct k_spinlock sat_lock;
 static struct k_spinlock restart_lock;
 static bool restart_pending;
 static uint8_t restart_mode;
+static uint8_t restart_active_mode;
 static uint32_t restart_at_ms;
 
 /* A controlled software reset keeps the receiver off its UART for about a second.
@@ -502,7 +530,36 @@ static void set_state(enum lgps_gnss_state next, uint32_t duration_ms)
 	LOG_INF("GNSS state %s -> %s (duration %u ms)", lgps_gnss_state_name(gnss_state),
 		lgps_gnss_state_name(next), duration_ms);
 	gnss_state = next;
-	state_since_ms = lgps_diag_uptime_ms();
+}
+
+static enum lgps_gnss_state fsm_to_public_state(enum lgps_gnss_fsm_state fsm_state, bool has_fix,
+						bool hold_power)
+{
+	switch (fsm_state) {
+	case LGPS_GNSS_FSM_OFF:
+		return LGPS_GNSS_STATE_OFF;
+	case LGPS_GNSS_FSM_COLD_ACQ:
+	case LGPS_GNSS_FSM_HOT_ACQ:
+		return (hold_power && has_fix) ? LGPS_GNSS_STATE_FIXED : LGPS_GNSS_STATE_COLD_START;
+	case LGPS_GNSS_FSM_EPHEMERIS_HOLD:
+		return LGPS_GNSS_STATE_EPHEMERIS_HOLD;
+	case LGPS_GNSS_FSM_TRACKING:
+		return has_fix ? LGPS_GNSS_STATE_FIXED : LGPS_GNSS_STATE_COLD_START;
+	case LGPS_GNSS_FSM_BACKOFF:
+		return LGPS_GNSS_STATE_BACKOFF;
+	default:
+		return LGPS_GNSS_STATE_OFF;
+	}
+}
+
+static void sync_public_state(enum lgps_gnss_fsm_state fsm_state, bool has_fix, bool hold_power,
+			      uint32_t duration_ms)
+{
+	enum lgps_gnss_state next = fsm_to_public_state(fsm_state, has_fix, hold_power);
+
+	if (next != gnss_state) {
+		set_state(next, (duration_ms == UINT32_MAX) ? 0U : duration_ms);
+	}
 }
 
 void lgps_gnss_get_fix(struct lgps_gnss_fix *out)
@@ -878,6 +935,26 @@ static void gnss_apply_nmea_out(bool enable)
 	}
 }
 
+/*
+ * Measurement period via CFG-RATE-MEAS (0x30210001, U2 ms, interface description 4.9.17).
+ * Written to RAM layer so power-cycles and standby never wear flash; re-applied on power-up.
+ */
+static void gnss_apply_meas_rate(uint8_t rate_hz)
+{
+	uint16_t meas_ms;
+
+	if ((rate_hz < GNSS_CFG_RATE_MIN_HZ) || (rate_hz > GNSS_CFG_RATE_MAX_HZ)) {
+		rate_hz = GNSS_CFG_RATE_MIN_HZ;
+	}
+
+	meas_ms = (uint16_t)(1000U / (uint32_t)rate_hz);
+	if (gnss_send_cfg_item(LGPS_UBX_CFG_KEY_RATE_MEAS, meas_ms, 2U,
+			       LGPS_UBX_LAYER_RAM) != 0U) {
+		LOG_INF("CFG-RATE-MEAS -> %u ms (%u Hz, RAM layer)", (unsigned int)meas_ms,
+			(unsigned int)rate_hz);
+	}
+}
+
 /* --- debug session --------------------------------------------------------- */
 
 static bool gnss_debug_active(void)
@@ -910,6 +987,12 @@ static bool gnss_debug_hold_power(void)
 
 static atomic_t policy_deep_sleep = ATOMIC_INIT(0);
 static atomic_t policy_high_precision = ATOMIC_INIT(0);
+static atomic_t motion_zupt_locked = ATOMIC_INIT(0);
+static atomic_t motion_vehicle_mode = ATOMIC_INIT(0);
+static atomic_t wake_pulse_req = ATOMIC_INIT(0);
+static atomic_t configured_cold_timeout_ms = ATOMIC_INIT(LGPS_GNSS_COLD_START_TIMEOUT_MS);
+static atomic_t configured_rate_hz = ATOMIC_INIT(GNSS_CFG_RATE_MIN_HZ);
+static atomic_t rate_apply_pending = ATOMIC_INIT(0);
 
 void lgps_gnss_set_policy(bool deep_sleep, bool high_precision)
 {
@@ -918,34 +1001,69 @@ void lgps_gnss_set_policy(bool deep_sleep, bool high_precision)
 	k_sem_give(&gnss_wake_sem);
 }
 
+void lgps_gnss_set_motion_context(bool zupt_locked, bool vehicle_mode)
+{
+	atomic_val_t prev_zupt = atomic_set(&motion_zupt_locked, zupt_locked ? 1 : 0);
+
+	atomic_set(&motion_vehicle_mode, vehicle_mode ? 1 : 0);
+	if ((prev_zupt != 0) && !zupt_locked) {
+		k_sem_give(&gnss_wake_sem);
+	}
+}
+
+void lgps_gnss_request_wake_pulse(void)
+{
+	atomic_set(&wake_pulse_req, 1);
+	k_sem_give(&gnss_wake_sem);
+}
+
+void lgps_gnss_apply_config(uint16_t cold_timeout_s, uint8_t rate_hz)
+{
+	atomic_val_t prev_rate;
+	atomic_val_t prev_timeout;
+	uint32_t timeout_ms;
+
+	if (cold_timeout_s < GNSS_CFG_COLD_TIMEOUT_MIN_S) {
+		cold_timeout_s = GNSS_CFG_COLD_TIMEOUT_MIN_S;
+	} else if (cold_timeout_s > GNSS_CFG_COLD_TIMEOUT_MAX_S) {
+		cold_timeout_s = GNSS_CFG_COLD_TIMEOUT_MAX_S;
+	}
+
+	if (rate_hz < GNSS_CFG_RATE_MIN_HZ) {
+		rate_hz = GNSS_CFG_RATE_MIN_HZ;
+	} else if (rate_hz > GNSS_CFG_RATE_MAX_HZ) {
+		rate_hz = GNSS_CFG_RATE_MAX_HZ;
+	}
+
+	timeout_ms = (uint32_t)cold_timeout_s * 1000U;
+	prev_timeout = atomic_set(&configured_cold_timeout_ms, (atomic_val_t)timeout_ms);
+	prev_rate = atomic_set(&configured_rate_hz, (atomic_val_t)rate_hz);
+
+	if (prev_rate != (atomic_val_t)rate_hz) {
+		atomic_set(&rate_apply_pending, 1);
+		k_sem_give(&gnss_wake_sem);
+	} else if (prev_timeout != (atomic_val_t)timeout_ms) {
+		k_sem_give(&gnss_wake_sem);
+	}
+}
+
 void lgps_gnss_force_off(void)
 {
 	atomic_set(&policy_deep_sleep, 1);
 	atomic_set(&policy_high_precision, 0);
 	(void)lgps_gnss_rail_set(false);
-}
-
-/*
- * The single question the state machine is allowed to ask before dropping the
- * rail. Three independent sources can say no: CONFIG_LGPS_GNSS_ALWAYS_ON,
- * HIGH_PRECISION mode, and a live debug session holding power for its TTL.
- */
-static bool gnss_may_cut_power(void)
-{
-	if (IS_ENABLED(CONFIG_LGPS_GNSS_ALWAYS_ON)) {
-		return false;
-	}
-
-	if (atomic_get(&policy_high_precision) != 0) {
-		return false;
-	}
-
-	return !gnss_debug_hold_power();
+	k_sem_give(&gnss_wake_sem);
 }
 
 static void gnss_debug_apply_outputs(void)
 {
-	uint8_t wanted = gnss_debug_active() ? debug_flags : 0U;
+	uint8_t wanted;
+
+	if (!gnss_fsm.rail_on) {
+		return;
+	}
+
+	wanted = gnss_debug_active() ? debug_flags : 0U;
 
 	/* LGPS_GNSS_DEBUG_NAV_SAT is deliberately not applied any more: NAV-SAT is on
 	 * for as long as the receiver is powered (gnss_power_up). The flag stays in
@@ -1019,6 +1137,8 @@ int lgps_gnss_debug_set(uint8_t flags, uint16_t ttl_s)
 	debug_req_ttl_s = ttl_s;
 	debug_pending = true;
 	k_spin_unlock(&debug_lock, key);
+
+	k_sem_give(&gnss_wake_sem);
 
 	return 0;
 }
@@ -1243,7 +1363,7 @@ static void gnss_service_cfg(void)
 		return;
 	}
 
-	if ((gnss_state == LGPS_GNSS_STATE_OFF) || (gnss_state == LGPS_GNSS_STATE_BACKOFF)) {
+	if (!gnss_fsm.rail_on) {
 		/* The receiver is unpowered: answer now instead of waiting for a
 		 * timeout that cannot produce a value.
 		 */
@@ -1363,6 +1483,7 @@ int lgps_gnss_cfg_get(uint32_t key, struct lgps_gnss_cfg_value *out)
 	cfg_req.len = 0U;
 	cfg_req.value = 0U;
 	cfg_req.flash = false;
+	k_sem_give(&gnss_wake_sem);
 
 	ret = k_sem_take(&cfg_done_sem, K_MSEC(GNSS_CFG_TIMEOUT_MS + 300U));
 	if (ret == 0) {
@@ -1409,6 +1530,7 @@ int lgps_gnss_cfg_set(uint32_t key, uint32_t value, bool persist_to_flash,
 	cfg_req.len = desc->len;
 	cfg_req.value = value;
 	cfg_req.flash = persist_to_flash;
+	k_sem_give(&gnss_wake_sem);
 
 	ret = k_sem_take(&cfg_done_sem, K_MSEC(GNSS_CFG_SET_WAIT_MS));
 	if (ret == 0) {
@@ -1467,6 +1589,7 @@ int lgps_gnss_restart(enum lgps_gnss_start_mode mode)
 	restart_pending = true;
 	restart_mode = (uint8_t)mode;
 	k_spin_unlock(&restart_lock, key);
+	k_sem_give(&gnss_wake_sem);
 
 	LOG_INF("GNSS restart requested: %s start",
 		(mode == LGPS_GNSS_START_COLD) ? "cold"
@@ -1701,10 +1824,8 @@ static void handle_nav_pvt(const struct lgps_nav_pvt *pvt)
 		k_spin_unlock(&ttff_lock, key);
 	}
 
-	/* The cold-start window must end on the first real 3D fix. */
-	if (fix_valid && gnss_state == LGPS_GNSS_STATE_COLD_START) {
-		set_state(LGPS_GNSS_STATE_FIXED, 0U);
-	}
+	/* Fed to lgps_gnss_fsm_step() on the GNSS thread; reset on every power cycle. */
+	fix_this_cycle = fix_valid;
 
 	/* 1 Hz NAV-PVT is logged at a lower rate to keep the UART usable. */
 	if ((uint32_t)(now_ms - last_pvt_log_ms) >= GNSS_PVT_LOG_PERIOD_MS) {
@@ -1969,6 +2090,17 @@ static void gnss_power_down(void)
 	rail_off_ms = lgps_diag_uptime_ms();
 
 	(void)lgps_gnss_rail_set(false);
+
+	fix_this_cycle = false;
+	restart_at_ms = 0U;
+	bringup_index = GNSS_BRINGUP_DONE;
+	bringup_armed = false;
+	if (ack_owner == ACK_OWNER_BRINGUP) {
+		ack_owner = ACK_OWNER_NONE;
+	}
+	if (cfg_req.op != CFG_OP_NONE) {
+		gnss_cfg_finish(-ENODEV);
+	}
 }
 
 static void gnss_power_up(void)
@@ -1998,7 +2130,9 @@ static void gnss_power_up(void)
 
 	/* TTFF is measured from this instant, not from the first byte we receive. */
 	rail_on_ms = lgps_diag_uptime_ms();
+	link_since_ms = rail_on_ms;
 	ubx_last_rx_ms = rail_on_ms;
+	fix_this_cycle = false;
 	{
 		k_spinlock_key_t key = k_spin_lock(&ttff_lock);
 
@@ -2045,7 +2179,7 @@ static void gnss_power_up(void)
 		sig_count = 0U;
 		k_spin_unlock(&sat_lock, key);
 	}
-	next_reconfig_ms = 0U;
+	next_reconfig_ms = rail_on_ms + 2000U;
 	baud_probe_base_bytes = rx_bytes_total();
 	(void)gnss_enable_nav_pvt();
 	/*
@@ -2061,6 +2195,14 @@ static void gnss_power_up(void)
 	gnss_apply_nav_dop_rate(true);
 	/* The signal id behind each C/N0 (CF column): NAV-SAT/NAV-SIG join. */
 	gnss_apply_nav_sig_rate(true);
+	{
+		bool rate_dirty = atomic_set(&rate_apply_pending, 0) != 0;
+		uint8_t rate_hz = (uint8_t)atomic_get(&configured_rate_hz);
+
+		if ((rate_hz > GNSS_CFG_RATE_MIN_HZ) || rate_dirty) {
+			gnss_apply_meas_rate(rate_hz);
+		}
+	}
 	(void)gnss_request_rate_readback();
 	/* The bandwidth profile (NMEA off / rate / line rate) stays disarmed until a
 	 * NAV-PVT readback proves the receiver answers at the boot rate; the cold-start
@@ -2148,7 +2290,12 @@ static void gnss_service_restart(void)
 			 */
 			k_msleep(10);
 			(void)gnss_uart_set_baud(LGPS_GNSS_BAUD_DEFAULT);
+			restart_active_mode = mode;
 			restart_at_ms = now_ms + GNSS_RESTART_SETTLE_MS;
+			fix_this_cycle = false;
+			if (mode == LGPS_GNSS_START_COLD) {
+				lgps_gnss_fsm_note_cold_restart(&gnss_fsm, now_ms);
+			}
 			LOG_INF("UBX-CFG-RST sent (navBbrMask 0x%04x): %s start, host stays at %u 8N1",
 				(unsigned int)mask, restart_mode_name(mode),
 				LGPS_GNSS_BAUD_DEFAULT);
@@ -2171,7 +2318,9 @@ static void gnss_service_restart(void)
 	debug_applied_flags = 0U;
 	bringup_index = GNSS_BRINGUP_DONE;
 	bringup_armed = false;
-	next_reconfig_ms = 0U;
+	fix_this_cycle = false;
+	link_since_ms = now_ms;
+	next_reconfig_ms = now_ms + 2000U;
 	ubx_last_rx_ms = now_ms;
 	rail_on_ms = now_ms;
 
@@ -2203,32 +2352,22 @@ static void gnss_service_restart(void)
 	gnss_apply_nav_sat_rate(true);
 	gnss_apply_nav_dop_rate(true);
 	gnss_apply_nav_sig_rate(true);
+	if ((uint8_t)atomic_get(&configured_rate_hz) > GNSS_CFG_RATE_MIN_HZ) {
+		gnss_apply_meas_rate((uint8_t)atomic_get(&configured_rate_hz));
+	}
 	(void)gnss_request_rate_readback();
+
+	if (restart_active_mode == LGPS_GNSS_START_COLD) {
+		lgps_gnss_fsm_note_cold_restart(&gnss_fsm, now_ms);
+	} else {
+		gnss_fsm.state_since_ms = now_ms;
+	}
 
 	LOG_INF("GNSS restarted: RAM-layer outputs re-asserted at %u 8N1",
 		LGPS_GNSS_BAUD_DEFAULT);
-	set_state(LGPS_GNSS_STATE_COLD_START, LGPS_GNSS_COLD_START_TIMEOUT_MS);
-}
-
-/*
- * Next backoff step, i.e. what follows a wait of @p current_ms.
- *
- * The previous version stepped *up* before the first wait: backoff_ms starts at
- * 120 s, the first cut asked for the successor of 120 s and slept 300 s, so the
- * documented 120 -> 300 -> 900 sequence never started at 120. The wait is now
- * the current value and only the next attempt escalates.
- */
-static uint32_t backoff_next_ms(uint32_t current_ms)
-{
-	if (current_ms < LGPS_GNSS_BACKOFF_STEP2_MS) {
-		return LGPS_GNSS_BACKOFF_STEP2_MS;
-	}
-
-	if (current_ms < LGPS_GNSS_BACKOFF_STEP3_MS) {
-		return LGPS_GNSS_BACKOFF_STEP3_MS;
-	}
-
-	return LGPS_GNSS_BACKOFF_STEP3_MS;
+	sync_public_state(gnss_fsm.state, false,
+			  IS_ENABLED(CONFIG_LGPS_GNSS_ALWAYS_ON) || gnss_debug_hold_power(),
+			  lgps_gnss_fsm_next_wake_ms(&gnss_fsm, now_ms));
 }
 
 /* --- receiver rescue -------------------------------------------------------- */
@@ -2310,13 +2449,107 @@ static void gnss_clear_saved_config(void)
 		(unsigned int)ARRAY_SIZE(rescue_keys));
 }
 
+static void gnss_service_link(uint32_t now_ms)
+{
+	uint32_t link_elapsed = (uint32_t)(now_ms - link_since_ms);
+
+	/*
+	 * Arm the bandwidth profile once the receiver has proved that it answers
+	 * at the boot rate. Arming at power-up instead would race the module's
+	 * own 100 ms boot and silently drop the first profile step.
+	 */
+	if (nav_pvt_rate_verified && !bringup_armed) {
+		bringup_armed = true;
+		gnss_bringup_start();
+	}
+
+	/*
+	 * Bytes arriving without a single '$' and without a UBX sync mean the
+	 * line rate is wrong (framing garbage), not that the module is silent.
+	 * Try the other common factory rate once, then report clearly.
+	 */
+	if (!baud_fallback_done && ((rx_bytes_total() - baud_probe_base_bytes) > 200U) &&
+	    ((uint32_t)atomic_get(&isr_nmea_starts) == 0U) && (ubx_frames == 0U) &&
+	    (link_elapsed > 3000U)) {
+		baud_fallback_done = true;
+		LOG_WRN("GNSS: %u bytes received at %u baud without any '$' or UBX sync - "
+			"assuming a line-rate mismatch",
+			rx_bytes_total() - baud_probe_base_bytes, current_baud);
+		(void)gnss_uart_set_baud(LGPS_GNSS_BAUD_FALLBACK);
+		/* Re-baseline instead of zeroing the ISR counter: writing an ISR
+		 * counter from a thread loses every increment that lands in
+		 * between the read and the store.
+		 */
+		baud_probe_base_bytes = rx_bytes_total();
+		next_reconfig_ms = 0U;
+	}
+
+	/*
+	 * A receiver that finished booting after our first VALSET ignores it and
+	 * keeps streaming the factory NMEA set. Re-send every 2 s for the first
+	 * 10 s and keep asking for the readback until the receiver reports a
+	 * non-zero NAV-PVT rate.
+	 */
+	if (!nav_pvt_rate_verified && (link_elapsed < 10000U) &&
+	    ((next_reconfig_ms == 0U) || ((int32_t)(now_ms - next_reconfig_ms) >= 0))) {
+		next_reconfig_ms = now_ms + 2000U;
+		(void)gnss_enable_nav_pvt();
+		/* Re-asserted with the same retry: the first VALSET goes out 100 ms
+		 * after the rail, which can be before the module is listening.
+		 */
+		gnss_apply_nav_sat_rate(true);
+		gnss_apply_nav_dop_rate(true);
+		gnss_apply_nav_sig_rate(true);
+		if ((uint8_t)atomic_get(&configured_rate_hz) > GNSS_CFG_RATE_MIN_HZ) {
+			gnss_apply_meas_rate((uint8_t)atomic_get(&configured_rate_hz));
+		}
+		(void)gnss_request_rate_readback();
+	}
+
+	/*
+	 * If the line rate was changed this power cycle, the only repair is a power
+	 * cycle of the receiver: the new rate lives in its RAM layer, so a host that
+	 * simply goes back to the boot rate is still talking to a receiver that does
+	 * not answer it.
+	 */
+	if (!nav_pvt_rate_verified && (link_elapsed >= 10000U) && fast_link_attempted) {
+		LOG_WRN("no NAV-PVT answer at %u baud although both sides were switched",
+			current_baud);
+		fast_link_broken = true;
+		recovery_needed = true;
+		return;
+	}
+
+	if (!nav_pvt_rate_verified && (link_elapsed >= 10000U) && !nav_pvt_rate_failure_logged) {
+		nav_pvt_rate_failure_logged = true;
+		LOG_WRN("NAV-PVT output rate never confirmed after 10 s: NAV-PVT stays off, "
+			"only NMEA will be received (ubx=%u nmea=%u)",
+			ubx_frames, (uint32_t)atomic_get(&isr_nmea_starts));
+	}
+
+	/*
+	 * When continuous tracking holds the rail on (CONFIG_LGPS_GNSS_ALWAYS_ON,
+	 * HIGH_PRECISION, or debug hold), notice a receiver brown-out/reset that drops
+	 * RAM-layer NAV-PVT and re-arm the configuration.
+	 */
+	if (fix_this_cycle &&
+	    ((uint32_t)(now_ms - current_fix.last_pvt_uptime_ms) > GNSS_PVT_LOST_MS)) {
+		LOG_WRN("no NAV-PVT for %u ms, re-arming the receiver configuration",
+			GNSS_PVT_LOST_MS);
+		nav_pvt_rate_verified = false;
+		nav_pvt_rate_failure_logged = false;
+		next_reconfig_ms = 0U;
+		link_since_ms = now_ms;
+		fix_this_cycle = false;
+	}
+}
+
 static void gnss_thread(void *arg1, void *arg2, void *arg3)
 {
 	ARG_UNUSED(arg1);
 	ARG_UNUSED(arg2);
 	ARG_UNUSED(arg3);
 
-	uint32_t backoff_ms = LGPS_GNSS_BACKOFF_STEP1_MS;
 	uint32_t reported_drop_bytes = 0U;
 
 	/* Block until lgps_gnss_init() reports the receive path is usable. */
@@ -2324,11 +2557,19 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 		return;
 	}
 
-	gnss_power_up();
-	set_state(LGPS_GNSS_STATE_COLD_START, LGPS_GNSS_COLD_START_TIMEOUT_MS);
+	lgps_gnss_fsm_init(&gnss_fsm, lgps_diag_uptime_ms());
 
 	for (;;) {
+		uint32_t now_ms = lgps_diag_uptime_ms();
 		uint32_t dropped;
+		bool deep_sleep;
+		bool high_precision;
+		bool zupt_locked;
+		bool vehicle_mode;
+		bool hold_power;
+		bool wake_trigger;
+		struct lgps_gnss_fsm_input fsm_in;
+		enum lgps_gnss_fsm_action action;
 
 		/*
 		 * Repair a link the two sides disagree about: the receiver accepted a line
@@ -2342,17 +2583,31 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 				"so both sides return to %u 8N1",
 				LGPS_GNSS_BAUD_DEFAULT);
 			gnss_log_cfg_trail();
-			gnss_clear_saved_config();
-			gnss_power_down();
-			backoff_ms = GNSS_LINK_RECOVERY_MS;
-			set_state(LGPS_GNSS_STATE_BACKOFF, GNSS_LINK_RECOVERY_MS);
+			if (gnss_fsm.rail_on) {
+				gnss_clear_saved_config();
+				gnss_power_down();
+			}
+			gnss_fsm.rail_on = false;
+			gnss_fsm.state = LGPS_GNSS_FSM_BACKOFF;
+			gnss_fsm.state_since_ms = lgps_diag_uptime_ms();
+			gnss_fsm.next_wait_ms = GNSS_LINK_RECOVERY_MS;
+			sync_public_state(gnss_fsm.state, false, false, GNSS_LINK_RECOVERY_MS);
+			k_msleep(GNSS_LINK_RECOVERY_MS);
+			now_ms = lgps_diag_uptime_ms();
 		}
 
 		gnss_service_debug();
 		gnss_service_cfg();
-		gnss_service_restart();
-		gnss_bringup_service();
-		gnss_process_rx();
+		if (gnss_fsm.rail_on) {
+			gnss_service_restart();
+			gnss_bringup_service();
+			gnss_process_rx();
+
+			if ((restart_at_ms == 0U) && (atomic_set(&rate_apply_pending, 0) != 0)) {
+				gnss_apply_meas_rate((uint8_t)atomic_get(&configured_rate_hz));
+			}
+		}
+
 		lgps_wdt_checkin(LGPS_WDT_TASK_GNSS);
 
 		/*
@@ -2363,9 +2618,8 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 		 * otherwise the policy itself brings the receiver back on its own.
 		 */
 		if (IS_ENABLED(CONFIG_LGPS_GNSS_ALWAYS_ON) && (atomic_get(&psm_active) == 0) &&
-		    !recovery_needed && (gnss_state != LGPS_GNSS_STATE_OFF) &&
-		    (gnss_state != LGPS_GNSS_STATE_BACKOFF) &&
-		    ((uint32_t)(lgps_diag_uptime_ms() - ubx_last_rx_ms) > GNSS_LIVENESS_MS)) {
+		    !recovery_needed && gnss_fsm.rail_on &&
+		    ((uint32_t)(now_ms - ubx_last_rx_ms) > GNSS_LIVENESS_MS)) {
 			if (recovery_count < GNSS_MAX_RECOVERIES) {
 				recovery_count++;
 				LOG_WRN("no UBX frame for %u ms in state %s: the receiver is not "
@@ -2389,187 +2643,73 @@ static void gnss_thread(void *arg1, void *arg2, void *arg3)
 			LOG_WRN("GNSS RX ring overflow: %u byte(s) dropped in total", dropped);
 		}
 
-		uint32_t elapsed = lgps_diag_uptime_ms() - state_since_ms;
+		if (gnss_fsm.rail_on && (restart_at_ms == 0U)) {
+			gnss_service_link(now_ms);
+		}
 
-		switch (gnss_state) {
-		case LGPS_GNSS_STATE_COLD_START: {
-			/*
-			 * Arm the bandwidth profile once the receiver has proved that it answers
-			 * at the boot rate. Arming at power-up instead would race the module's
-			 * own 100 ms boot and silently drop the first profile step.
-			 */
-			if (nav_pvt_rate_verified && !bringup_armed) {
-				bringup_armed = true;
-				gnss_bringup_start();
-			}
-			/*
-			 * A receiver that finished booting after our first VALSET ignores it and
-			 * keeps streaming the factory NMEA set. Re-send every 2 s for the first
-			 * 10 s and keep asking for the readback until the receiver reports a
-			 * non-zero NAV-PVT rate.
-			 *
-			 * The retry condition used to be "no UBX frame yet", which stopped as
-			 * soon as any ACK arrived - including an ACK-NAK, i.e. exactly the case
-			 * where the configuration did not take.
-			 */
-			/*
-			 * Bytes arriving without a single '$' and without a UBX sync mean the
-			 * line rate is wrong (framing garbage), not that the module is silent.
-			 * Try the other common factory rate once, then report clearly.
-			 */
-			if (!baud_fallback_done && (rx_bytes_total() - baud_probe_base_bytes > 200U) &&
-			    ((uint32_t)atomic_get(&isr_nmea_starts) == 0U) && (ubx_frames == 0U) &&
-			    (elapsed > 3000U)) {
-				baud_fallback_done = true;
-				LOG_WRN("GNSS: %u bytes received at %u baud without any '$' or UBX sync - "
-					"assuming a line-rate mismatch",
-					rx_bytes_total() - baud_probe_base_bytes, current_baud);
-				(void)gnss_uart_set_baud(LGPS_GNSS_BAUD_FALLBACK);
-				/* Re-baseline instead of zeroing the ISR counter: writing an ISR
-				 * counter from a thread loses every increment that lands in
-				 * between the read and the store.
-				 */
-				baud_probe_base_bytes = rx_bytes_total();
-				next_reconfig_ms = 0U;
-			}
+		now_ms = lgps_diag_uptime_ms();
+		deep_sleep = atomic_get(&policy_deep_sleep) != 0;
+		high_precision = atomic_get(&policy_high_precision) != 0;
+		zupt_locked = atomic_get(&motion_zupt_locked) != 0;
+		vehicle_mode = atomic_get(&motion_vehicle_mode) != 0;
+		hold_power = IS_ENABLED(CONFIG_LGPS_GNSS_ALWAYS_ON) || gnss_debug_hold_power();
+		wake_trigger = atomic_set(&wake_pulse_req, 0) != 0;
 
-			if (!nav_pvt_rate_verified && (elapsed < 10000U) &&
-			    (lgps_diag_uptime_ms() >= next_reconfig_ms)) {
-				next_reconfig_ms = lgps_diag_uptime_ms() + 2000U;
-				(void)gnss_enable_nav_pvt();
-				/* Re-asserted with the same retry: the first VALSET goes out 100 ms
-				 * after the rail, which can be before the module is listening.
-				 */
-				gnss_apply_nav_sat_rate(true);
-				gnss_apply_nav_dop_rate(true);
-				gnss_apply_nav_sig_rate(true);
-				(void)gnss_request_rate_readback();
-			}
+		fsm_in = (struct lgps_gnss_fsm_input){
+			.now_ms = now_ms,
+			.fix_valid = fix_this_cycle,
+			.zupt_locked = zupt_locked,
+			.vehicle_mode = vehicle_mode,
+			.high_precision = high_precision,
+			.hold_power = hold_power,
+			.wake_trigger = wake_trigger,
+			.deep_sleep = deep_sleep,
+			.cold_timeout_ms = (uint32_t)atomic_get(&configured_cold_timeout_ms),
+			.pulse_period_ms = GNSS_NORMAL_PULSE_PERIOD_MS,
+		};
 
-			/* One-shot report: after 10 s of retrying, either the key is wrong for
-			 * this product or the receiver never answered. Say so instead of
-			 * letting the cold start run the remaining 50 s in silence.
-			 *
-			 * If the line rate was changed this power cycle, the only repair is a power
-			 * cycle of the receiver: the new rate lives in its RAM layer, so a host that
-			 * simply goes back to the boot rate is still talking to a receiver that does
-			 * not answer it. Dropping the rail clears that RAM, which is exactly what
-			 * the recovery below does - a CONFIG_LGPS_GNSS_ALWAYS_ON build never gets such
-			 * a power cycle on its own.
-			 */
-			if (!nav_pvt_rate_verified && (elapsed >= 10000U) && fast_link_attempted) {
-				LOG_WRN("no NAV-PVT answer at %u baud although both sides were switched",
-					current_baud);
-				fast_link_broken = true;
-				recovery_needed = true;
-				break;
-			}
+		action = lgps_gnss_fsm_step(&gnss_fsm, &fsm_in);
+		if (action == LGPS_GNSS_FSM_ACTION_POWER_UP) {
+			gnss_power_up();
+			gnss_debug_apply_outputs();
+		} else if (action == LGPS_GNSS_FSM_ACTION_POWER_DOWN) {
+			gnss_power_down();
+		}
 
-			if (!nav_pvt_rate_verified && (elapsed >= 10000U) &&
-			    !nav_pvt_rate_failure_logged) {
-				nav_pvt_rate_failure_logged = true;
-				LOG_WRN("NAV-PVT output rate never confirmed after 10 s: NAV-PVT stays off, "
-					"only NMEA will be received (ubx=%u nmea=%u)",
-					ubx_frames, (uint32_t)atomic_get(&isr_nmea_starts));
-			}
+		sync_public_state(gnss_fsm.state, fix_this_cycle, hold_power,
+				  lgps_gnss_fsm_next_wake_ms(&gnss_fsm, now_ms));
 
-			if (elapsed >= LGPS_GNSS_COLD_START_TIMEOUT_MS) {
-				if (gnss_may_cut_power()) {
-					LOG_WRN("no 3D fix within %u s, cutting the GNSS rail",
-						LGPS_GNSS_COLD_START_TIMEOUT_MS / 1000U);
-					gnss_power_down();
-					set_state(LGPS_GNSS_STATE_BACKOFF, backoff_ms);
-					backoff_ms = backoff_next_ms(backoff_ms);
-				} else if (!policy_hold_logged) {
-					/* Logging every 20 ms would bury the very fix this line is
-					 * waiting for, hence the one-shot.
-					 */
-					policy_hold_logged = true;
-					LOG_INF("cold-start window over, rail stays on (%s)",
-						IS_ENABLED(CONFIG_LGPS_GNSS_ALWAYS_ON)
-							? "CONFIG_LGPS_GNSS_ALWAYS_ON"
-							: "debug session holds power");
+		if (gnss_fsm.rail_on && hold_power && !fix_this_cycle && !policy_hold_logged &&
+		    ((uint32_t)(now_ms - link_since_ms) >= fsm_in.cold_timeout_ms)) {
+			/* Logging every 50 ms would bury the fix this line waits for. */
+			policy_hold_logged = true;
+			LOG_INF("cold-start window over, rail stays on (%s)",
+				IS_ENABLED(CONFIG_LGPS_GNSS_ALWAYS_ON)
+					? "CONFIG_LGPS_GNSS_ALWAYS_ON"
+					: "debug session holds power");
+		}
+
+		if (gnss_fsm.rail_on) {
+			(void)k_sem_take(&gnss_wake_sem, K_MSEC(GNSS_ACTIVE_POLL_MS));
+		} else {
+			uint32_t sleep_ms;
+
+			if (deep_sleep || zupt_locked) {
+				sleep_ms = GNSS_OFF_SLEEP_CAP_MS;
+			} else {
+				uint32_t next_ms =
+					lgps_gnss_fsm_next_wake_ms(&gnss_fsm, lgps_diag_uptime_ms());
+
+				if (next_ms == 0U) {
+					sleep_ms = 10U;
+				} else if (next_ms > GNSS_OFF_SLEEP_CAP_MS) {
+					sleep_ms = GNSS_OFF_SLEEP_CAP_MS;
+				} else {
+					sleep_ms = next_ms;
 				}
 			}
-			break;
-		}
 
-		case LGPS_GNSS_STATE_FIXED: {
-			/* A solution resets the escalation: the next cut is a fresh 120 s. */
-			backoff_ms = LGPS_GNSS_BACKOFF_STEP1_MS;
-
-			/*
-			 * With the policy disabled this state is terminal, so nothing else would
-			 * notice a receiver that stopped talking: re-arm the one-shot
-			 * configuration and start over. last_pvt_uptime_ms is set by every
-			 * decoded NAV-PVT, valid or not, so this catches a silent link and not
-			 * an indoor fix loss.
-			 */
-			if ((uint32_t)(lgps_diag_uptime_ms() - current_fix.last_pvt_uptime_ms) >
-			    GNSS_PVT_LOST_MS) {
-				LOG_WRN("no NAV-PVT for %u ms, re-arming the receiver configuration",
-					GNSS_PVT_LOST_MS);
-				nav_pvt_rate_verified = false;
-				nav_pvt_rate_failure_logged = false;
-				next_reconfig_ms = 0U;
-				set_state(LGPS_GNSS_STATE_COLD_START,
-					  LGPS_GNSS_COLD_START_TIMEOUT_MS);
-				break;
-			}
-
-			if (gnss_may_cut_power()) {
-				set_state(LGPS_GNSS_STATE_EPHEMERIS_HOLD,
-					  LGPS_GNSS_EPHEMERIS_HOLD_MS);
-			}
-			break;
-		}
-
-		case LGPS_GNSS_STATE_EPHEMERIS_HOLD:
-			if ((elapsed >= LGPS_GNSS_EPHEMERIS_HOLD_MS) && gnss_may_cut_power()) {
-				LOG_INF("ephemeris hold done, powering the GNSS rail down");
-				gnss_power_down();
-				set_state(LGPS_GNSS_STATE_BACKOFF, backoff_ms);
-				backoff_ms = backoff_next_ms(backoff_ms);
-			}
-			break;
-
-		case LGPS_GNSS_STATE_BACKOFF:
-			if (atomic_get(&policy_deep_sleep) != 0 && gnss_may_cut_power()) {
-				set_state(LGPS_GNSS_STATE_OFF, 0U);
-			} else if (elapsed >= backoff_ms) {
-				LOG_INF("backoff expired (%u ms), retrying GNSS", backoff_ms);
-				gnss_power_up();
-				set_state(LGPS_GNSS_STATE_COLD_START,
-					  LGPS_GNSS_COLD_START_TIMEOUT_MS);
-			}
-			break;
-
-		case LGPS_GNSS_STATE_OFF:
-			if (atomic_get(&policy_deep_sleep) == 0) {
-				LOG_INF("leaving deep sleep, powering GNSS rail up");
-				gnss_power_up();
-				set_state(LGPS_GNSS_STATE_COLD_START,
-					  LGPS_GNSS_COLD_START_TIMEOUT_MS);
-			}
-			break;
-		default:
-			break;
-		}
-
-		if ((atomic_get(&policy_deep_sleep) != 0) && gnss_may_cut_power() &&
-		    (gnss_state != LGPS_GNSS_STATE_OFF)) {
-			LOG_INF("deep sleep requested, powering GNSS rail down");
-			gnss_power_down();
-			set_state(LGPS_GNSS_STATE_OFF, 0U);
-		}
-
-		{
-			uint32_t wait_ms = ((gnss_state == LGPS_GNSS_STATE_OFF) ||
-					    (gnss_state == LGPS_GNSS_STATE_BACKOFF))
-						   ? 500U
-						   : 50U;
-
-			(void)k_sem_take(&gnss_wake_sem, K_MSEC(wait_ms));
+			(void)k_sem_take(&gnss_wake_sem, K_MSEC(sleep_ms));
 		}
 	}
 }

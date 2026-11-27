@@ -279,12 +279,19 @@ int lgps_ring_init(void)
 		return -ENOSPC;
 	}
 
-	LOG_INF("external NOR: %u MiB detected via SFDP (%u pages x %u bytes), "
-		"trajectory area %u MiB, OTA slot1 %u MiB at 0x%08x",
-		capacity.flash_bytes / (1024U * 1024U), (unsigned int)page_count,
-		(unsigned int)first_page.size, capacity.traj_bytes / (1024U * 1024U),
-		capacity.ota_slot1_bytes / (1024U * 1024U),
-		capacity.flash_bytes - capacity.ota_slot1_bytes);
+	if (capacity.ota_slot1_bytes == 0U) {
+		LOG_INF("external NOR: %u MiB detected via SFDP (%u pages x %u bytes), "
+			"trajectory area %u MiB (OTA slot1 in internal RRAM)",
+			capacity.flash_bytes / (1024U * 1024U), (unsigned int)page_count,
+			(unsigned int)first_page.size, capacity.traj_bytes / (1024U * 1024U));
+	} else {
+		LOG_INF("external NOR: %u MiB detected via SFDP (%u pages x %u bytes), "
+			"trajectory area %u MiB, OTA slot1 %u MiB at 0x%08x",
+			capacity.flash_bytes / (1024U * 1024U), (unsigned int)page_count,
+			(unsigned int)first_page.size, capacity.traj_bytes / (1024U * 1024U),
+			capacity.ota_slot1_bytes / (1024U * 1024U),
+			capacity.flash_bytes - capacity.ota_slot1_bytes);
+	}
 
 	if (capacity.flash_bytes != 64U * 1024U * 1024U) {
 		LOG_WRN("external NOR is not the 64 MB W25Q512NW the archive budget assumes; "

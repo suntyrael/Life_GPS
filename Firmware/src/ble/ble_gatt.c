@@ -181,8 +181,10 @@ static bool log_subscribed;
 static volatile bool telem_subscribed;
 static bool debug_unlocked;
 static bool reboot_pending;
-static bool link_up;
-static bool pairing_window_open;
+static volatile bool link_up;
+static volatile bool pairing_window_open;
+static atomic_t ble_deep_sleep = ATOMIC_INIT(0);
+static atomic_t ble_ready = ATOMIC_INIT(0);
 static struct bt_conn *active_conn;
 
 static struct k_work_delayable reboot_work;
@@ -284,14 +286,69 @@ static void refresh_mfg_adv_data(void)
 	p[LGPS_ADV_OFF_LAST_SEQ_ID + 3U] = (uint8_t)((last_seq >> 24) & 0xFFU);
 }
 
+static void schedule_advertising(uint32_t delay_ms)
+{
+	(void)k_work_reschedule(&adv_restart_work, K_MSEC(delay_ms));
+}
+
+static void restart_advertising_now(void)
+{
+	int err;
+
+	if ((atomic_get(&ble_ready) == 0) || link_up) {
+		return;
+	}
+
+	err = bt_le_adv_stop();
+	if ((err != 0) && (err != -EALREADY)) {
+		LOG_WRN("bt_le_adv_stop failed (%d)", err);
+	}
+	schedule_advertising(20U);
+}
+
 static int start_advertising(void)
 {
+	/* BT_LE_ADV_CONN_FAST_1 is the GAP-recommended undirected connectable
+	 * parameter set in Zephyr 4.4. Copy it directly so options/flags stay
+	 * aligned with the stack and only adjust the advertising interval.
+	 */
+	struct bt_le_adv_param adv_param = *BT_LE_ADV_CONN_FAST_1;
+
 	refresh_mfg_adv_data();
 	scan_rsp_data[0].data_len = (uint8_t)strlen(device_name);
-	/* BT_LE_ADV_CONN_FAST_1 is the GAP-recommended undirected connectable
-	 * parameter set in Zephyr 4.4.
-	 */
-	return bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, adv_data, ARRAY_SIZE(adv_data), scan_rsp_data,
+
+	if (!pairing_window_open) {
+		struct lgps_app_config cfg;
+		uint16_t interval_ms;
+		uint32_t min_units;
+		uint32_t max_units;
+
+		lgps_app_config_get(&cfg);
+		interval_ms = cfg.ble_adv_interval_ms;
+		if (interval_ms < 100U) {
+			interval_ms = 100U;
+		} else if (interval_ms > 4000U) {
+			interval_ms = 4000U;
+		}
+
+		if ((atomic_get(&ble_deep_sleep) != 0) && (interval_ms < 1000U)) {
+			interval_ms = 1000U;
+		}
+
+		/* Convert ms to 0.625 ms BLE units (BT Core Spec Vol 4 Part E 7.8.5). */
+		min_units = ((uint32_t)interval_ms * 8U) / 5U;
+		if (min_units < 0x0020U) {
+			min_units = 0x0020U;
+		} else if (min_units > 0x4000U) {
+			min_units = 0x4000U;
+		}
+		max_units = MIN(min_units + 32U, 0x4000U);
+
+		adv_param.interval_min = min_units;
+		adv_param.interval_max = max_units;
+	}
+
+	return bt_le_adv_start(&adv_param, adv_data, ARRAY_SIZE(adv_data), scan_rsp_data,
 			       ARRAY_SIZE(scan_rsp_data));
 }
 
@@ -301,16 +358,8 @@ static void pairing_close_handler(struct k_work *work)
 
 	pairing_window_open = false;
 	refresh_mfg_adv_data();
-	if (!link_up) {
-		(void)bt_le_adv_update_data(adv_data, ARRAY_SIZE(adv_data), scan_rsp_data,
-					    ARRAY_SIZE(scan_rsp_data));
-	}
+	restart_advertising_now();
 	LOG_INF("BLE pairing window closed");
-}
-
-static void schedule_advertising(uint32_t delay_ms)
-{
-	(void)k_work_schedule(&adv_restart_work, K_MSEC(delay_ms));
 }
 
 static void adv_restart_handler(struct k_work *work)
@@ -496,6 +545,8 @@ static ssize_t config_read(struct bt_conn *conn, const struct bt_gatt_attr *attr
 static ssize_t config_write(struct bt_conn *conn, const struct bt_gatt_attr *attr, const void *buf,
 			    uint16_t len, uint16_t offset, uint8_t flags)
 {
+	struct lgps_app_config prev_cfg;
+	struct lgps_app_config cfg;
 	int ret;
 
 	ARG_UNUSED(conn);
@@ -510,12 +561,21 @@ static ssize_t config_write(struct bt_conn *conn, const struct bt_gatt_attr *att
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
 	}
 
+	lgps_app_config_get(&prev_cfg);
+
 	ret = lgps_app_config_update_tlv((const uint8_t *)buf, len);
 	if (ret == -ERANGE) {
 		return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
 	}
 	if (ret < 0) {
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+
+	lgps_app_config_get(&cfg);
+	lgps_gnss_apply_config(cfg.gnss_cold_timeout_s, cfg.gnss_rate_hz);
+	if (!pairing_window_open && !link_up &&
+	    (cfg.ble_adv_interval_ms != prev_cfg.ble_adv_interval_ms)) {
+		restart_advertising_now();
 	}
 
 	return (ssize_t)len;
@@ -1542,11 +1602,15 @@ static uint16_t read_le16(const uint8_t *src)
 
 static uint8_t cmd_set_config(const struct lgps_ble_cmd *cmd)
 {
+	struct lgps_app_config prev_cfg;
+	struct lgps_app_config cfg;
 	int ret;
 
 	if ((cmd->payload_len == 0U) || (cmd->payload == NULL)) {
 		return LGPS_BLE_INVALID_ARGUMENT;
 	}
+
+	lgps_app_config_get(&prev_cfg);
 
 	ret = lgps_app_config_update_tlv(cmd->payload, cmd->payload_len);
 	if (ret == -ERANGE) {
@@ -1556,14 +1620,15 @@ static uint8_t cmd_set_config(const struct lgps_ble_cmd *cmd)
 		return LGPS_BLE_INVALID_ARGUMENT;
 	}
 
-	{
-		struct lgps_app_config cfg;
-
-		lgps_app_config_get(&cfg);
-		(void)lgps_time_set_local_offset_s((int32_t)cfg.tz_offset_min * 60);
-		if (cfg.record_mode <= (uint8_t)LGPS_PWR_HIGH_PRECISION) {
-			(void)lgps_power_set_mode((enum lgps_power_state)cfg.record_mode);
-		}
+	lgps_app_config_get(&cfg);
+	(void)lgps_time_set_local_offset_s((int32_t)cfg.tz_offset_min * 60);
+	lgps_gnss_apply_config(cfg.gnss_cold_timeout_s, cfg.gnss_rate_hz);
+	if (cfg.record_mode <= (uint8_t)LGPS_PWR_HIGH_PRECISION) {
+		(void)lgps_power_set_mode((enum lgps_power_state)cfg.record_mode);
+	}
+	if (!pairing_window_open && !link_up &&
+	    (cfg.ble_adv_interval_ms != prev_cfg.ble_adv_interval_ms)) {
+		restart_advertising_now();
 	}
 
 	return LGPS_BLE_OK;
@@ -2393,10 +2458,21 @@ void lgps_ble_open_pairing_window(void)
 			LOG_WRN("bt_conn_set_security(L2) returned %d", err);
 		}
 	} else {
-		(void)bt_le_adv_update_data(adv_data, ARRAY_SIZE(adv_data), scan_rsp_data,
-					    ARRAY_SIZE(scan_rsp_data));
+		restart_advertising_now();
 	}
+#else
+	restart_advertising_now();
 #endif
+}
+
+void lgps_ble_set_low_power(bool deep_sleep)
+{
+	atomic_val_t next = deep_sleep ? 1 : 0;
+	atomic_val_t prev = atomic_set(&ble_deep_sleep, next);
+
+	if ((prev != next) && !pairing_window_open) {
+		restart_advertising_now();
+	}
 }
 
 void lgps_ble_set_nav_ctx(bool pdr_valid, int32_t pdr_lat_e7, int32_t pdr_lon_e7,
@@ -2699,6 +2775,7 @@ int lgps_ble_init(void)
 		return err;
 	}
 
+	atomic_set(&ble_ready, 1);
 	LOG_INF("advertising as %s", device_name);
 
 	return 0;

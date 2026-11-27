@@ -47,7 +47,10 @@ struct lgps_gnss_fsm_input {
 	bool vehicle_mode;
 	bool high_precision;
 	bool hold_power;
-	bool wake_trigger; /* e.g. motion resumed or POI key pressed */
+	bool wake_trigger;        /* e.g. motion resumed or POI key pressed */
+	bool deep_sleep;          /* cut rail immediately and stay OFF until cleared */
+	uint32_t cold_timeout_ms; /* 0 = LGPS_GNSS_FSM_COLD_TIMEOUT_MS */
+	uint32_t pulse_period_ms; /* 0 = LGPS_GNSS_FSM_PULSE_PERIOD_MS */
 };
 
 struct lgps_gnss_fsm {
@@ -55,6 +58,7 @@ struct lgps_gnss_fsm {
 	uint32_t state_since_ms;
 	uint32_t last_fix_ms;
 	uint32_t next_wait_ms;
+	uint32_t cold_timeout_ms;
 	uint8_t fail_streak;
 	bool ephemeris_valid;
 	bool rail_on;
@@ -72,5 +76,8 @@ void lgps_gnss_fsm_note_cold_restart(struct lgps_gnss_fsm *fsm, uint32_t now_ms)
 
 /* Current hot-acquisition timeout budget (3.5 s / 8 s / 15 s) for diagnostics. */
 uint32_t lgps_gnss_fsm_hot_timeout_ms(const struct lgps_gnss_fsm *fsm);
+
+/* Remaining ms until next state timeout/wakeup (0 if expired, UINT32_MAX if infinite/OFF). */
+uint32_t lgps_gnss_fsm_next_wake_ms(const struct lgps_gnss_fsm *fsm, uint32_t now_ms);
 
 #endif /* LIFEGPS_GNSS_FSM_H_ */

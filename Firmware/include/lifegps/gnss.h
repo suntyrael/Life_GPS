@@ -20,6 +20,7 @@
 #define LIFEGPS_GNSS_H_
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /*
@@ -305,6 +306,15 @@ int lgps_gnss_restart(enum lgps_gnss_start_mode mode);
 
 /* Feed power-state policy to the GNSS thread (sleep cuts rail; high_precision keeps rail on). */
 void lgps_gnss_set_policy(bool deep_sleep, bool high_precision);
+
+/* Feed IMU motion context (ZUPT stationary lock and vehicle mode) to the GNSS FSM. */
+void lgps_gnss_set_motion_context(bool zupt_locked, bool vehicle_mode);
+
+/* Request an immediate one-shot GNSS acquisition pulse (e.g. motion resumed or POI press). */
+void lgps_gnss_request_wake_pulse(void);
+
+/* Apply runtime GNSS parameters: cold timeout (clamped 15..300 s) and fix rate (clamped 1..5 Hz). */
+void lgps_gnss_apply_config(uint16_t cold_timeout_s, uint8_t rate_hz);
 
 /* Immediately disable GNSS power rail before entering SYSTEM_OFF. */
 void lgps_gnss_force_off(void);

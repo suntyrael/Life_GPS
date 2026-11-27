@@ -123,8 +123,9 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 
 /* Control values picked for this firmware. */
 #define CTRL1_ODR_POWER_DOWN 0x00U
-#define CTRL1_ODR_15HZ 0x03U      /* ODR_XL[3:0] = 0011b, table 52 (15 Hz) */
-#define CTRL1_ODR_30HZ 0x04U      /* ODR_XL[3:0] = 0100b, table 52 (30 Hz) */
+#define CTRL1_ODR_15HZ 0x03U      /* ODR_XL[3:0] = 0011b, DS13510 Rev 4 section 9.14, table 52 (15 Hz) */
+#define CTRL1_ODR_30HZ 0x04U      /* ODR_XL[3:0] = 0100b, DS13510 Rev 4 section 9.14, table 52 (30 Hz) */
+#define CTRL1_OP_MODE_LPM1 0x40U  /* OP_MODE_XL[2:0] = 100b (low-power mode 1, 2 mean), DS13510 Rev 4 section 9.14, table 51 & table 52 */
 #define CTRL2_ODR_POWER_DOWN 0x00U
 #define CTRL2_ODR_30HZ 0x04U      /* ODR_G[3:0] = 0100b, table 55 (30 Hz) */
 #define CTRL6_FS_1000DPS 0x03U    /* FS_G[3:0] = 0011b, table 63 (+/-1000 dps) */
@@ -132,6 +133,7 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 #define OP_MODE_HIGH_PERFORMANCE 0x00U /* OP_MODE_[XL|G][2:0] = 000b */
 #define SHUB_ODR_30HZ 0x02U       /* SLV0_CONFIG[7:5] = 010b, table 483 */
 #define SFLP_GAME_ODR_30HZ 0x08U  /* SFLP_ODR[5:3] = 001b, table 324 */
+#define FIFO_MODE_BYPASS 0x00U    /* FIFO_CTRL4[2:0] = 000b (Bypass), DS13510 Rev 4 table 40 */
 #define FIFO_MODE_CONTINUOUS 0x06U /* FIFO_CTRL4[2:0], table 40 */
 
 /* External sensor registers (their own datasheets). */
@@ -139,7 +141,8 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 #define LIS2MDL_CFG_REG_C 0x62U
 #define LIS2MDL_OUTX_L_REG 0x68U
 #define LIS2MDL_TEMP_OUT_L_REG 0x6EU
-#define LIS2MDL_CFG_A_TEMP_COMP_50HZ 0x88U /* COMP_TEMP_EN | ODR=10b | MD=00b */
+#define LIS2MDL_CFG_A_TEMP_COMP_50HZ 0x88U /* COMP_TEMP_EN=1 | ODR=10b (50 Hz) | MD=00b (continuous), DS12144 Rev 6 section 8.5, tables 22/23/25 */
+#define LIS2MDL_CFG_A_IDLE 0x83U           /* COMP_TEMP_EN=1 (table 23 note 1) | MD[1:0]=11b (Idle, I2C/SPI active), DS12144 Rev 6 section 8.5, tables 22/23/25 */
 #define LIS2MDL_CFG_C_BDU 0x10U
 
 /* LIS2MDL registers used by the numop mapping test (DS12144 Rev 6 section 8).
@@ -185,7 +188,8 @@ LOG_MODULE_REGISTER(lgps_imu, LOG_LEVEL_INF);
 #define BMP388_PWR_CTRL 0x1BU
 #define BMP388_OSR_P_X8_T_X2 0x0BU /* osr_t = 001b (bits 5:3), osr_p = 011b */
 #define BMP388_ODR_25HZ 0x03U
-#define BMP388_PWR_NORMAL 0x33U /* press_en | temp_en | mode = 11b (normal) */
+#define BMP388_PWR_NORMAL 0x33U /* press_en | temp_en | mode = 11b (normal), BST-BMP388-DS001-07 section 4.3.16, table 40 */
+#define BMP388_PWR_SLEEP 0x00U  /* mode[5:4] = 00b (sleep, 2.0 uA), temp_en = 0, press_en = 0, BST-BMP388-DS001-07 section 4.3.16, table 40 */
 
 /* BMP388 registers used only by the hub diagnostics, see
  * lifegps_imu_hub_diag(). Table numbers refer to BST-BMP388-DS001-07.
@@ -230,6 +234,8 @@ static const struct spi_dt_spec imu_spi = SPI_DT_SPEC_GET(DT_NODELABEL(imu), SPI
 static K_MUTEX_DEFINE(imu_lock);
 static bool hub_streaming_configured;
 static bool sflp_configured;
+static bool imu_low_power;
+static bool aux_asleep;
 static uint8_t detected_who_am_i;
 static uint8_t bmp388_addr = LGPS_BMP388_I2C_ADDR;
 /* Set by lgps_imu_probe_hub(). A device that never answered its identification
@@ -375,6 +381,7 @@ static void hub_status_capture_main_page(void)
 static int shub_write_byte(uint8_t i2c_addr, uint8_t reg, uint8_t value)
 {
 	int ret;
+	int bank_ret;
 
 	ret = shub_bank_enable(true);
 	if (ret < 0) {
@@ -383,38 +390,38 @@ static int shub_write_byte(uint8_t i2c_addr, uint8_t reg, uint8_t value)
 
 	ret = imu_write(REG_MASTER_CONFIG, MASTER_RST_REGS);
 	if (ret < 0) {
-		return ret;
+		goto out;
 	}
 
 	ret = imu_write(REG_MASTER_CONFIG, 0x00U);
 	if (ret < 0) {
-		return ret;
+		goto out;
 	}
 
 	ret = imu_write(REG_SLV0_ADD, (uint8_t)(i2c_addr << 1)); /* rw = 0 -> write */
 	if (ret < 0) {
-		return ret;
+		goto out;
 	}
 
 	ret = imu_write(REG_SLV0_SUBADD, reg);
 	if (ret < 0) {
-		return ret;
+		goto out;
 	}
 
 	ret = imu_write(REG_DATAWRITE_SLV0, value);
 	if (ret < 0) {
-		return ret;
+		goto out;
 	}
 
 	/* numop = 0 -> single write operation; SHUB_ODR keeps its 30 Hz setting. */
 	ret = imu_write(REG_SLV0_CONFIG, (uint8_t)(SHUB_ODR_30HZ << 5));
 	if (ret < 0) {
-		return ret;
+		goto out;
 	}
 
 	ret = imu_write(REG_MASTER_CONFIG, MASTER_WRITE_ONCE | MASTER_ON);
 	if (ret < 0) {
-		return ret;
+		goto out;
 	}
 
 	k_msleep(SHUB_SETTLE_MS);
@@ -424,15 +431,145 @@ static int shub_write_byte(uint8_t i2c_addr, uint8_t reg, uint8_t value)
 
 	ret = imu_write(REG_MASTER_CONFIG, 0x00U);
 	if (ret < 0) {
-		return ret;
+		goto out;
 	}
 
 	ret = imu_write(REG_SLV0_CONFIG, (uint8_t)(SHUB_ODR_30HZ << 5));
+
+out:
+	if (ret < 0) {
+		(void)imu_write(REG_MASTER_CONFIG, 0x00U);
+	}
+	bank_ret = shub_bank_enable(false);
+	if (ret == 0) {
+		ret = bank_ret;
+	}
+
+	return ret;
+}
+
+/*
+ * Stop Sensor Hub auxiliary I2C master polling (DS13510 Rev 4, table 477:
+ * MASTER_CONFIG 0x14 = 0x00 clears MASTER_ON). Leaves IF_CFG.SHUB_PU_EN
+ * untouched on the main page so the auxiliary I2C lines stay pulled high.
+ * Caller holds imu_lock.
+ */
+static int hub_stop_streaming_locked(void)
+{
+	int ret;
+	int bank_ret;
+
+	ret = shub_bank_enable(true);
 	if (ret < 0) {
 		return ret;
 	}
 
-	return shub_bank_enable(false);
+	ret = imu_write(REG_MASTER_CONFIG, 0x00U);
+
+	bank_ret = shub_bank_enable(false);
+	if (ret == 0) {
+		ret = bank_ret;
+	}
+
+	return ret;
+}
+
+/*
+ * Configure the 3-slave continuous Sensor Hub read layout (LIS2MDL mag 6B,
+ * LIS2MDL temp 2B, BMP388 pressure + temp 6B) and enable MASTER_ON.
+ * Caller holds imu_lock while XL is running at 30 Hz.
+ */
+static int hub_start_streaming_locked(void)
+{
+	int ret;
+	int bank_ret;
+
+	ret = shub_bank_enable(true);
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = imu_write(REG_MASTER_CONFIG, MASTER_RST_REGS);
+	if (ret < 0) {
+		goto out;
+	}
+
+	ret = imu_write(REG_MASTER_CONFIG, 0x00U);
+	if (ret < 0) {
+		goto out;
+	}
+
+	ret = imu_write(REG_SLV0_ADD, (uint8_t)((LGPS_LIS2MDL_I2C_ADDR << 1) | SLV0_ADD_RW));
+	if (ret < 0) {
+		goto out;
+	}
+
+	ret = imu_write(REG_SLV0_SUBADD, (uint8_t)LIS2MDL_OUTX_L_REG);
+	if (ret < 0) {
+		goto out;
+	}
+
+	/* SHUB_ODR = 30 Hz | numop = 6 (six magnetometer bytes, see HUB_MAX_NUMOP).
+	 * The cycle itself is triggered by the accelerometer/gyro data-ready, so the
+	 * effective rate is the 30 Hz sample rate whatever this field asks for
+	 * (DS13510 table 477, START_CONFIG = 0).
+	 */
+	ret = imu_write(REG_SLV0_CONFIG, (uint8_t)((SHUB_ODR_30HZ << 5) | HUB_MAG_BYTES));
+	if (ret < 0) {
+		goto out;
+	}
+
+	/* Second slave: LIS2MDL TEMP_OUT, two bytes (the temperature refresh rate is
+	 * the magnetometer ODR, so this tracks the 50 Hz setting). Bit 4 of
+	 * SLV1_CONFIG must be written as 1 (table 488 note 2).
+	 */
+	ret = imu_write(REG_SLV1_ADD, (uint8_t)((LGPS_LIS2MDL_I2C_ADDR << 1) | SLV0_ADD_RW));
+	if (ret < 0) {
+		goto out;
+	}
+
+	ret = imu_write(REG_SLV1_SUBADD, LIS2MDL_TEMP_OUT_L_REG);
+	if (ret < 0) {
+		goto out;
+	}
+
+	ret = imu_write(REG_SLV1_CONFIG,
+			(uint8_t)(SLV1_CONFIG_MUST_ONE | HUB_MAG_TEMP_BYTES));
+	if (ret < 0) {
+		goto out;
+	}
+
+	/* Third slave: BMP388 pressure + temperature. Last, because a device that
+	 * does not acknowledge must not sit in front of one that does.
+	 */
+	ret = imu_write(REG_SLV2_ADD, (uint8_t)((bmp388_addr << 1) | SLV0_ADD_RW));
+	if (ret < 0) {
+		goto out;
+	}
+
+	ret = imu_write(REG_SLV2_SUBADD, (uint8_t)BMP388_PRESS_XLSB);
+	if (ret < 0) {
+		goto out;
+	}
+
+	ret = imu_write(REG_SLV2_CONFIG, HUB_BARO_BYTES);
+	if (ret < 0) {
+		goto out;
+	}
+
+	/* AUX_SENS_ON = 10b -> three sensors (DS13510 Rev 4 table 477), master on. */
+	ret = imu_write(REG_MASTER_CONFIG, (uint8_t)(BIT(1) | MASTER_ON));
+
+out:
+	if (ret < 0) {
+		(void)imu_write(REG_MASTER_CONFIG, 0x00U);
+	}
+	bank_ret = shub_bank_enable(false);
+	if (ret == 0) {
+		ret = bank_ret;
+	}
+
+	return ret;
 }
 
 /* --- Bring-up diagnostics for the auxiliary bus ------------------------- */
@@ -1087,127 +1224,147 @@ int lgps_imu_hub_configure(void)
 	/* Read mode: 6 bytes from LIS2MDL + 2 bytes of LIS2MDL temperature + 6 bytes
 	 * from BMP388.
 	 */
-	ret = shub_bank_enable(true);
-	if (ret < 0) {
-		goto out;
-	}
-
-	ret = imu_write(REG_MASTER_CONFIG, MASTER_RST_REGS);
-	if (ret < 0) {
-		goto out;
-	}
-
-	ret = imu_write(REG_MASTER_CONFIG, 0x00U);
-	if (ret < 0) {
-		goto out;
-	}
-
-	ret = imu_write(REG_SLV0_ADD, (uint8_t)((LGPS_LIS2MDL_I2C_ADDR << 1) | SLV0_ADD_RW));
-	if (ret < 0) {
-		goto out;
-	}
-
-	ret = imu_write(REG_SLV0_SUBADD, (uint8_t)LIS2MDL_OUTX_L_REG);
-	if (ret < 0) {
-		goto out;
-	}
-
-	/* SHUB_ODR = 30 Hz | numop = 6 (six magnetometer bytes, see HUB_MAX_NUMOP).
-	 * The cycle itself is triggered by the accelerometer/gyro data-ready, so the
-	 * effective rate is the 30 Hz sample rate whatever this field asks for
-	 * (DS13510 table 477, START_CONFIG = 0).
-	 */
-	ret = imu_write(REG_SLV0_CONFIG, (uint8_t)((SHUB_ODR_30HZ << 5) | HUB_MAG_BYTES));
-	if (ret < 0) {
-		goto out;
-	}
-
-	/* Second slave: LIS2MDL TEMP_OUT, two bytes (the temperature refresh rate is
-	 * the magnetometer ODR, so this tracks the 50 Hz setting). Bit 4 of
-	 * SLV1_CONFIG must be written as 1 (table 488 note 2).
-	 */
-	ret = imu_write(REG_SLV1_ADD, (uint8_t)((LGPS_LIS2MDL_I2C_ADDR << 1) | SLV0_ADD_RW));
-	if (ret < 0) {
-		goto out;
-	}
-
-	ret = imu_write(REG_SLV1_SUBADD, LIS2MDL_TEMP_OUT_L_REG);
-	if (ret < 0) {
-		goto out;
-	}
-
-	ret = imu_write(REG_SLV1_CONFIG,
-			(uint8_t)(SLV1_CONFIG_MUST_ONE | HUB_MAG_TEMP_BYTES));
-	if (ret < 0) {
-		goto out;
-	}
-
-	/* Third slave: BMP388 pressure + temperature. Last, because a device that
-	 * does not acknowledge must not sit in front of one that does.
-	 */
-	ret = imu_write(REG_SLV2_ADD, (uint8_t)((bmp388_addr << 1) | SLV0_ADD_RW));
-	if (ret < 0) {
-		goto out;
-	}
-
-	ret = imu_write(REG_SLV2_SUBADD, (uint8_t)BMP388_PRESS_XLSB);
-	if (ret < 0) {
-		goto out;
-	}
-
-	ret = imu_write(REG_SLV2_CONFIG, HUB_BARO_BYTES);
-	if (ret < 0) {
-		goto out;
-	}
-
-	/* AUX_SENS_ON = 10b -> three sensors (table 477), master on. */
-	ret = imu_write(REG_MASTER_CONFIG, BIT(1) | MASTER_ON);
+	ret = hub_start_streaming_locked();
 	if (ret < 0) {
 		goto out;
 	}
 
 	hub_streaming_configured = true;
+	aux_asleep = false;
 
 	k_msleep(SHUB_SETTLE_MS);
 
-	uint8_t check[HUB_BLOCK_BYTES] = { 0U };
+	{
+		uint8_t check[HUB_BLOCK_BYTES] = { 0U };
+		int read_ret = shub_bank_enable(true);
 
-	if (imu_read_buf(REG_SENSOR_HUB_1, check, sizeof(check)) == 0) {
-		LOG_INF("sensor hub streaming: 3 slaves (LIS2MDL mag 6B, LIS2MDL temp 2B, "
-			"BMP388 6B), hub cycle gated by the 30 Hz IMU data-ready, %u of 18 bytes "
-			"used @0x%02x", (unsigned int)HUB_BLOCK_BYTES, bmp388_addr);
-		LOG_INF("sensor hub first burst: mag %02x %02x %02x %02x %02x %02x | mag_T "
-			"%02x %02x | baro %02x %02x %02x %02x %02x %02x", check[0], check[1],
-			check[2], check[3], check[4], check[5], check[6], check[7], check[8],
-			check[9], check[10], check[11], check[12], check[13]);
-
-		if ((check[0] == 0U) && (check[1] == 0U) && (check[2] == 0U)) {
-			LOG_ERR("LIS2MDL returned zeros although it answered its WHO_AM_I read: "
-				"check the sensor hub block layout and numop");
+		if (read_ret == 0) {
+			read_ret = imu_read_buf(REG_SENSOR_HUB_1, check, sizeof(check));
+			(void)shub_bank_enable(false);
 		}
 
-		if ((check[6] == 0U) && (check[7] == 0U)) {
-			LOG_WRN("LIS2MDL TEMP_OUT reads 0: the second slave did not transfer, "
-				"check the hub slave order and AUX_SENS_ON");
-		}
+		if (read_ret == 0) {
+			LOG_INF("sensor hub streaming: 3 slaves (LIS2MDL mag 6B, LIS2MDL temp 2B, "
+				"BMP388 6B), hub cycle gated by the 30 Hz IMU data-ready, %u of 18 bytes "
+				"used @0x%02x", (unsigned int)HUB_BLOCK_BYTES, bmp388_addr);
+			LOG_INF("sensor hub first burst: mag %02x %02x %02x %02x %02x %02x | mag_T "
+				"%02x %02x | baro %02x %02x %02x %02x %02x %02x", check[0], check[1],
+				check[2], check[3], check[4], check[5], check[6], check[7], check[8],
+				check[9], check[10], check[11], check[12], check[13]);
 
-		if ((check[8] == 0U) && (check[9] == 0U) && (check[10] == 0U)) {
-			LOG_WRN("BMP388 pressure reads 0: check PWR_CTRL write path, SDO strapping "
-				"(0x76/0x77) and that U4 is populated");
-		}
+			if ((check[0] == 0U) && (check[1] == 0U) && (check[2] == 0U)) {
+				LOG_ERR("LIS2MDL returned zeros although it answered its WHO_AM_I read: "
+					"check the sensor hub block layout and numop");
+			}
 
-		/* Master is still enabled here, so this is the streaming layout's own
-		 * verdict: SLAVE1_NACK set means U4 did not acknowledge its address
-		 * (DS13510 table 137). hub_status_log() only prints the snapshot.
-		 */
-		hub_status_capture_main_page();
-		hub_status_log("streaming first burst");
+			if ((check[6] == 0U) && (check[7] == 0U)) {
+				LOG_WRN("LIS2MDL TEMP_OUT reads 0: the second slave did not transfer, "
+					"check the hub slave order and AUX_SENS_ON");
+			}
+
+			if ((check[8] == 0U) && (check[9] == 0U) && (check[10] == 0U)) {
+				LOG_WRN("BMP388 pressure reads 0: check PWR_CTRL write path, SDO strapping "
+					"(0x76/0x77) and that U4 is populated");
+			}
+
+			/* Master is still enabled here and bank is closed, so read
+			 * STATUS_MASTER_MAINPAGE directly (DS13510 table 137).
+			 */
+			hub_status_capture();
+			hub_status_log("streaming first burst");
+		}
 	}
 
 out:
 	(void)shub_bank_enable(false);
 	k_mutex_unlock(&imu_lock);
 	return ret;
+}
+
+/*
+ * Program the SFLP registers (EMB_FUNC_EN_A, EMB_FUNC_FIFO_EN_A, SFLP_ODR)
+ * and FIFO continuous mode (DS13510 Rev 4 section 2.8, tables 266/296/324/40).
+ * Caller holds imu_lock.
+ */
+static int sflp_enable_regs_locked(void)
+{
+	int ret;
+	int bank_ret;
+
+	ret = emb_bank_enable(true);
+	if (ret < 0) {
+		return ret;
+	}
+
+	/* SFLP_GAME_EN (EMB_FUNC_EN_A bit 1, DS13510 Rev 4 table 266). */
+	ret = imu_update_bits(REG_EMB_FUNC_EN_A, EMB_FUNC_EN_A_SFLP_GAME,
+			      EMB_FUNC_EN_A_SFLP_GAME);
+	if (ret < 0) {
+		goto out;
+	}
+
+	/* Batch the quaternion (bit 1) and the gravity vector (bit 4)
+	 * (EMB_FUNC_FIFO_EN_A, DS13510 Rev 4 table 296).
+	 */
+	ret = imu_update_bits(REG_EMB_FUNC_FIFO_EN_A,
+			      EMB_FUNC_FIFO_EN_A_SFLP_GAME | EMB_FUNC_FIFO_EN_A_SFLP_GRAVITY,
+			      EMB_FUNC_FIFO_EN_A_SFLP_GAME | EMB_FUNC_FIFO_EN_A_SFLP_GRAVITY);
+	if (ret < 0) {
+		goto out;
+	}
+
+	/* SFLP_GAME_ODR = 30 Hz, matching the accelerometer/gyroscope rate. The two
+	 * "must be 1" bits outside the field are preserved by the read/modify/write
+	 * (SFLP_ODR, DS13510 Rev 4 table 324).
+	 */
+	ret = imu_update_bits(REG_SFLP_ODR, 0x38U, SFLP_GAME_ODR_30HZ);
+
+out:
+	bank_ret = emb_bank_enable(false);
+	if (ret == 0) {
+		ret = bank_ret;
+	}
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	/* Continuous mode: if the FIFO fills up, the newest entry overwrites the
+	 * oldest, so a stalled reader degrades into lost samples, never into a
+	 * blocked device (FIFO_CTRL4, DS13510 Rev 4 table 40).
+	 */
+	return imu_update_bits(REG_FIFO_CTRL4, 0x07U, FIFO_MODE_CONTINUOUS);
+}
+
+/*
+ * Disable SFLP and switch the FIFO to Bypass mode during low-power / System OFF
+ * (DS13510 Rev 4: EMB_FUNC_EN_A 0x04 table 266, EMB_FUNC_FIFO_EN_A 0x44 table
+ * 296, FIFO_CTRL4 0x0A table 40). Caller holds imu_lock.
+ */
+static int sflp_disable_locked(void)
+{
+	int ret;
+	int bank_ret;
+
+	ret = emb_bank_enable(true);
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = imu_write(REG_EMB_FUNC_EN_A, 0x00U);
+	if (ret == 0) {
+		ret = imu_write(REG_EMB_FUNC_FIFO_EN_A, 0x00U);
+	}
+
+	bank_ret = emb_bank_enable(false);
+	if (ret == 0) {
+		ret = bank_ret;
+	}
+	if (ret < 0) {
+		return ret;
+	}
+
+	return imu_write(REG_FIFO_CTRL4, FIFO_MODE_BYPASS);
 }
 
 /*
@@ -1232,49 +1389,7 @@ static int sflp_enable(void)
 		return 0;
 	}
 
-	ret = emb_bank_enable(true);
-	if (ret < 0) {
-		return ret;
-	}
-
-	/* SFLP_GAME_EN (EMB_FUNC_EN_A bit 1). */
-	ret = imu_update_bits(REG_EMB_FUNC_EN_A, EMB_FUNC_EN_A_SFLP_GAME,
-			      EMB_FUNC_EN_A_SFLP_GAME);
-	if (ret < 0) {
-		goto out;
-	}
-
-	/* Batch the quaternion (bit 1) and the gravity vector (bit 4). */
-	ret = imu_update_bits(REG_EMB_FUNC_FIFO_EN_A,
-			      EMB_FUNC_FIFO_EN_A_SFLP_GAME | EMB_FUNC_FIFO_EN_A_SFLP_GRAVITY,
-			      EMB_FUNC_FIFO_EN_A_SFLP_GAME | EMB_FUNC_FIFO_EN_A_SFLP_GRAVITY);
-	if (ret < 0) {
-		goto out;
-	}
-
-	/* SFLP_GAME_ODR = 30 Hz, matching the accelerometer/gyroscope rate. The two
-	 * "must be 1" bits outside the field are preserved by the read/modify/write.
-	 */
-	ret = imu_update_bits(REG_SFLP_ODR, 0x38U, SFLP_GAME_ODR_30HZ);
-
-out:
-	{
-		const int bank_ret = emb_bank_enable(false);
-
-		if (ret == 0) {
-			ret = bank_ret;
-		}
-	}
-
-	if (ret < 0) {
-		return ret;
-	}
-
-	/* Continuous mode: if the FIFO fills up, the newest entry overwrites the
-	 * oldest, so a stalled reader degrades into lost samples, never into a
-	 * blocked device (table 40).
-	 */
-	ret = imu_update_bits(REG_FIFO_CTRL4, 0x07U, FIFO_MODE_CONTINUOUS);
+	ret = sflp_enable_regs_locked();
 	if (ret < 0) {
 		return ret;
 	}
@@ -1307,7 +1422,7 @@ int lgps_imu_read_sflp(struct lgps_imu_sflp *out)
 
 	k_mutex_lock(&imu_lock, K_FOREVER);
 
-	if (!sflp_configured) {
+	if (!sflp_configured || imu_low_power || aux_asleep) {
 		k_mutex_unlock(&imu_lock);
 		return -EAGAIN;
 	}
@@ -1471,15 +1586,15 @@ int lgps_imu_read_hub(struct lgps_imu_mag *mag, struct lgps_imu_baro *baro)
 		return -EINVAL;
 	}
 
-	mag->valid = false;
-	baro->valid = false;
-
 	k_mutex_lock(&imu_lock, K_FOREVER);
 
-	if (!hub_streaming_configured) {
+	if (!hub_streaming_configured || imu_low_power || aux_asleep) {
 		k_mutex_unlock(&imu_lock);
 		return -EAGAIN;
 	}
+
+	mag->valid = false;
+	baro->valid = false;
 
 	ret = shub_bank_enable(true);
 	if (ret < 0) {
@@ -1620,6 +1735,9 @@ int lgps_imu_init(void)
 		goto out;
 	}
 
+	imu_low_power = false;
+	aux_asleep = false;
+
 	LOG_INF("LSM6DSV16X configured: +/-%.0f g (%.3f mg/LSB), +/-%.0f dps (%.0f mdps/LSB), "
 		"ODR %.0f Hz, INT1=DRDY_XL|DRDY_G",
 		(double)LGPS_IMU_ACCEL_FS_G, (double)LGPS_IMU_ACCEL_MG_LSB,
@@ -1645,7 +1763,6 @@ static const struct gpio_dt_spec imu_int1 =
 	GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), imu_int1_gpios);
 static struct gpio_callback imu_int1_cb;
 static lgps_imu_wake_cb_t imu_wake_cb;
-static bool imu_low_power;
 
 static void imu_int1_isr(const struct device *port, struct gpio_callback *cb, uint32_t pins)
 {
@@ -1684,6 +1801,160 @@ int lgps_imu_wake_irq_init(lgps_imu_wake_cb_t cb)
 	return ret;
 }
 
+/*
+ * Put external sensors behind the Sensor Hub (LIS2MDL -> Idle, BMP388 -> Sleep),
+ * the Sensor Hub master (MASTER_CONFIG = 0x00), and SFLP/FIFO (Bypass) to sleep.
+ *
+ * IMPORTANT: LSM6DSV16X Sensor Hub cycles (START_CONFIG = 0, DS13510 Rev 4
+ * table 477) are triggered by XL/G data-ready, so this helper MUST be called
+ * while XL is still running (e.g. 30 Hz HP) before dropping CTRL1 to LPM1 15 Hz
+ * or Power-Down. Caller holds imu_lock.
+ */
+static int sleep_external_and_aux_locked(void)
+{
+	int first_err = 0;
+	int ret;
+
+	if (aux_asleep) {
+		return 0;
+	}
+
+	/* Stop continuous Sensor Hub polling first (keeping IF_CFG.SHUB_PU_EN
+	 * intact so the auxiliary I2C lines stay pulled high and do not float).
+	 */
+	ret = hub_stop_streaming_locked();
+	if (ret < 0) {
+		LOG_WRN("sensor hub stop failed (%d)", ret);
+		first_err = ret;
+	} else if (hub_streaming_configured) {
+		/* Allow any in-flight aux I2C read burst to finish before one-shot writes. */
+		k_msleep(5);
+	}
+
+	if (mag_present) {
+		/* LIS2MDL CFG_REG_A (0x60): COMP_TEMP_EN=1 (table 23 note 1) |
+		 * MD[1:0]=11b (Idle mode, I2C and SPI active) = 0x83
+		 * (DS12144 Rev 6 section 8.5, tables 22, 23, 25).
+		 */
+		ret = shub_write_byte(LGPS_LIS2MDL_I2C_ADDR, LIS2MDL_CFG_REG_A,
+				      LIS2MDL_CFG_A_IDLE);
+		if (ret < 0) {
+			LOG_WRN("LIS2MDL sleep write failed (%d)", ret);
+			if (first_err == 0) {
+				first_err = ret;
+			}
+		}
+	}
+
+	if (baro_present) {
+		/* BMP388 PWR_CTRL (0x1B): mode[5:4]=00b (sleep mode, 2.0 uA),
+		 * temp_en=0, press_en=0 = 0x00
+		 * (BST-BMP388-DS001-07 section 4.3.16, table 40).
+		 */
+		ret = shub_write_byte(bmp388_addr, BMP388_PWR_CTRL, BMP388_PWR_SLEEP);
+		if (ret < 0) {
+			LOG_WRN("BMP388 sleep write failed (%d)", ret);
+			if (first_err == 0) {
+				first_err = ret;
+			}
+		}
+	}
+
+	/* Ensure Sensor Hub master stays off (MASTER_CONFIG = 0x00, DS13510 Rev 4
+	 * table 477) while keeping IF_CFG.SHUB_PU_EN intact.
+	 */
+	ret = hub_stop_streaming_locked();
+	if (ret < 0) {
+		LOG_WRN("sensor hub disable failed (%d)", ret);
+		if (first_err == 0) {
+			first_err = ret;
+		}
+	}
+
+	if (sflp_configured) {
+		ret = sflp_disable_locked();
+		if (ret < 0) {
+			LOG_WRN("SFLP disable failed (%d)", ret);
+			if (first_err == 0) {
+				first_err = ret;
+			}
+		}
+	}
+
+	aux_asleep = true;
+
+	return first_err;
+}
+
+/*
+ * Resume external sensors (LIS2MDL -> 50 Hz continuous, BMP388 -> normal mode),
+ * Sensor Hub continuous streaming, and SFLP/FIFO after XL/G are restored to
+ * 30 Hz HP (providing the Sensor Hub DRDY trigger clock). Caller holds imu_lock.
+ */
+static int wake_external_and_aux_locked(void)
+{
+	int first_err = 0;
+	int ret;
+
+	if (!aux_asleep) {
+		return 0;
+	}
+
+	/* Allow >=1 XL 30 Hz period (33.3 ms) so Sensor Hub has its DRDY trigger. */
+	k_msleep(40);
+
+	if (mag_present) {
+		/* LIS2MDL CFG_REG_A (0x60): COMP_TEMP_EN=1 | ODR=50 Hz | MD=00b
+		 * (continuous) = 0x88 (DS12144 Rev 6 section 8.5, tables 22, 23, 25).
+		 */
+		ret = shub_write_byte(LGPS_LIS2MDL_I2C_ADDR, LIS2MDL_CFG_REG_A,
+				      LIS2MDL_CFG_A_TEMP_COMP_50HZ);
+		if (ret < 0) {
+			LOG_WRN("LIS2MDL wake write failed (%d)", ret);
+			if (first_err == 0) {
+				first_err = ret;
+			}
+		}
+	}
+
+	if (baro_present) {
+		/* BMP388 PWR_CTRL (0x1B): press_en=1, temp_en=1, mode=11b (normal)
+		 * = 0x33 (BST-BMP388-DS001-07 section 4.3.16, table 40).
+		 */
+		ret = shub_write_byte(bmp388_addr, BMP388_PWR_CTRL, BMP388_PWR_NORMAL);
+		if (ret < 0) {
+			LOG_WRN("BMP388 wake write failed (%d)", ret);
+			if (first_err == 0) {
+				first_err = ret;
+			}
+		}
+	}
+
+	if (hub_streaming_configured) {
+		ret = hub_start_streaming_locked();
+		if (ret < 0) {
+			LOG_WRN("sensor hub streaming restart failed (%d)", ret);
+			if (first_err == 0) {
+				first_err = ret;
+			}
+		}
+	}
+
+	if (sflp_configured) {
+		ret = sflp_enable_regs_locked();
+		if (ret < 0) {
+			LOG_WRN("SFLP re-enable failed (%d)", ret);
+			if (first_err == 0) {
+				first_err = ret;
+			}
+		}
+	}
+
+	aux_asleep = false;
+
+	return first_err;
+}
+
 int lgps_imu_set_low_power(bool low_power)
 {
 	int ret;
@@ -1692,15 +1963,28 @@ int lgps_imu_set_low_power(bool low_power)
 		return -ENODEV;
 	}
 
+	k_mutex_lock(&imu_lock, K_FOREVER);
+
 	if (low_power == imu_low_power) {
+		k_mutex_unlock(&imu_lock);
 		return 0;
 	}
 
-	k_mutex_lock(&imu_lock, K_FOREVER);
-
 	if (low_power) {
+		int aux_ret;
+
+		/* Put LIS2MDL, BMP388, Sensor Hub, and SFLP to sleep FIRST while XL is
+		 * still running at 30 Hz HP so the Sensor Hub has its DRDY trigger clock.
+		 */
+		aux_ret = sleep_external_and_aux_locked();
+		if (aux_ret < 0) {
+			LOG_WRN("aux/SFLP sleep failed (%d); continuing IMU low-power transition",
+				aux_ret);
+		}
+
 		/* Stop DRDY pulse on INT1, enable 0.25 g wake-up routed to INT1,
-		 * power down gyro (2.6 uA), drop XL to 15 Hz.
+		 * power down gyro (CTRL2 = 0x00), drop XL to LPM1 @ 15 Hz
+		 * (CTRL1 = 0x43, DS13510 Rev 4 section 9.14, tables 51 & 52).
 		 */
 		ret = imu_write(REG_INT1_CTRL, 0x00U);
 		if (ret == 0) {
@@ -1719,19 +2003,34 @@ int lgps_imu_set_low_power(bool low_power)
 			ret = imu_write(REG_CTRL2, CTRL2_ODR_POWER_DOWN);
 		}
 		if (ret == 0) {
-			ret = imu_write(REG_CTRL1, CTRL1_ODR_15HZ);
+			ret = imu_write(REG_CTRL1,
+					(uint8_t)(CTRL1_OP_MODE_LPM1 | CTRL1_ODR_15HZ));
 		}
 		if (ret == 0) {
 			imu_low_power = true;
 			if (gpio_is_ready_dt(&imu_int1)) {
-				(void)gpio_pin_interrupt_configure_dt(&imu_int1,
-								      GPIO_INT_EDGE_RISING);
+				const int irq_ret = gpio_pin_interrupt_configure_dt(
+					&imu_int1, GPIO_INT_EDGE_RISING);
+
+				if (irq_ret < 0) {
+					LOG_ERR("IMU INT1 wake IRQ enable failed (%d)", irq_ret);
+					ret = irq_ret;
+				}
 			}
-			LOG_INF("IMU -> low-power wake mode (XL 15 Hz, gyro PD, INT1 WU 0.25 g)");
+			LOG_INF("IMU -> low-power wake mode (XL LPM1 15 Hz, gyro PD, aux/SFLP "
+				"asleep, INT1 WU 0.25 g)");
+		}
+		if ((ret == 0) && (aux_ret < 0)) {
+			ret = aux_ret;
 		}
 	} else {
 		if (gpio_is_ready_dt(&imu_int1)) {
-			(void)gpio_pin_interrupt_configure_dt(&imu_int1, GPIO_INT_DISABLE);
+			const int irq_ret =
+				gpio_pin_interrupt_configure_dt(&imu_int1, GPIO_INT_DISABLE);
+
+			if (irq_ret < 0) {
+				LOG_WRN("IMU INT1 wake IRQ disable failed (%d)", irq_ret);
+			}
 		}
 		ret = imu_write(REG_MD1_CFG, 0x00U);
 		if (ret == 0) {
@@ -1747,8 +2046,16 @@ int lgps_imu_set_low_power(bool low_power)
 			ret = imu_write(REG_INT1_CTRL, INT1_DRDY_XL | INT1_DRDY_G);
 		}
 		if (ret == 0) {
+			const int aux_ret = wake_external_and_aux_locked();
+
 			imu_low_power = false;
-			LOG_INF("IMU -> active 30 Hz HP mode");
+			if (aux_ret < 0) {
+				LOG_WRN("IMU -> active 30 Hz HP mode (aux/SFLP resume err %d)",
+					aux_ret);
+				ret = aux_ret;
+			} else {
+				LOG_INF("IMU -> active 30 Hz HP mode (aux/SFLP resumed)");
+			}
 		}
 	}
 
@@ -1758,25 +2065,76 @@ int lgps_imu_set_low_power(bool low_power)
 
 int lgps_imu_power_down(void)
 {
+	int first_err = 0;
 	int ret;
 
 	if (detected_who_am_i == 0U) {
 		return 0;
 	}
 
+	k_mutex_lock(&imu_lock, K_FOREVER);
+
 	if (gpio_is_ready_dt(&imu_int1)) {
-		(void)gpio_pin_interrupt_configure_dt(&imu_int1, GPIO_INT_DISABLE);
+		ret = gpio_pin_interrupt_configure_dt(&imu_int1, GPIO_INT_DISABLE);
+		if (ret < 0) {
+			LOG_WRN("IMU INT1 IRQ disable failed (%d)", ret);
+			first_err = ret;
+		}
 	}
 
-	k_mutex_lock(&imu_lock, K_FOREVER);
-	(void)imu_write(REG_MD1_CFG, 0x00U);
-	(void)imu_write(REG_INT1_CTRL, 0x00U);
-	(void)imu_write(REG_CTRL2, CTRL2_ODR_POWER_DOWN);
+	/* Ensure LIS2MDL (Idle), BMP388 (Sleep), Sensor Hub, and SFLP are all off
+	 * before entering System OFF. Sensor Hub writes require XL to be running.
+	 */
+	if (!aux_asleep) {
+		if (imu_low_power) {
+			ret = imu_write(REG_CTRL1, CTRL1_ODR_30HZ | OP_MODE_HIGH_PERFORMANCE);
+			if (ret < 0) {
+				if (first_err == 0) {
+					first_err = ret;
+				}
+			} else {
+				k_msleep(40);
+			}
+		}
+
+		ret = sleep_external_and_aux_locked();
+		if (ret < 0) {
+			LOG_WRN("aux/SFLP sleep before power-down failed (%d)", ret);
+			if (first_err == 0) {
+				first_err = ret;
+			}
+		}
+	}
+
+	ret = imu_write(REG_MD1_CFG, 0x00U);
+	if ((ret < 0) && (first_err == 0)) {
+		first_err = ret;
+	}
+
+	ret = imu_write(REG_FUNCTIONS_ENABLE, 0x00U);
+	if ((ret < 0) && (first_err == 0)) {
+		first_err = ret;
+	}
+
+	ret = imu_write(REG_INT1_CTRL, 0x00U);
+	if ((ret < 0) && (first_err == 0)) {
+		first_err = ret;
+	}
+
+	ret = imu_write(REG_CTRL2, CTRL2_ODR_POWER_DOWN);
+	if ((ret < 0) && (first_err == 0)) {
+		first_err = ret;
+	}
+
 	ret = imu_write(REG_CTRL1, CTRL1_ODR_POWER_DOWN);
+	if ((ret < 0) && (first_err == 0)) {
+		first_err = ret;
+	}
+
 	imu_low_power = false;
 	k_mutex_unlock(&imu_lock);
 
-	return ret;
+	return first_err;
 }
 
 int lgps_imu_read_wake_src(uint8_t *src)

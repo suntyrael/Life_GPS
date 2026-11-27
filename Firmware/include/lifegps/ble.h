@@ -45,6 +45,9 @@ bool lgps_ble_connected(void);
 /* Open a 60 s BLE pairing/bonding window (triggered by KEY1 3 s hold). */
 void lgps_ble_open_pairing_window(void);
 
+/* Notify BLE layer of DEEP_SLEEP transitions to slow advertising (1 s) when idle. */
+void lgps_ble_set_low_power(bool deep_sleep);
+
 /*
  * Encode @p snap as the 82-byte Status frame, cache it for reads and notify the
  * subscribed central. Thread context: any thread (the main loop calls it at the
