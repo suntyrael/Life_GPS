@@ -179,6 +179,11 @@
    - 新增 [SyncForegroundService.kt](../../App/app/src/main/java/com/lifegps/app/ble/SyncForegroundService.kt)（`connectedDevice` 前台服务）并接入 [ProductTrackRepository.kt](../../App/app/src/main/java/com/lifegps/app/data/ProductTrackRepository.kt) `triggerSync()`；
    - [BleDebugRepository.kt](../../App/app/src/main/java/com/lifegps/app/ble/BleDebugRepository.kt) 持久化记住已连设备（`SharedPreferences`），授蓝牙权限后自动重连 + 断线指数退避重连（`2s..30s`），并在每次握手完成后自动发送 `SET_TIME` 校时；
    - [ProdAppHost.kt](../../App/app/src/main/java/com/lifegps/app/prod/ProdAppHost.kt) 设置页新增带二次确认弹窗的「恢复设备出厂设置」入口。
+7. **P0 全链路最终 CI 验收（提交 `60f4866`，全绿 ✅）**：
+   - `firmware` Run `45924644703` ✅：`prod` Flash `348,896 B / 729,088 B`（47.9%，RAM `154,568 B / 262,144 B`，`zephyr.signed.bin` 341 KB）；`debug` Flash `354,540 B / 729,088 B`（48.6%，RAM `157,159 B / 262,144 B`，`zephyr.signed.bin` 347 KB）；`twister` **20/20**（100% 零警告）。
+   - `app` Run `45923765440` ✅：全模块单测 + `devDebug` / `prodDebug` Lint + `prodRelease` R8 加固全绿，产出 3 份 APK。
+   - `docs` Run `45923765433` ✅：35 篇 Markdown 链接检查全绿。
+
 
 
 
